@@ -19,6 +19,7 @@
 
 class WritebackHandler;
 
+// 计数索引
 enum {
   l_objectcacher_first = 25000,
 
@@ -50,6 +51,7 @@ enum {
 };
 
 class ObjectCacher {
+  // 计数
   PerfCounters *perfcounter;
  public:
   CephContext *cct;

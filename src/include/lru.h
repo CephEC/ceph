@@ -36,6 +36,7 @@ public:
   friend class LRU;
 private:
   class LRU *lru{};
+  // 双向不循环链表
   xlist<LRUObject *>::item lru_link;
   bool lru_pinned = false;
 };
@@ -178,6 +179,7 @@ public:
     return NULL;
   }
   
+  // 驱逐
   LRUObject *lru_expire() {
     LRUObject *p = lru_get_next_expire();
     if (p) 
