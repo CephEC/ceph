@@ -2007,6 +2007,7 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
   }
 
   // 不太懂backoff是什么意思？
+  // 客户端的退避行为 https://docs.ceph.com/en/latest/dev/rados-client-protocol/#backoff
   bool can_backoff =
     m->get_connection()->has_feature(CEPH_FEATURE_RADOS_BACKOFF);
   ceph::ref_t<Session> session;
