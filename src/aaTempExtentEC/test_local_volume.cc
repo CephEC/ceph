@@ -28,7 +28,12 @@
 #include "include/rados/librados.hpp"
 #include "include/rados/rados_types.hpp"
 
+
 #include "acconfig.h"
+
+
+#include "common/Timer.h"
+#include "common/ceph_mutex.h"
 
 #include "common/config.h"
 #include "common/ceph_argparse.h"
@@ -36,14 +41,15 @@
 #include "common/Cond.h"
 #include "common/debug.h"
 #include "common/errno.h"
-#include "common/Formatter.h"
-#include "common/obj_bencher.h"
-#include "common/TextTable.h"
 #include "include/stringify.h"
 #include "mds/inode_backtrace.h"
 #include "include/random.h"
 #include <iostream>
 #include <fstream>
+
+#include "messages/MOSDOp.h"
+#include "Objecter.h"
+#include "OpRequest.h"
 
 #include <stdlib.h>
 #include <time.h>
@@ -65,7 +71,6 @@
 
 #include "osd/ECUtil.h"
 
-#include "test_request_pool.h"
 #include "volume.h"
 #include "chunk.h"
 
@@ -90,8 +95,130 @@ using std::vector;
 
 // 默认pg参数
 const char *pool_name = "default_pool";
-unsigned default_block_size = 1 << 27;
-unsigned default_obj_num = 4;
+const unsigned default_block_size = 1 << 27;
+const unsigned default_obj_num = 4;
+const int ERR = -1;
+
+/**
+ * @brief 试作型聚合缓存
+ * 
+ */
+class SimpleAggregationCache
+{
+public:
+  int write(MOSDOp* op) {
+    // is_empty
+    // volume.add
+  }
+  int read();
+  int flush();
+
+
+
+
+  static SimpleAggregationCache& get_instance() {
+    static SimpleAggregationCache instance;
+    return instance;
+  }
+
+private:
+  std::vector<Volume*> volumes;
+}
+
+SimpleAggregationCache& cache = SimpleAggregationCache::get_instance();
+
+/**
+ * @brief 试作型简易卷
+ * 
+ * 和Volume区别在于chunk中保存的是MOSDOp还是OpRequest
+ * 
+ */
+class SimpleVolume {
+    // read from config
+    constexpr uint64_t default_volume_capacity = 4;
+    constexpr uint64_t FULL_SIGNAL = -1;
+
+    volume_t volume_info;
+
+public:
+    SimpleVolume(uint64_t _cap) : volume_lock(ceph::make_mutex("SimpleVolume::lock")),
+                                  cap(_cap), size(0), is_flushed(false), vol_op(nullptr) { 
+      // 这里初始化的感觉怪怪的【
+      bitmap.resize(cap);
+      chunks.resize(cap);
+      bitmap.assign(cap, false);
+      chunks.assign(cap, nullptr);
+
+      flush_timer = new SafeTimer(g_ceph_context, volume_lock);
+      flush_timer->init();
+    }
+
+    SimpleVolume() : 
+
+    bool full() { return size == cap; }
+    bool empty() { return size == 0; }
+
+    object_info_t find_object(hobject_t soid);
+    
+    /**
+     * @brief 在volume里找空位填入
+     * 
+     * @param chunk 
+     * @return int 
+     */
+    int add_chunk(Chunk* chunk) {
+      // 无所谓，PG会上锁
+      // std::lock_guard locker{volume_lock};
+      int ret = FULL_SIGNAL;
+      
+      if (full()) {
+        cout << "full volume failed to add chunk. " << std::endl;
+        return ret;
+      } 
+
+      for (int i = 0; i < cap; i++)
+      {
+        if (bitmap[i]) continue;
+        else {
+          bitmap[i] = true;
+          chunks[i] = chunk;
+          size++;
+          ret = 0;
+          // 计时器清零
+
+          break;
+        }
+      }
+
+      return ret;
+    }
+
+    void remove_chunk(hobject_t soid);
+    void clear();
+
+
+private:
+    ceph::mutex flush_lock;
+    ceph::condition_variable flush_cond;
+    SafeTimer flush_timer;
+
+    bool is_flushed;
+
+    std::vector<bool> bitmap;
+    // chunk的顺序要与volume_info中chunk_set中chunk的顺序一致
+    std::vector<Chunk*> chunks;
+    uint64_t cap;
+    uint64_t size;
+    
+    // 计时器 safe timer
+    // https://blog.csdn.net/tiantao2012/article/details/78426276
+    
+
+    // create_request()
+    //OpRequestRef vol_op
+    MOSDOp* vol_op;
+}
+
 
 void usage(ostream& out)
 {
@@ -170,10 +297,36 @@ bufferlist generate_random(uint64_t len, int frag)
   return bl;
 }
 
-string generate_prefix(int i) 
+string generate_object_name(int i) 
 {
   bufferlist bl = generate_random(10, 1);
   return string(bl.c_str()) + string("_obj_") + string(i) ;
+}
+
+MOSDOp* prepare_osd_op(const std::string& oid, const bufferlist& bl, size_t len, uint64_t off)
+{
+  int flags = 0;
+  osdc_opvec ops;
+  ops.emplace_back();
+  ops.back().op.op = CEPH_OSD_OP_WRITE;
+  out_bl.push_back(nullptr);
+  ceph_assert(ops.size() == out_bl.size());
+  out_handler.emplace_back();
+  ceph_assert(ops.size() == out_handler.size());
+  out_rval.push_back(nullptr);
+  ceph_assert(ops.size() == out_rval.size());
+  out_ec.push_back(nullptr);
+  ceph_assert(ops.size() == out_ec.size());
+
+  OSDOp& osd_op = ops.back();
+  osd_op.op.extent.offset = off;
+  osd_op.op.extent.length = len;
+  osd_op.indata.claim_append(bl);
+  
+  auto m = new MOSDOp();
+  
+  m->ops = ops;
+  return m;
 }
 
 
@@ -181,7 +334,7 @@ string generate_prefix(int i)
  * @brief 顺序生成
  * 
  */
-static void generate_objects_and_ops(std::vector<OpRequest>& ops, const unsigned obj_num, const unsigned object_size) 
+static void generate_objects_and_ops(std::list<MOSDOp*> ops, const unsigned obj_num, const unsigned object_size) 
 {
   char* object_contents = new char[object_size];
   memset(object_contents, 'z', object_size);
@@ -195,16 +348,18 @@ static void generate_objects_and_ops(std::vector<OpRequest>& ops, const unsigned
     snprintf(object_contents, object_size, "batch put obj_%16d", i);
     contents[i]->append(object_contents, object_size);
 
-    /** 搞清楚OpRequest里面有啥比较关键，这里先直接造一个，不走rados的命令流程了 */
-    // ops[i].write(0, *contents[i]);
-    // object_t obj(oid);
-    // Objecter::Op *op = objecter->prepare_mutate_op(
-    // oid, oloc, *o, snap_context, ut, flags | extra_op_flags,
-    // oncomplete, &c->objver, osd_reqid_t(), &trace);
+    MOSDOp* m = prepare_osd_op(name[i], *contents[i], object_size, 0);
+    m->set_type(CEPH_MSG_OSD_OP);
+    m->set_reqid(osd_reqid_t());
+    // encode message payload, m->finish_decode() 解析payload
+    // m->encode_payload(0);
+
+    // OpRequest是对message在OSD端做的封装，方便OSD的OpTracker做跟踪，主要的信息都在message/MOSDOp中，这里不好拆就不拆了
+    // OpRequestRef 是以个指向OpRequest的intrusive_ptr，主要是为了跟踪oprequest
+    // OpRequestRef op = op_tracker.create_request<OpRequest, Message*>(m);
+
+    ops.push_back(m);
   }
-
-  
-
 
 }
 
@@ -214,13 +369,22 @@ static void generate_objects_and_ops(std::vector<OpRequest>& ops, const unsigned
  */
 int batch_put_objects(const unsigned obj_num, const unsigned object_size) 
 {
+  if (obj_num < 1 || !object_size)
+    return ERR;
   // generate object & request
-  std::vector<OpRequest> ops(obj_num);
+  std::list<MOSDOp*> ops(obj_num);
   generate_objects_and_ops(ops, obj_num);
 
-  // RequestPool* request_pool = new RequestPool();
-  // request_pool->create(ops);
-  // for(req in vector) volume.add, volume开启线程flush
+  // for(req in list) volume.add, volume开启线程flush
+  std::list<MOSDOp*>::iterator i = ops.begin();
+  while(i != ops.end()) {
+    // volume怎么存
+  }
+}
+
+int batch_delete_objects(const unsigned obj_num, const unsigned object_size) 
+{
+
 }
 
 

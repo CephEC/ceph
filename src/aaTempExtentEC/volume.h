@@ -26,7 +26,9 @@
 class volume_t {
 public:
     
+
     volume_t(int _cap, pg_t _pg_id) : cap(_cap), size(_size), pg_id(_pg_id) {};
+    // volume_t() = default, 
 
     bool exist(hobject_t oid);
 
@@ -63,27 +65,27 @@ class Volume {
     volume_t volume_info;
 
 public:
-    Volume(OpRequestRef _op, volume_t _volume) : op(_op), volume_info(_volume) { }
+    Volume(volume_t _volume) : volume_info(_volume) { }
 
     object_info_t find_object(hobject_t soid);
-    void add_chunk(chunk_info_t chunk_info, Chunk* chunk);
+    void add_chunk(MOSDOp* op, chunk_info_t chunk_info, Chunk* chunk);
 
     void remove_chunk(hobject_t soid);
     void clear();
 
-    // flush线程入口
 
 private:
 
     // chunk的顺序要与volume_info中chunk_set中chunk的顺序一致
     std::vector<Chunk*> chunks;
-    OpRequestRef vol_req;
+    
     // 计时器 safe timer
 
     
 
-    
-    // OSDOp* vol_op
+    // create_request()
+    OpRequestRef vol_op
+
 }
 
 #endif // ! CEPH_VOLUME_H
