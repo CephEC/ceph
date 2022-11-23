@@ -71,8 +71,8 @@
 
 #include "osd/ECUtil.h"
 
-#include "volume.h"
-#include "chunk.h"
+#include "simple_aggregate_cache.h"
+#include "simple_volume.h"
 
 using namespace std::chrono_literals;
 using namespace librados;
@@ -99,125 +99,9 @@ const unsigned default_block_size = 1 << 27;
 const unsigned default_obj_num = 4;
 const int ERR = -1;
 
-/**
- * @brief 试作型聚合缓存
- * 
- */
-class SimpleAggregationCache
-{
-public:
-  int write(MOSDOp* op) {
-    // is_empty
-    // volume.add
-  }
-  int read();
-  int flush();
-
-
-
-
-  static SimpleAggregationCache& get_instance() {
-    static SimpleAggregationCache instance;
-    return instance;
-  }
-
-private:
-  std::vector<Volume*> volumes;
-}
 
 SimpleAggregationCache& cache = SimpleAggregationCache::get_instance();
 
-/**
- * @brief 试作型简易卷
- * 
- * 和Volume区别在于chunk中保存的是MOSDOp还是OpRequest
- * 
- */
-class SimpleVolume {
-    // read from config
-    constexpr uint64_t default_volume_capacity = 4;
-    constexpr uint64_t FULL_SIGNAL = -1;
-
-    volume_t volume_info;
-
-public:
-    SimpleVolume(uint64_t _cap) : volume_lock(ceph::make_mutex("SimpleVolume::lock")),
-                                  cap(_cap), size(0), is_flushed(false), vol_op(nullptr) { 
-      // 这里初始化的感觉怪怪的【
-      bitmap.resize(cap);
-      chunks.resize(cap);
-      bitmap.assign(cap, false);
-      chunks.assign(cap, nullptr);
-
-      flush_timer = new SafeTimer(g_ceph_context, volume_lock);
-      flush_timer->init();
-    }
-
-    SimpleVolume() : 
-
-    bool full() { return size == cap; }
-    bool empty() { return size == 0; }
-
-    object_info_t find_object(hobject_t soid);
-    
-    /**
-     * @brief 在volume里找空位填入
-     * 
-     * @param chunk 
-     * @return int 
-     */
-    int add_chunk(Chunk* chunk) {
-      // 无所谓，PG会上锁
-      // std::lock_guard locker{volume_lock};
-      int ret = FULL_SIGNAL;
-      
-      if (full()) {
-        cout << "full volume failed to add chunk. " << std::endl;
-        return ret;
-      } 
-
-      for (int i = 0; i < cap; i++)
-      {
-        if (bitmap[i]) continue;
-        else {
-          bitmap[i] = true;
-          chunks[i] = chunk;
-          size++;
-          ret = 0;
-          // 计时器清零
-
-          break;
-        }
-      }
-
-      return ret;
-    }
-
-    void remove_chunk(hobject_t soid);
-    void clear();
-
-
-private:
-    ceph::mutex flush_lock;
-    ceph::condition_variable flush_cond;
-    SafeTimer flush_timer;
-
-    bool is_flushed;
-
-    std::vector<bool> bitmap;
-    // chunk的顺序要与volume_info中chunk_set中chunk的顺序一致
-    std::vector<Chunk*> chunks;
-    uint64_t cap;
-    uint64_t size;
-    
-    // 计时器 safe timer
-    // https://blog.csdn.net/tiantao2012/article/details/78426276
-    
-
-    // create_request()
-    //OpRequestRef vol_op
-    MOSDOp* vol_op;
-}
 
 
 void usage(ostream& out)
