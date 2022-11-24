@@ -2,8 +2,8 @@
  * @brief 试作型聚合缓存
  * 
  */
-#ifndef CEPH_SIMPLEAGGREGATECACHE_H
-#define CEPH_SIMPLEAGGREGATECACHE_H
+#ifndef CEPH_SIMPLEAGGREGATEBUFFER_H
+#define CEPH_SIMPLEAGGREGATEBUFFER_H
 
 #include "include/types.h"
 #include "messages/MOSDOp.h"
@@ -13,30 +13,28 @@
 #include "common/Finisher.h"
 #include "common/Thread.h"
 
-class SimpleAggregationCache
+#include "simple_volume.h"
+
+class SimpleAggregateBuffer
 {
+  constexpr int CHUNK_FAILED = -1;
+  constexpr int VOLUME_FAILED = -2;
+
 public:
-  int write(MOSDOp* op) {
-    // is_empty
-    // volume.add
-  }
+  int write(MOSDOp* op, const OSDMap &osdmap);
   int read();
   int flush();
 
-  SimpleAggregationCache(CephContext *cct_)
+  SimpleAggregateBuffer(/*CephContext *cct_*/) { };
 
-
-  static SimpleAggregationCache& get_instance() {
-    static SimpleAggregationCache instance;
-    return instance;
-  }
+  bool may_batch_writing() { return false; };
 
 private:
   ceph::condition_variable flusher_cond;
   bool flusher_stop;
   void flusher_entry();
   class FlusherThread : public Thread {
-    SimpleAggregationCache* cache;
+    SimpleAggregateBuffer* buffer;
   public:
     explicit FlusherThread(ObjectCacher *o) : oc(o) {}
     void *entry() override {
@@ -48,7 +46,10 @@ private:
   Finisher finisher;
 
 private:
-  std::vector<Volume*> volumes;
+  bool is_batch = true;
+
+  // flush时对整个volume list加锁肯定是不合理的
+  std::list<SimpleVolume*> volumes;
 }
 
-#endif // !CEPH_SIMPLEAGGREGATECACHE_H
+#endif // !CEPH_SIMPLEAGGREGATEBUFFER_H

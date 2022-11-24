@@ -101,6 +101,7 @@ static int basic_timer_test(T &timer, ceph::mutex *lock)
   }
 
   bool done = false;
+  // 定时器到了就去执行test_context里面的回调函数++array_idx
   do {
     sleep(1);
     std::lock_guard locker{array_lock};
