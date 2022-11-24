@@ -10,7 +10,6 @@
 
 #include "include/types.h"
 #include "include/Context.h"
-#include "common/ceph_context.h"
 #include "common/ceph_mutex.h"
 #include "common/Cond.h"
 #include "common/debug.h"
@@ -126,7 +125,7 @@ WRITE_CLASS_ENCODER(chunk_t)
 class SimpleChunk {
 public:
 
-    explicit SimpleChunk() { }
+    explicit SimpleChunk() :{ }
 
     /**
      * @brief 根据MOSDOp，查找对象的obc，初始化chunk_info
@@ -168,7 +167,7 @@ class SimpleVolume {
     volume_t volume_info;
 
 public:
-    SimpleVolume(CephContext* _cct, uint64_t _cap, SimpleAggregationCache* _cache);
+    SimpleVolume(uint64_t _cap, SimpleAggregationCache* _cache);
 
     SimpleVolume() : 
 
@@ -179,7 +178,7 @@ public:
     object_info_t find_object(hobject_t soid);
     
     /**
-     * @brief chunk加进volume
+     * @brief 1. 判断cache是否
      * 
      * @param chunk 
      * @return int 
@@ -220,7 +219,9 @@ private:
 
     //Context *connect_retry_callback = nullptr;
 
-    bool is_flushing = false;
+    Context *connect_retry_callback = nullptr;
+
+    bool is_flushed;
 
     std::vector<bool> bitmap;
     // chunk的顺序要与volume_info中chunk_set中chunk的顺序一致
