@@ -9,6 +9,7 @@
 #define CEPH_SIMPLEVOLUME_H
 
 #include "include/types.h"
+#include "include/Context.h"
 #include "common/ceph_mutex.h"
 #include "common/Cond.h"
 #include "common/debug.h"
@@ -107,6 +108,8 @@ private:
     // 计算填0部分开始的偏移
     uint64_t chunk_fill_offset;
     
+    // pgid信息
+    pg_t pg_id; 
     // object元数据
     object_info_t oi;
     hobject_t soid;
@@ -114,23 +117,29 @@ private:
 WRITE_CLASS_ENCODER(chunk_t)
 
 /**
- * @brief 这里姑且保存了对象对应的写入请求，OSDOp到chunk_info的映射
+ * @brief 这里姑且保存了对象对应的写入请求，MOSDOp到chunk_info的映射
  * 写入的时候作为一层封装便于管理，参考自do_osd_ops()中写入对象需要的组件
  * 
  * 
  */
-class Chunk {
+class SimpleChunk {
 public:
 
-    explicit Chunk(chunk_info_t _chunk_info, OpRequestRef _request, OSDOp* _op, OpContext* _op_ctx) : 
-        chunk_info(_chunk_info), request(_request), op(_op), op_ctx(_op_ctx) { }
+    explicit SimpleChunk() :{ }
 
-    Chunk() = delete;
+    /**
+     * @brief 根据MOSDOp，查找对象的obc，初始化chunk_info
+     * 
+     * 对于写入请求其实是创建新的obc和oi，由chunk来保存，相当于把find_object_context拆开来
+     * 
+     * @param _request 
+     * @return int 
+     */
+    int set_from_op(MOSDOp* _request);
+
 
     chunk_t get_chunk_info() { return chunk_info; }
-    OpRequestRef get_req() { return request; }
-    OSDOp* get_op() { return op; }
-    OpContext* get_op_ctx() { return op_ctx; };
+    MOSDOp* get_req() { return request; }
 
 private:
     chunk_t chunk_info;
@@ -138,34 +147,27 @@ private:
     // 指向volume的指针
     Volume* vol;
 
-    OpRequestRef request;
-    OSDOp* op;
+    ObjectContextRef obc;
+    MOSDOp* op;
+    // OpRequestRef request;
+    // OSDOp* op;
     // op_ctx在初始化的时候需要一个指向PrimaryLogPG的指针，需要在外部初始化之后
-    OpContext* op_ctx;
+    // OpContext* op_ctx;
     // ObjectState new_obs;
     // SnapSetContext* snap_ctx;
 }
 
 
 class SimpleVolume {
+  public:
     // read from config
     constexpr uint64_t default_volume_capacity = 4;
-    constexpr uint64_t FULL_SIGNAL = -1;
+    constexpr int FULL_SIGNAL = -1;
 
     volume_t volume_info;
 
 public:
-    SimpleVolume(uint64_t _cap) : volume_lock(ceph::make_mutex("SimpleVolume::lock")),
-                                  cap(_cap), size(0), is_flushed(false), vol_op(nullptr) { 
-      // 这里初始化的感觉怪怪的
-      bitmap.resize(cap);
-      chunks.resize(cap);
-      bitmap.assign(cap, false);
-      chunks.assign(cap, nullptr);
-
-      flush_timer = new SafeTimer(g_ceph_context, volume_lock);
-      flush_timer->init();
-    }
+    SimpleVolume(uint64_t _cap, SimpleAggregationCache* _cache);
 
     SimpleVolume() : 
 
@@ -175,37 +177,12 @@ public:
     object_info_t find_object(hobject_t soid);
     
     /**
-     * @brief 在volume里找空位填入
+     * @brief 1. 判断cache是否
      * 
      * @param chunk 
      * @return int 
      */
-    int add_chunk(Chunk* chunk) {
-      // 无所谓，PG会上锁
-      // std::lock_guard locker{volume_lock};
-      int ret = FULL_SIGNAL;
-      
-      if (full()) {
-        cout << "full volume failed to add chunk. " << std::endl;
-        return ret;
-      } 
-
-      for (int i = 0; i < cap; i++)
-      {
-        if (bitmap[i]) continue;
-        else {
-          bitmap[i] = true;
-          chunks[i] = chunk;
-          size++;
-          ret = 0;
-          // 计时器清零
-
-          break;
-        }
-      }
-
-      return ret;
-    }
+    int add_chunk(MOSDOp* op, const OSDMap &osdmap);
 
     void remove_chunk(hobject_t soid);
     void clear();
@@ -218,6 +195,8 @@ private:
     ceph::condition_variable flush_cond;
     SafeTimer flush_timer;
 
+    Context *connect_retry_callback = nullptr;
+
     bool is_flushed;
 
     std::vector<bool> bitmap;
@@ -226,8 +205,7 @@ private:
     uint64_t cap;
     uint64_t size;
     
-    // 计时器 safe timer
-    // https://blog.csdn.net/tiantao2012/article/details/78426276
+    SimpleAggregationCache* cache;
     
 
     // create_request()

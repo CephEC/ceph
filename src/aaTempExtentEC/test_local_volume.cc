@@ -66,12 +66,13 @@
 #include "include/compat.h"
 #include "include/util.h"
 #include "common/hobject.h"
+#include "osd/OSDMap.h"
 
 
 
 #include "osd/ECUtil.h"
 
-#include "simple_aggregate_cache.h"
+#include "simple_aggregate_buffer.h"
 #include "simple_volume.h"
 
 using namespace std::chrono_literals;
@@ -99,8 +100,9 @@ const unsigned default_block_size = 1 << 27;
 const unsigned default_obj_num = 4;
 const int ERR = -1;
 
+std::shared_ptr<OSDMap> test_map(new OSDMap());
 
-SimpleAggregationCache& cache = SimpleAggregationCache::get_instance();
+SimpleAggregateBuffer<SimpleVolume> aggregate_buffer; 
 
 
 
@@ -262,8 +264,15 @@ int batch_put_objects(const unsigned obj_num, const unsigned object_size)
   // for(req in list) volume.add, volume开启线程flush
   std::list<MOSDOp*>::iterator i = ops.begin();
   while(i != ops.end()) {
-    // volume怎么存
+    int ret = aggregate_buffer.write(*i, *test_map);
+    if (ret < 0) {
+      cout << 
+      goto failed;
+    }
   }
+
+failed:
+  // clear buffer
 }
 
 int batch_delete_objects(const unsigned obj_num, const unsigned object_size) 
