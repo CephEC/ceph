@@ -382,6 +382,8 @@ int main(int argc, const char **argv)
 			     CODE_ENVIRONMENT_UTILITY, 0);
   common_init_finish(g_ceph_context);
 
+  aggregate_buffer.init_with_cct(g_ceph_context);
+
   std::vector<const char*>::iterator i;
   for (i = args.begin(); i != args.end(); ) {
     if (ceph_argparse_double_dash(args, i)) {
