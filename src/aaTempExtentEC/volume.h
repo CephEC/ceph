@@ -30,6 +30,8 @@ public:
     volume_t(int _cap, pg_t _pg_id) : cap(_cap), size(_size), pg_id(_pg_id) {};
     // volume_t() = default, 
 
+    bool full() { return size == cap; }
+    bool empty() {return size == 0; }
     bool exist(hobject_t oid);
 
     chunk_t get_chunk(hobject_t oid) { return chunk_set[oid]; }

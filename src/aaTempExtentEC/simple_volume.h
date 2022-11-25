@@ -10,6 +10,7 @@
 
 #include "include/types.h"
 #include "include/Context.h"
+#include "common/ceph_context.h"
 #include "common/ceph_mutex.h"
 #include "common/Cond.h"
 #include "common/debug.h"
@@ -125,7 +126,7 @@ WRITE_CLASS_ENCODER(chunk_t)
 class SimpleChunk {
 public:
 
-    explicit SimpleChunk() :{ }
+    explicit SimpleChunk() { }
 
     /**
      * @brief 根据MOSDOp，查找对象的obc，初始化chunk_info
@@ -167,17 +168,18 @@ class SimpleVolume {
     volume_t volume_info;
 
 public:
-    SimpleVolume(uint64_t _cap, SimpleAggregationCache* _cache);
+    SimpleVolume(CephContext* _cct, uint64_t _cap, SimpleAggregationCache* _cache);
 
     SimpleVolume() : 
 
     bool full() { return size == cap; }
     bool empty() { return size == 0; }
+    bool flushing() { return is_flushing; }
 
     object_info_t find_object(hobject_t soid);
     
     /**
-     * @brief 1. 判断cache是否
+     * @brief chunk加进volume
      * 
      * @param chunk 
      * @return int 
@@ -187,17 +189,38 @@ public:
     void remove_chunk(hobject_t soid);
     void clear();
 
+    bool flush(volume_t vol);
+
+    // flush thread
+    // ceph::condition_variable flusher_cond;
+  // bool flusher_stop;
+  // void flusher_entry();
+  // class FlusherThread : public Thread {
+  //   SimpleAggregateBuffer* buffer;
+  // public:
+  //   explicit FlusherThread(ObjectCacher *o) : oc(o) {}
+  //   void *entry() override {
+  //     oc->flusher_entry();
+  //     return 0;
+  //   }
+  // } flush_thread;
+
+  // Finisher finisher;
+
 // chunk
 
 
 private:
+    CephContext* cct;
+
     ceph::mutex flush_lock;
     ceph::condition_variable flush_cond;
     SafeTimer flush_timer;
+    Context* flush_callback = nullptr;
 
-    Context *connect_retry_callback = nullptr;
+    //Context *connect_retry_callback = nullptr;
 
-    bool is_flushed;
+    bool is_flushing = false;
 
     std::vector<bool> bitmap;
     // chunk的顺序要与volume_info中chunk_set中chunk的顺序一致
