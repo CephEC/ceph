@@ -31,7 +31,7 @@ int SimpleAggregateBuffer::write(MOSDOp* op, const OSDMap &osdmap)
                 while (vol != volume_meta_cache.end()) {
                     if (!vol.full()) {
                         // TODO: 根据元数据读取数据块和EC块到osd，构建volume
-                        // 是在这一步读取还是延迟读取？元数据一致性如何保证？
+                        // 是在这一步读取还是延迟读取？部分读取还是全部读取？元数据一致性如何保证？
 
                         last_vol = new SimpleVolume(SimpleVolume::default_volume_capacity, this);
                         // add_chunk 

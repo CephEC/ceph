@@ -18,6 +18,7 @@
 #include "common/hobject.h"
 
 #include "osd/osd_types.h"
+#include "osd/osd_internal_types.h"
 
 #include "messages/MOSDOp.h"
 #include "Objecter.h"
@@ -126,7 +127,10 @@ WRITE_CLASS_ENCODER(chunk_t)
 class SimpleChunk {
 public:
 
-    explicit SimpleChunk() { }
+    explicit SimpleChunk(Volume* _vol);
+
+    // temp create object context
+    int _create_object_context(const hobject_t& oid, ObjectContextRef *pobc);
 
     /**
      * @brief 根据MOSDOp，查找对象的obc，初始化chunk_info
@@ -136,7 +140,7 @@ public:
      * @param _request 
      * @return int 
      */
-    int set_from_op(MOSDOp* _request);
+    int set_from_op(MOSDOp* _request/*, OSDMap&*/);
 
 
     chunk_t get_chunk_info() { return chunk_info; }
@@ -177,7 +181,9 @@ public:
     bool flushing() { return is_flushing; }
 
     object_info_t find_object(hobject_t soid);
+
     
+
     /**
      * @brief chunk加进volume
      * 
@@ -189,23 +195,9 @@ public:
     void remove_chunk(hobject_t soid);
     void clear();
 
-    bool flush(volume_t vol);
+    bool flush();
 
-    // flush thread
-    // ceph::condition_variable flusher_cond;
-  // bool flusher_stop;
-  // void flusher_entry();
-  // class FlusherThread : public Thread {
-  //   SimpleAggregateBuffer* buffer;
-  // public:
-  //   explicit FlusherThread(ObjectCacher *o) : oc(o) {}
-  //   void *entry() override {
-  //     oc->flusher_entry();
-  //     return 0;
-  //   }
-  // } flush_thread;
-
-  // Finisher finisher;
+    
 
 // chunk
 
@@ -230,7 +222,7 @@ private:
     
     SimpleAggregationCache* cache;
     
-
+    
     // create_request()
     //OpRequestRef vol_op
     MOSDOp* vol_op;

@@ -40,18 +40,37 @@ public:
   bool may_batch_writing() { return false; };
 
 private:
-  
+  // flush thread
+    // ceph::condition_variable flusher_cond;
+  // bool flusher_stop;
+  // void flusher_entry();
+  // class FlusherThread : public Thread {
+  //   SimpleAggregateBuffer* buffer;
+  // public:
+  //   explicit FlusherThread(ObjectCacher *o) : oc(o) {}
+  //   void *entry() override {
+  //     oc->flusher_entry();
+  //     return 0;
+  //   }
+  // } flush_thread;
+
+  // Finisher finisher;
+
+  friend class SimpleVolume;
+
+  ceph::mutex flush_list_lock = ceph::make_mutex("AggregateBuffer::flush_list_lock");
+  std::list<Volume*> pending_to_flush;
 
 private:
   // PrimaryLogPG* pg;
 
   //bool is_batch = true;
 
-  // flush时对整个volume list加锁肯定是不合理的
+  // flush时对整个volume list加锁肯定是不合理的 
   std::list<SimpleVolume*> volumes;
 
   // VolumeMeta
-  std::vector<volume_t> volume_meta_cache;
+  std::vector<volume_t>* volume_meta_cache;
   // 又或者保存非空闲volume的freelist
   std::list<volume_t> volume_not_full; 
 }
