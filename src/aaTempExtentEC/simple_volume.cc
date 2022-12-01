@@ -163,6 +163,6 @@ void SimpleVolume::flush()
 {
   std::lock_guard l{flush_list_lock};
   std::lock_guard l{cache->flush_list_lock};
-  pending_to_flush.push_back(this);
+  cache->pending_to_flush.push_back(this);
   //return true;
 }

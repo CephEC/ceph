@@ -63,3 +63,14 @@ int SimpleAggregateBuffer::write(MOSDOp* op, const OSDMap &osdmap)
 
     return r;
 }
+
+void SimpleAggregateBuffer::flush_entry()
+{
+    cout << "start to flush"
+    std::lock_guard l{cache->flush_list_lock};
+    while(!pending_to_flush.empty()) {
+        SimpleVolume* vol = pending_to_flush.front();
+        cout << vol << std::endl;
+        pending_to_flush.pop_front();
+    }
+}
