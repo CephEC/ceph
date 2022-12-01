@@ -35,31 +35,31 @@ public:
   int flush();
 
   SimpleAggregateBuffer(CephContext *_cct) : cct(_cct) { };
-  SimpleAggregateBuffer() : cct(nullptr) { };
+  SimpleAggregateBuffer() : cct(nullptr), flush_stop(false), flush_thread(this) { };
 
   bool may_batch_writing() { return false; };
 
 private:
   // flush thread
-    // ceph::condition_variable flusher_cond;
-  // bool flusher_stop;
-  // void flusher_entry();
-  // class FlusherThread : public Thread {
-  //   SimpleAggregateBuffer* buffer;
-  // public:
-  //   explicit FlusherThread(ObjectCacher *o) : oc(o) {}
-  //   void *entry() override {
-  //     oc->flusher_entry();
-  //     return 0;
-  //   }
-  // } flush_thread;
+  ceph::condition_variable flush_cond;
+  bool flush_stop;
+  void flush_entry();
+  class FlushThread : public Thread {
+    SimpleAggregateBuffer* buffer;
+  public:
+    explicit FlushThread(SimpleAggregateBuffer* _buffer) : buffer(_buffer) {}
+    void *entry() override {
+      buffer->flusher_entry();
+      return 0;
+    }
+  } flush_thread;
 
   // Finisher finisher;
 
   friend class SimpleVolume;
 
   ceph::mutex flush_list_lock = ceph::make_mutex("AggregateBuffer::flush_list_lock");
-  std::list<Volume*> pending_to_flush;
+  std::list<SimpleVolume*> pending_to_flush;
 
 private:
   // PrimaryLogPG* pg;
@@ -67,12 +67,13 @@ private:
   //bool is_batch = true;
 
   // flush时对整个volume list加锁肯定是不合理的 
-  std::list<SimpleVolume*> volumes;
+  //std::list<SimpleVolume*> volumes;
+  SimpleVolume* volume_buffer;
 
-  // VolumeMeta
+  // 属于PG的VolumeMeta
   std::vector<volume_t>* volume_meta_cache;
-  // 又或者保存非空闲volume的freelist
-  std::list<volume_t> volume_not_full; 
+  // 保存非空闲volume的meta
+  std::list<volume_t/*, bufferlist*/> volume_not_full; 
 }
 
 #endif // !CEPH_SIMPLEAGGREGATEBUFFER_H

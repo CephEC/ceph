@@ -162,6 +162,12 @@ private:
     // SnapSetContext* snap_ctx;
 }
 
+// TODO：需要清楚ECBackend如何封装EC块
+class SimpleECChunk : public SimpleChunk 
+{
+
+}
+
 
 class SimpleVolume {
   public:
@@ -216,7 +222,8 @@ private:
 
     std::vector<bool> bitmap;
     // chunk的顺序要与volume_info中chunk_set中chunk的顺序一致
-    std::vector<Chunk*> chunks;
+    std::vector<SimpleChunk*> chunks;
+    std::vector<SimpleECChunk*> ec_chunks;
     uint64_t cap;
     uint64_t size;
     
