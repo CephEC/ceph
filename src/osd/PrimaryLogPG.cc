@@ -1978,6 +1978,7 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
   // change anything that will break other reads on m (operator<<).
   MOSDOp *m = static_cast<MOSDOp*>(op->get_nonconst_req());
   ceph_assert(m->get_type() == CEPH_MSG_OSD_OP);
+  // 对message中的信息解码
   if (m->finish_decode()) {
     op->reset_desc();   // for TrackedOp
     m->clear_payload();
@@ -1985,8 +1986,11 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
 
   dout(20) << __func__ << ": op " << *m << dendl;
 
+  // 构建head对象
   const hobject_t head = m->get_hobj().get_head();
 
+  // 当前的pg不包含本对象,返回错误
+  // 这里似乎是通过计算的方式来验证
   if (!info.pgid.pgid.contains(
 	info.pgid.pgid.get_split_bits(pool.info.get_pg_num()), head)) {
     derr << __func__ << " " << info.pgid.pgid << " does not contain "
@@ -1998,6 +2002,7 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
     return;
   }
 
+  // 不太懂backoff是什么意思？
   bool can_backoff =
     m->get_connection()->has_feature(CEPH_FEATURE_RADOS_BACKOFF);
   ceph::ref_t<Session> session;
@@ -2032,12 +2037,14 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
 			 CEPH_OSD_FLAG_LOCALIZE_READS)) &&
       op->may_read() &&
       !(op->may_write() || op->may_cache())) {
+    // 允许读副本OSD（可以考虑利用这个特性优化读性能）
     // balanced reads; any replica will do
     if (!(is_primary() || is_nonprimary())) {
       osd->handle_misdirected_op(this, op);
       return;
     }
   } else {
+    // 只能读主OSD
     // normal case; must be primary
     if (!is_primary()) {
       osd->handle_misdirected_op(this, op);
@@ -2045,15 +2052,18 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
     }
   }
 
+  // PG的laggy状态处理
   if (!check_laggy(op)) {
     return;
   }
 
+  // 查看用户权限（cephFS相关）
   if (!op_has_sufficient_caps(op)) {
     osd->reply_op_error(op, -EPERM);
     return;
   }
 
+  // 涉及到与PG相关的操作，主要是获取 PG 相关信息
   if (op->includes_pg_op()) {
     return do_pg_op(op);
   }
@@ -2132,6 +2142,7 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
   if (!pi) {
     return;
   }
+  // 这个pool目前处于EIO状态 （EIO指的是什么？ Error IO？）
   if (pi->has_flag(pg_pool_t::FLAG_EIO)) {
     // drop op on the floor; the client will handle returning EIO
     if (m->has_flag(CEPH_OSD_FLAG_SUPPORTSPOOLEIO)) {
@@ -2143,7 +2154,7 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
     return;
   }
   if (op->may_write()) {
-
+    // 如果是写请求则进入
     // invalid?
     if (m->get_snapid() != CEPH_NOSNAP) {
       dout(20) << __func__ << ": write to clone not valid " << *m << dendl;
@@ -2151,6 +2162,9 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
       return;
     }
 
+    // 判断单次写入的对象大小是否超出上限
+    // 在CephEC项目中应该需要设置osd_max_write_size/osd_max_object_size > 128
+    // 需要验证librados是否支持单个对象达到128MB
     // too big?
     if (cct->_conf->osd_max_write_size &&
         m->get_data_len() > cct->_conf->osd_max_write_size << 20) {
@@ -2163,6 +2177,7 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
     }
   }
 
+  // 这个log会把本次操作的类型(读 or 写)以及相关参数作为日志打印出来
   dout(10) << "do_op " << *m
 	   << (op->may_write() ? " may_write" : "")
 	   << (op->may_read() ? " may_read" : "")
@@ -2172,13 +2187,21 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
 	   << dendl;
 
   [[maybe_unused]] auto span = tracing::osd::tracer.add_span(__func__, op->osd_parent_span);
+  // -------------------------------------------------------------------------------
+  // 这里应该就是分界线,在此之上的代码看到的是用户下发的rgw对象，在此之下代码看到的就只有volume对象
 
+  // 这一块检索对象丢失，和对象修复以及scrub的逻辑可以整合到聚合中来?
+  // 如果发现要写入的volume丢失数据或是正在修复中，那么就选择另外一个volume写入
+
+  // ceph会把丢失的object整合成一个map,这里就是检索map判断本次操作的对象是否丢失了
+  // cephEC中可能需要改动对 已丢失对象 的管理方式，还需要细看ceph当前是如何感知对象丢失，以及恢复对象的流程
   // missing object?
   if (is_unreadable_object(head)) {
     if (!is_primary()) {
       osd->reply_op_error(op, -EAGAIN);
       return;
     }
+    // 应该是需要等待object恢复再执行后续动作?
     if (can_backoff &&
 	(g_conf()->osd_backoff_on_degraded ||
 	 (g_conf()->osd_backoff_on_unfound &&
@@ -2191,6 +2214,8 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
     return;
   }
 
+  // degrade object和missiong object有什么区别？
+  // missing object是丢失的对象，degrade object是恢复中的对象
   if (write_ordered) {
     // degraded object?
     if (is_degraded_or_backfilling_object(head)) {
@@ -2203,6 +2228,10 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
       return;
     }
 
+    // 目标对象正在进行scrub操作(检查PG内对象的正确性，如果是副本池，那么就需要比对primary osd和replicate osd中的数据
+    // (好像只是用计算hash的方式来比对？传输成本应该不高),需要将当前操作延迟一下
+    // 如果是EC池呢？ 难道需要读回数据块再计算一轮EC块，然后两边校验吗？（成本是不是有点高）
+    // cephEC场景下，写场景只写入新对象而不修改旧对象,所以这个条件判断不用考虑
     if (m_scrubber->is_scrub_active() && m_scrubber->write_blocked_by_scrub(head)) {
       dout(20) << __func__ << ": waiting for scrub" << dendl;
       waiting_for_scrub.push_back(op);
@@ -2213,6 +2242,8 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
       return;
     }
 
+    // 该对象正在进行快照的复制，所以需要等待快照完成
+    // cephEC场景下，写场景只写入新对象而不修改旧对象,所以这个条件判断不用考虑
     // blocked on snap?
     if (auto blocked_iter = objects_blocked_on_degraded_snap.find(head);
 	blocked_iter != std::end(objects_blocked_on_degraded_snap)) {
@@ -2232,6 +2263,7 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
     }
   }
 
+  // 对写请求的去重
   // dup/resent?
   if (op->may_write() || op->may_cache()) {
     // warning: we will get back *a* request for this reqid, but not
@@ -2269,6 +2301,7 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
   const hobject_t& oid =
     m->get_snapid() == CEPH_SNAPDIR ? head : m->get_hobj();
 
+  // 快照相关的错误处理 先不管
   // make sure LIST_SNAPS is on CEPH_SNAPDIR and nothing else
   for (vector<OSDOp>::iterator p = m->ops.begin(); p != m->ops.end(); ++p) {
     OSDOp& osd_op = *p;
@@ -2288,12 +2321,15 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
     }
   }
 
+  // 检查该对象相关的IO请求是否在objectContext上被阻塞（检查objectContext的映射表可以知道之前是否有同对象的请求在阻塞中）
+  // 如果被阻塞了，那么将本次请求挂到对象的阻塞队列尾端
   // io blocked on obc?
   if (!m->has_flag(CEPH_OSD_FLAG_FLUSH) &&
       maybe_await_blocked_head(oid, op)) {
     return;
   }
 
+  // 判断一下是否支持对replicate osd进行读操作
   if (!is_primary()) {
     if (!recovery_state.can_serve_replica_read(oid)) {
       dout(20) << __func__
@@ -2306,6 +2342,11 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
              << dendl;
   }
 
+  // https://bean-li.github.io/ceph-objectcontext/
+  // cephEC中，对于每个client传入的对象，不会为它一一对应一个obc
+  // 而是为一个Volume对应一个obc。
+  // obc的一个主要作用就是完成对象的读写互斥
+  // obc在磁盘中以扩展属性的形式保存（待验证）
   int r = find_object_context(
     oid, &obc, can_create,
     m->has_flag(CEPH_OSD_FLAG_MAP_SNAP_CLONE),
@@ -2346,6 +2387,8 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
     }
   }
 
+  // obc缓存相关动作 https://blog.shunzi.tech/post/ceph-cache-tiering/#hitset
+  // 好像跟cache tier有关，目前用不上
   bool in_hit_set = false;
   if (hit_set) {
     if (obc.get()) {
@@ -2365,6 +2408,7 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
     }
   }
 
+  // cache tier相关
   if (agent_state) {
     if (agent_choose_mode(false, op))
       return;
@@ -2379,7 +2423,7 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
 			       obc))
     return;
   }
-
+  // cache tier相关
   if (maybe_handle_cache(op,
 			 write_ordered,
 			 obc,
@@ -2389,6 +2433,7 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
 			 in_hit_set))
     return;
 
+  // 获取obc失败了,进行错误处理
   if (r && (r != -ENOENT || !obc)) {
     // copy the reqids for copy get on ENOENT
     if (r == -ENOENT &&
@@ -2406,6 +2451,8 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
     return;
   }
 
+  // 比对obc中记录的对象元信息（pool,key,hash等）和本次op中记录的对象元信息
+  // cephEC:这块逻辑可能得删掉,obc针对的是volume,op中记录的是user rgw对象,两个内容肯定不一样
   // make sure locator is consistent
   object_locator_t oloc(obc->obs.oi.soid);
   if (m->get_object_locator() != oloc) {
@@ -2416,6 +2463,7 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
 		      << " op " << *m;
   }
 
+  // 根据obc可以知道当前对象是否被其他操作阻塞（具体什么场景可能出现阻塞？ 对多个对象的写操作？）
   // io blocked on obc?
   if (obc->is_blocked() &&
       !m->has_flag(CEPH_OSD_FLAG_FLUSH)) {
@@ -2461,6 +2509,7 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
     return;
   }
 
+  // cache tier相关,先不管
   if (m->has_flag(CEPH_OSD_FLAG_IGNORE_CACHE)) {
     ctx->ignore_cache = true;
   }
@@ -2488,7 +2537,7 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
   }
 
   op->mark_started();
-
+  // 进入下一个函数
   execute_ctx(ctx);
   utime_t prepare_latency = ceph_clock_now();
   prepare_latency -= op->get_dequeued_time();
