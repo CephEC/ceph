@@ -36,6 +36,17 @@ std::vector<Option> build_options()
     }
   };
 
+  /*
+  ingest(options = get_osd_options(), svc = "osd") {
+    for (auto &o : options) {
+      
+    }
+  }
+
+
+
+  */
+
   ingest(get_crimson_options(), "osd");
   ingest(get_mgr_options(), "mgr");
   ingest(get_mon_options(), "mon");

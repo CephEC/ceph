@@ -1941,6 +1941,7 @@ int ObjectCacher::_wait_for_write(OSDWrite *wr, uint64_t len, ObjectSet *oset,
 void ObjectCacher::flusher_entry()
 {
   ldout(cct, 10) << "flusher start" << dendl;
+  // 整个cacher的锁
   std::unique_lock l{lock};
   while (!flusher_stop) {
     loff_t all = get_stat_tx() + get_stat_rx() + get_stat_clean() +

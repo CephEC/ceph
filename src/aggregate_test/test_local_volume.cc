@@ -48,8 +48,8 @@
 #include <fstream>
 
 #include "messages/MOSDOp.h"
-#include "Objecter.h"
-#include "OpRequest.h"
+#include "osdc/Objecter.h"
+#include "osd/OpRequest.h"
 
 #include <stdlib.h>
 #include <time.h>
@@ -62,18 +62,12 @@
 #include <memory>
 #include <optional>
 
-#include "cls/lock/cls_lock_client.h"
-#include "include/compat.h"
 #include "include/util.h"
 #include "common/hobject.h"
 #include "osd/OSDMap.h"
 
-
-
-#include "osd/ECUtil.h"
-
 #include "simple_aggregate_buffer.h"
-#include "simple_volume.h"
+
 
 using namespace std::chrono_literals;
 using namespace librados;
@@ -96,13 +90,13 @@ using std::vector;
 
 // 默认pg参数
 const char *pool_name = "default_pool";
-const unsigned default_block_size = 1 << 27;
-const unsigned default_obj_num = 4;
+const unsigned default_object_size = 1 << 27;
+const unsigned default_object_num = 4;
 const int ERR = -1;
 
-std::shared_ptr<OSDMap> test_map(new OSDMap());
+//std::shared_ptr<OSDMap> test_map(new OSDMap());
 
-SimpleAggregateBuffer<SimpleVolume> aggregate_buffer; 
+SimpleAggregateBuffer aggregate_buffer;
 
 
 
@@ -156,21 +150,33 @@ void usage(ostream& out)
 
 
 
-namespace detail {
 
-  [[noreturn]] static void usage_exit()
-  {
-    usage(cerr);
-    exit(1);
-  }
-
+[[noreturn]] static void usage_exit()
+{
+  usage(cerr);
+  exit(1);
 }
 
-bufferlist generate_random(uint64_t len, int frag) 
+
+
+template <typename I, typename T>
+static int sistrtoll(I &i, T *val) {
+  std::string err;
+  *val = strict_iecstrtoll(i->second.c_str(), &err);
+  if (err != "") {
+   cerr << "Invalid value for " << i->first << ": " << err << std::endl;
+   return -EINVAL;
+  } else {
+    return 0;
+  }
+}
+
+
+bufferlist generate_random(uint64_t len, int frag)
 {
   static const char alphanum[] = "0123456789"
-                                  "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-                                  "abcdefghijklmnopqrstuvwxyz";
+                                 "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+                                 "abcdefghijklmnopqrstuvwxyz";
   uint64_t per_frag = len / frag;
   bufferlist bl;
   for (int i = 0; i < frag; i++ ) {
@@ -183,34 +189,24 @@ bufferlist generate_random(uint64_t len, int frag)
   return bl;
 }
 
-string generate_object_name(int i) 
+std::string generate_prefix()
 {
   bufferlist bl = generate_random(10, 1);
-  return string(bl.c_str()) + string("_obj_") + string(i) ;
+  return std::string("obj_") + std::string(bl.c_str()) + std::string("_");
 }
 
-MOSDOp* prepare_osd_op(const std::string& oid, const bufferlist& bl, size_t len, uint64_t off)
+MOSDOp* prepare_osd_op(std::string& oid, bufferlist& bl, size_t len, uint64_t off)
 {
-  int flags = 0;
-  osdc_opvec ops;
+  std::vector<OSDOp> ops;
   ops.emplace_back();
   ops.back().op.op = CEPH_OSD_OP_WRITE;
-  out_bl.push_back(nullptr);
-  ceph_assert(ops.size() == out_bl.size());
-  out_handler.emplace_back();
-  ceph_assert(ops.size() == out_handler.size());
-  out_rval.push_back(nullptr);
-  ceph_assert(ops.size() == out_rval.size());
-  out_ec.push_back(nullptr);
-  ceph_assert(ops.size() == out_ec.size());
 
   OSDOp& osd_op = ops.back();
   osd_op.op.extent.offset = off;
   osd_op.op.extent.length = len;
   osd_op.indata.claim_append(bl);
-  
+
   auto m = new MOSDOp();
-  
   m->ops = ops;
   return m;
 }
@@ -218,18 +214,22 @@ MOSDOp* prepare_osd_op(const std::string& oid, const bufferlist& bl, size_t len,
 
 /**
  * @brief 顺序生成
- * 
- */
-static void generate_objects_and_ops(std::list<MOSDOp*> ops, const unsigned obj_num, const unsigned object_size) 
+ *
+ **/
+static void generate_objects_and_ops(std::list<MOSDOp*> ops, const unsigned object_num, const unsigned object_size)
 {
   char* object_contents = new char[object_size];
   memset(object_contents, 'z', object_size);
 
-  std::vector<string> name(obj_num);
-  unique_ptr<bufferlist> contents[obj_num];
-  
-  for(int i = 0; i < obj_num; i++) {
-    name[i] = generate_object_name(i);
+  std::vector<string> name(object_num);
+  unique_ptr<bufferlist> contents[object_num];
+
+  std::string prefix = generate_prefix();
+  for(unsigned i = 0; i < object_num; i++) {
+    name[i] = prefix + std::to_string(i);
+    //std::string object_name = prefix + std::to_string(i);
+    //sprintf(name[i], "%s", prefix.c_str());
+    cout << "generate object " << name[i] << std::endl;
     contents[i] = std::make_unique<bufferlist>();
     snprintf(object_contents, object_size, "batch put obj_%16d", i);
     contents[i]->append(object_contents, object_size);
@@ -239,41 +239,46 @@ static void generate_objects_and_ops(std::list<MOSDOp*> ops, const unsigned obj_
     m->set_reqid(osd_reqid_t());
     // encode message payload, m->finish_decode() 解析payload
     // m->encode_payload(0);
-
     // OpRequest是对message在OSD端做的封装，方便OSD的OpTracker做跟踪，主要的信息都在message/MOSDOp中，这里不好拆就不拆了
     // OpRequestRef 是以个指向OpRequest的intrusive_ptr，主要是为了跟踪oprequest
     // OpRequestRef op = op_tracker.create_request<OpRequest, Message*>(m);
-
     ops.push_back(m);
   }
-
 }
+
 
 /**
  * @brief 批量写入卷测试
- * 
+ *
  */
-int batch_put_objects(const unsigned obj_num, const unsigned object_size) 
+int batch_put_objects(const unsigned obj_num, const unsigned obj_size)
 {
-  if (obj_num < 1 || !object_size)
-    return ERR;
-  // generate object & request
+  cout << "enter batch put, " << std::endl
+          << "num: " << obj_num << std::endl
+          << "size: " << obj_size << std::endl;
+  if (obj_num < 1 || !obj_size)
+              return ERR;
+  //generate object & request
   std::list<MOSDOp*> ops(obj_num);
-  generate_objects_and_ops(ops, obj_num);
+  generate_objects_and_ops(ops, obj_num, obj_size);
 
+  cout << "start to batch put " << std::endl;
   // for(req in list) volume.add, volume开启线程flush
   std::list<MOSDOp*>::iterator i = ops.begin();
   while(i != ops.end()) {
-    int ret = aggregate_buffer.write(*i, *test_map);
+    int ret = aggregate_buffer.write(*i/*, *test_map*/);
     if (ret < 0) {
-      cout << 
       goto failed;
     }
+    i++;
   }
-
 failed:
-  // clear buffer
+    // clear buffer
+
+  return 0;
+
 }
+
 
 int batch_delete_objects(const unsigned obj_num, const unsigned object_size) 
 {
@@ -285,70 +290,62 @@ int batch_delete_objects(const unsigned obj_num, const unsigned object_size)
 
 **********************************************/
 static int run_test(const std::map < std::string, std::string > &opts,
-                             std::vector<const char*> &nargs)
+                                             std::vector<const char*> &nargs)
 {
-  int ret;
-  unsigned object_size = default_block_size;
-  uint64_t obj_offset = 0;
-  bool obj_offset_specified = false;
+  int ret = 0;
+  unsigned object_size = default_object_size;
+  uint64_t object_offset = 0;
+  bool object_size_specified = false;
+  bool object_offset_specified = false;
   std::map<std::string, std::string>::const_iterator i;
 
   std::string prefix;
 
-  const char *output = NULL;
-  std::optional<std::string> obj_name;
+  // const char *output = NULL;
+  std::optional<std::string> object_name;
   std::string input_file;
 
-  //Rados rados;
-  //IoCtx io_ctx;
+  auto it = nargs.begin();
+
+  while(it != nargs.end()) {
+    cout << *it << " " << std::endl;
+    it++;
+  }
 
   i = opts.find("object-size");
   if (i != opts.end()) {
-    if (rados_sistrtoll(i, &object_size)) {
+    if (sistrtoll(i, &object_size)) {
       return -EINVAL;
     }
-    block_size_specified = true;
-  }
+    object_size_specified = true;
+                                        }
   i = opts.find("offset");
   if (i != opts.end()) {
-    if (rados_sistrtoll(i, &obj_offset)) {
+    if (sistrtoll(i, &object_offset)) {
       return -EINVAL;
     }
-    obj_offset_specified = true;
+    object_offset_specified = true;
   }
 
   ceph_assert(!nargs.empty());
 
-  unsigned obj_num = 0;
-  // list pools?
+  unsigned object_num = 0;
   if (strcmp(nargs[0], "batch-put") == 0) {
-      if (!obj_num) {
-        obj_num = default_obj_num; 
-        cout << "use default object num" << default_obj_num << std::endl;
-      } else {
-        obj_num = std::stoi(nargs[1]);
-      }
-      int ret = batch_put_objects(obj_num);
-      if(ret < 0) {
-        cerr << __func__ << ": failed to batch put objs." << std::endl;
-      }
+    if (!object_num) {
+      object_num = default_object_num;
+      cout << "use default object num" << default_object_num << std::endl;
+    } else {
+      object_num = std::stoi(nargs[1]);
+    }
+    int ret = batch_put_objects(object_num, object_size);
+    if(ret < 0) {
+      cerr << __func__ << ": failed to batch put objs." << std::endl;
+    }
   } else {
 
   }
 
-  
-
-
-
-
-  auto i = request_pool.request_list.begin();
-  std::vector<Volume*> ...;
-  while() {
-    // 依次封装并写入volume
-
-
-  }
-
+  return ret;
 }
 
 
@@ -365,6 +362,9 @@ int main(int argc, const char **argv)
     exit(0);
   }
 
+  
+
+
   std::map < std::string, std::string > opts;
   std::string val;
 
@@ -377,13 +377,12 @@ int main(int argc, const char **argv)
     } 
   }
 
-  // 根据配置文件初始化ceph全局上下文
+  /// 根据配置文件初始化ceph全局上下文
   auto cct = global_init(NULL, args, CEPH_ENTITY_TYPE_CLIENT,
-			     CODE_ENVIRONMENT_UTILITY, 0);
+                                           CODE_ENVIRONMENT_UTILITY, 0);
   common_init_finish(g_ceph_context);
 
-  aggregate_buffer.init_with_cct(g_ceph_context);
-
+  
   std::vector<const char*>::iterator i;
   for (i = args.begin(); i != args.end(); ) {
     if (ceph_argparse_double_dash(args, i)) {
