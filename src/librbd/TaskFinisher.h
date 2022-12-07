@@ -26,7 +26,7 @@ struct TaskFinisherSingleton {
   }
 
   explicit TaskFinisherSingleton(CephContext *cct) {
-    m_safe_timer = new SafeTimer(cct, m_lock, false);
+    m_safe_timer = new (cct, m_lock, false);
     m_safe_timer->init();
     m_finisher = new Finisher(cct, "librbd::TaskFinisher::m_finisher", "taskfin_librbd");
     m_finisher->start();
