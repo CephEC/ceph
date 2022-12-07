@@ -3055,6 +3055,9 @@ public:
   int getattrs(CollectionHandle &c, const ghobject_t& oid,
 	       std::map<std::string,ceph::buffer::ptr, std::less<>>& aset) override;
 
+  // volume_meta Vol_id->chunk_meta list
+  void get_volume_attrs(std::map<std::string, bufferlist>& volume_meta) override;
+
   int list_collections(std::vector<coll_t>& ls) override;
 
   CollectionHandle open_collection(const coll_t &c) override;
