@@ -3625,6 +3625,11 @@ int OSD::init()
       }
     }
   }
+  
+  {
+    std::map<std::string, bufferlist> volume_meta;
+    store->get_volume_attrs(volume_meta);
+  }
 
   initial = get_osd_initial_compat_set();
   diff = superblock.compat_features.unsupported(initial);

@@ -11608,6 +11608,43 @@ int BlueStore::getattrs(
   return r;
 }
 
+// 在OSD::init被调用，暂时不考虑上锁的问题
+void BlueStore::get_volume_attrs(std::map<std::string, bufferlist>& volume_meta) 
+{
+  dout(10) << __func__ << " start to read volume_attrs " <<  dendl;
+  // 遍历得到所有Onode
+  KeyValueDB::Iterator it = db->get_iterator(PREFIX_OBJ);
+  for (it->upper_bound(string());
+       it->valid();
+       it->next()) {
+    bufferlist v;
+    ghobject_t vol_oid;
+    get_key_object(it->key(), &vol_oid);
+    Onode *o = nullptr;
+    for (auto& c : coll_map) {
+      spg_t pgid;
+      // 从coll_map中找到该对象所属的Collection用于Onode的初始化
+      // TODO(zhengfuyu)：二重循环能不能优化
+      if (c.second->contains(vol_oid)) {
+        o = Onode::decode(c.second, vol_oid, it->key(), it->value());
+        break;      
+      }
+    }
+    ceph_assert(o);
+    bufferlist bl;
+    // 解析Onode的attr,找到chunk_meta信息并保存
+    for (auto& attr : o->onode.attrs) {
+      if (boost::starts_with(attr.first, "chunk_meta")) {
+        // onode释放后,指向attr的bufferptr是否会失效？可能改成bufferlist传回更合适
+        bl.push_back(attr.second);
+        dout(10) << __func__ << " vol_meta loaded: " << attr.second.get() <<  dendl;
+      }
+    }
+    volume_meta[it->key()] = bl;
+    delete o;
+  }
+}
+
 int BlueStore::list_collections(vector<coll_t>& ls)
 {
   std::shared_lock l(coll_lock);
