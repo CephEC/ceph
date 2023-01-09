@@ -20,11 +20,26 @@ using std::cout;
 
 class volume_t;
 class SimpleVolume;
+class SimpleAggregateBuffer;
 
 class SimpleAggregateBuffer
 {
+  friend class SimpleVolume;
+  friend class FlushContext;
 public:
-  SimpleAggregateBuffer() : flush_stop(false), flush_thread(this), volume_buffer(nullptr) { };
+  SimpleAggregateBuffer() :volume_buffer(nullptr) {
+   
+ };
+
+  ~SimpleAggregateBuffer() { flush_timer->shutdown(); }
+
+  void init(CephContext* _cct) { 
+    cct = _cct; 
+    flush_timer = new SafeTimer(cct, timer_lock);
+    flush_timer->init();  
+   
+  }
+
 
   /**
    * @brief 对象写入buffer，在add_chunk中执行对象元数据的创建操作
@@ -33,57 +48,29 @@ public:
    * @param osdmap
    * @return int
    */
-   int write(MOSDOp* op/*, const OSDMap &osdmap*/);
-
+   int write(MOSDOp* op, const OSDMap &osdmap);
+   // int write_list(MOSDOp*, const OSDMap &osdmap);
   /**
-   * @brief 预留函数，用于根据请求到来的历史信息预测此时的IO模式
+   * @brief 预留函数，用于根据请求到来的历史信息预测此时的IO模式，判断是否提前计算EC并缓存
+   * 调用位置：volume flush函数中
    *
    * @return bool
    */
    bool may_batch_writing() { return false; };
-
-  /**
-   * @brief 开启flush线程
-   *
-   */
-   void start() {
-      flush_thread.create("volume_flusher");
-      cout << "create flush thread." << std::endl;
-   }
-  /**
-   * @brief 关闭flush线程
-   *       *
-   */
-  void stop() {
-    ceph_assert(flush_thread.is_started());
-    flush_list_lock.lock();
-    flush_stop = true;
-    flush_cond.notify_all();
-    flush_list_lock.unlock();
-    flush_thread.join();
-    cout << "stop flush thread" << std::endl;
-  }
-
+   bool is_flush() { return is_flushing; }
 private:
-  // flush thread
+  ceph::mutex flush_lock = ceph::make_mutex("SimpleAggregateBuffer::flush_lock");
+  ceph::mutex timer_lock = ceph::make_mutex("SimpleAggregateBuffer::timer_lock");
   ceph::condition_variable flush_cond;
-  bool flush_stop;
-  void flush_entry();
-  class FlushThread : public Thread {
-    SimpleAggregateBuffer* buffer;
-  public:
-    explicit FlushThread(SimpleAggregateBuffer* _buffer) : buffer(_buffer) {}
-    void *entry() override {
-      buffer->flush_entry();
-      return 0;
-    }
-  } flush_thread;
-
-  ceph::mutex flush_list_lock = ceph::make_mutex("SimpleAggregateBuffer::flush_list_lock");
-  std::list<SimpleVolume*> pending_to_flush;
-
+  Context* flush_callback;
+  SafeTimer* flush_timer = NULL;
+  bool is_flushing = false;
+ 
+  int flush();
+  std::list<MOSDOp*> waiting_for_aggregate;
 private:
   // PrimaryLogPG* pg;
+  CephContext* cct;
 
   //std::shared_ptr<SimpleVolume*> volume_buffer;
   SimpleVolume* volume_buffer;
@@ -97,6 +84,21 @@ private:
   // TODO: 缓存EC块
   //   std::map<volume_t, bufferlist*> ec_buffer;
 };
+
+class FlushContext
+  : public Context
+{
+  SimpleAggregateBuffer* buffer;
+public:
+  explicit FlushContext(SimpleAggregateBuffer *_buffer): buffer(_buffer) {}
+  void finish(int r) { 
+    printf("volume timeout, flush\n");
+    printf("thread tid is %d, pid is %d\n", gettid(), getpid());
+    buffer->flush();
+    printf("finish flush\n"); 
+  }
+};
+
 
 
 #endif // !CEPH_SIMPLEAGGREGATEBUFFER_H

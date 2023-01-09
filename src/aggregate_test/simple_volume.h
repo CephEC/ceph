@@ -26,6 +26,7 @@
 
 #include "simple_aggregate_buffer.h"
 #include <iostream>
+#include <sys/syscall.h>
 
 //chunk id
 struct chunk_id_t {
@@ -69,51 +70,70 @@ public:
   // 暂时定为固定大小，通过配置文件来调整，缺的填0
   static const int CHUNK_SIZE = 128;
   static const int32_t NO_OSD = 0x7fffffff;
-  static constexpr state_t CLEAN = 0;
-  static constexpr state_t DIRTY = 1;
-  static constexpr state_t GC = 2;
+  // 全0
+  static constexpr state_t EMPTY = 0;
+  // 有效数据
+  static constexpr state_t VALID = 1;
+  // 填充但删除的数据
+  static constexpr state_t INVALID = 2;
 
-  chunk_t() : osd_id(NO_OSD), chunk_id(chunk_id_t()), chunk_state(CLEAN),
-                 chunk_fill_offset(0), seq(0), pg_id(pg_t()), oi(object_info_t()), soid(hobject_t()) {}
+  chunk_t() : chunk_id(chunk_id_t()), chunk_state(EMPTY),
+              chunk_fill_offset(0), chunk_size(CHUNK_SIZE), 
+	      pg_id(spg_t()), soid(hobject_t()), is_erasure(false) {}
+  
+  chunk_t(uint8_t _id, spg_t _pg_id, uint64_t _size = CHUNK_SIZE) : chunk_id(_id), chunk_state(EMPTY),
+              chunk_fill_offset(0), chunk_size(CHUNK_SIZE), 
+	      pg_id(_pg_id), soid(hobject_t()), is_erasure(false) {}
 
-  chunk_t(int32_t _osd_id, uint8_t _chunk_id,
-                 uint64_t _offset, object_info_t& _oi, hobject_t& _soid) :
-                 osd_id(_osd_id), chunk_id(_chunk_id), chunk_state(CLEAN),
-                 chunk_fill_offset(_offset), seq(_chunk_id), pg_id(pg_t()), oi(_oi), soid(_soid) {}
 
-  int32_t get_osd_id() { return osd_id; }
-  chunk_id_t get_chunk_id() { return chunk_id; }
+  chunk_t(uint8_t _chunk_id, uint64_t _offset, uint64_t _chunk_size, hobject_t& _soid) :
+          chunk_id(_chunk_id), chunk_state(EMPTY),
+          chunk_fill_offset(_offset), chunk_size(_chunk_size),
+	  pg_id(spg_t()), soid(_soid), is_erasure(false) {}
+
+  void set_from_op(uint8_t _chunk_id, uint64_t _offset, const hobject_t& _soid,  bool _is_erasure = false, int64_t _chunk_size = CHUNK_SIZE)  
+  {
+    chunk_id = chunk_id_t(_chunk_id);
+    chunk_fill_offset = _offset;
+    chunk_size = _chunk_size;
+    soid = _soid;
+    chunk_state = VALID;
+    is_erasure = _is_erasure;
+  }
+
+  uint8_t get_chunk_id() { return chunk_id; }
+  spg_t get_spg() { return pg_id; }
 
   void set_seq(uint8_t seq) { chunk_id = chunk_id_t(seq); }
-  void set_object_info(object_info_t& _oi) { oi = _oi;  }
+  void set_empty() { chunk_state = EMPTY; }
+  void set_oid(hobject_t& _oid) { soid = _oid; }
 
-   bool is_clean() { return chunk_state == CLEAN; }
-   bool is_dirty() { return chunk_state == DIRTY; }
-   bool is_gc() { return chunk_state == GC; }
+   bool is_empty() { return chunk_state == EMPTY; }
+   bool is_valid() { return chunk_state == VALID; }
+   bool is_invalid() { return chunk_state == INVALID; }
    uint64_t offset() { return chunk_fill_offset; }
-   object_info_t get_object_info() { return oi; }
    hobject_t get_oid() { return soid; }
 
-   void fill(uint64_t off) { chunk_fill_offset = off; }
-
+  void clear() 
+  {
+    chunk_state = (chunk_fill_offset != 0)? INVALID: EMPTY;
+  }
    // TODO: 加解码函数
    //void encode(ceph::buffer::list &bl) const;
    //void decode(ceph::buffer::list::const_iterator &bl);
 private:
-  int32_t osd_id; // 分片所在osd
   chunk_id_t chunk_id;    // chunk id
 
   state_t chunk_state;
   // 计算填0部分开始的偏移
   uint64_t chunk_fill_offset;
-
-  uint8_t seq;
-
+  uint64_t chunk_size;
   // pgid信息
-  pg_t pg_id;
+  spg_t pg_id;
   // object元数据
-  object_info_t oi;
   hobject_t soid;
+  // ec chunk?
+  bool is_erasure;
 };
 //WRITE_CLASS_ENCODER(chunk_t)
 
@@ -128,9 +148,7 @@ class SimpleVolume;
 class SimpleChunk {
 public:
 
-  SimpleChunk(uint8_t _seq, SimpleVolume* _vol): seq(_seq), vol(_vol) {  }
-  // temp create object context
-  int _create_object_context(const hobject_t& oid/*, ObjectContextRef *pobc*/);
+  SimpleChunk(uint8_t _seq, spg_t _pg_id, uint64_t _size, SimpleVolume* _vol): chunk_info(chunk_t(_seq, _pg_id, _size)), vol(_vol) {  }
 
   /**
    * @brief 根据MOSDOp，查找对象的obc，初始化chunk_info
@@ -140,28 +158,27 @@ public:
    * @param _request
    * @return int
    */
-  int set_from_op(MOSDOp* op/*, OSDMap& osdmap*/);
+  chunk_t set_from_op(MOSDOp* op, const uint8_t& seq);
 
   chunk_t get_chunk_info() { return chunk_info; }
   MOSDOp* get_req() { return op; }
-  private:
+
+  void clear()
+  { 
+    chunk_info.clear();
+    // TODO: 处理request 
+  }
+
+private:
   chunk_t chunk_info;
-  // 在volume中的顺序编号
-  uint8_t seq;
 
   // 指向volume的指针
   SimpleVolume* vol;
 
-  // ObjectContextRef obc;
   MOSDOp* op;
 
-  // TODO: 集成到OSD中去的时候保存的不是MOSDOp指针，以下是可能需要额外保存的上下文信息
+  // TODO: 集成到OSD中去的时候保存的不是MOSDOp指针而是OpRequestRef
   // OpRequestRef request;
-  // OSDOp* op;
-  // op_ctx在初始化的时候需要一个指向PrimaryLogPG的指针，需要在外部初始化之后
-  // OpContext* op_ctx;
-  // ObjectState new_obs;
-  // SnapSetContext* snap_ctx;
 };
 
 /**
@@ -171,24 +188,42 @@ public:
  */
 class volume_t {
 public:
-  volume_t(int _size, int _cap, pg_t _pg_id): size(_size), cap(_cap), pg_id(_pg_id) {}
-  volume_t(): volume_id(hobject_t()), size(0), cap(4), pg_id(pg_t()) {}
+  volume_t(int _size, int _cap, spg_t _pg_id): size(_size), cap(_cap), pg_id(_pg_id) {}
+  volume_t(): volume_id(hobject_t()), size(0), cap(4), pg_id(spg_t()) {}
+  
+  void set_volume_id(hobject_t& oid) { volume_id = oid; }
+
   bool full() { return size == cap; }
   bool empty() {return size == 0; }
+  int get_size() { return size; }
+  int get_cap() { return cap; }
+  spg_t get_spg() { return pg_id; }
 
   // 对象是否存在
-  bool exist(hobject_t soid) { return chunks.count(soid); }
+  bool exist(hobject_t& soid) { return chunks.count(soid); }
   // 获取指定soid所在chunk（元数据）
   chunk_t get_chunk(hobject_t& soid) { return chunks[soid]; }
+  
   // chunk加入volume（元数据）
-  void add_chunk(hobject_t& soid, chunk_t& chunk) {
+  void add_chunk(const hobject_t& soid, chunk_t& chunk) 
+  {
     chunks[soid] = chunk;
     size++;
   }
-  // TODO: 从volume中移除chunk（元数据）
-  void remove_chunk(hobject_t soid);
-  // TODO: 清空volume
-  void clear();
+  // 从volume中移除chunk（元数据）
+  void remove_chunk(hobject_t& soid) 
+  {
+    auto o = chunks.find(soid);
+    if(o != chunks.end())
+      chunks.erase(o); 
+    size--;
+  }
+  // 清空volume map, cap和pgid由pool配置决定，osd运行期间不改变
+  void clear()
+  {
+    chunks.clear();
+    size = 0;
+  }
 
   // TODO: 加解码
   // void encode(ceph::buffer::list &bl) const;
@@ -203,14 +238,16 @@ private:
   // volume容量
   int cap;
   // 所属pg编号
-  pg_t pg_id;
+  spg_t pg_id;
 };
 //WRITE_CLASS_ENCODER(volume_t)
 
+
 class SimpleAggregateBuffer;
 
+
 class SimpleVolume {
-public:
+private:
   // read from config
   static constexpr uint64_t default_volume_capacity = 4;
   static constexpr int FULL_SIGNAL = -1;
@@ -219,9 +256,10 @@ public:
 
 public:
   SimpleVolume(CephContext* _cct, uint64_t _cap, SimpleAggregateBuffer* _buffer);
-  bool full() { return size == cap; }
-  bool empty() { return size == 0; }
-  bool flushing() { return is_flushing; }
+  bool full() { return volume_info.full(); }
+
+  spg_t get_spg() { return volume_info.get_spg(); }
+  uint64_t get_cap() { return volume_info.get_cap(); }
 
   object_info_t find_object(hobject_t soid);
   /**
@@ -230,33 +268,35 @@ public:
    * @param chunk
    * @return int
    */
-  int add_chunk(MOSDOp* op/*, const OSDMap& osdmap*/);
+  int add_chunk(MOSDOp* op);
 
   void remove_chunk(hobject_t soid);
-  void clear();
+  
+  void clear(); 
 
-  bool flush();
+  void flush();
+
+  /*
+   * @return free chunk index
+   */
+  int _find_free_chunk();
+
+  void dump_op();
   // chunk
 
 private:
   CephContext* cct;
-  ceph::mutex flush_lock = ceph::make_mutex("SimpleVolume::flush_lock");
-  ceph::condition_variable flush_cond;
-  SafeTimer* flush_timer = NULL;
-  Context* flush_callback = nullptr;
-  //Context *connect_retry_callback = nullptr;
-    bool is_flushing = false;
+  
+ 
   std::vector<bool> bitmap;
   // chunk的顺序要与volume_info中chunk_set中chunk的顺序一致
   std::vector<SimpleChunk*> chunks;
   // TODO: EC块缓存
   // std::vector<SimpleECChunk*> ec_chunks;
-  uint64_t cap;
-  uint64_t size;
 
   SimpleAggregateBuffer* volume_buffer;
   //OpRequestRef vol_op;
-   MOSDOp* vol_op;
+  MOSDOp* vol_op;
 };
 
 #endif // !CEPH_SIMPLEVOLUME_H

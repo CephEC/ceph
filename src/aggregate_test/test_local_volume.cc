@@ -94,7 +94,7 @@ const unsigned default_object_size = 1 << 27;
 const unsigned default_object_num = 4;
 const int ERR = -1;
 
-//std::shared_ptr<OSDMap> test_map(new OSDMap());
+std::shared_ptr<OSDMap> test_map(new OSDMap());
 
 SimpleAggregateBuffer aggregate_buffer;
 
@@ -206,7 +206,7 @@ MOSDOp* prepare_osd_op(std::string& oid, bufferlist& bl, size_t len, uint64_t of
   osd_op.op.extent.length = len;
   osd_op.indata.claim_append(bl);
 
-  auto m = new MOSDOp();
+  MOSDOp* m = new MOSDOp();
   m->ops = ops;
   return m;
 }
@@ -216,7 +216,7 @@ MOSDOp* prepare_osd_op(std::string& oid, bufferlist& bl, size_t len, uint64_t of
  * @brief 顺序生成
  *
  **/
-static void generate_objects_and_ops(std::list<MOSDOp*> ops, const unsigned object_num, const unsigned object_size)
+static void generate_objects_and_ops(std::list<MOSDOp*>& ops, const unsigned object_num, const unsigned object_size)
 {
   char* object_contents = new char[object_size];
   memset(object_contents, 'z', object_size);
@@ -251,7 +251,7 @@ static void generate_objects_and_ops(std::list<MOSDOp*> ops, const unsigned obje
  * @brief 批量写入卷测试
  *
  */
-int batch_put_objects(const unsigned obj_num, const unsigned obj_size)
+int batch_put_objects(const unsigned& obj_num, const unsigned& obj_size)
 {
   cout << "enter batch put, " << std::endl
           << "num: " << obj_num << std::endl
@@ -259,19 +259,26 @@ int batch_put_objects(const unsigned obj_num, const unsigned obj_size)
   if (obj_num < 1 || !obj_size)
               return ERR;
   //generate object & request
-  std::list<MOSDOp*> ops(obj_num);
+  std::list<MOSDOp*> ops;
   generate_objects_and_ops(ops, obj_num, obj_size);
 
   cout << "start to batch put " << std::endl;
   // for(req in list) volume.add, volume开启线程flush
   std::list<MOSDOp*>::iterator i = ops.begin();
   while(i != ops.end()) {
-    int ret = aggregate_buffer.write(*i/*, *test_map*/);
+    int ret = aggregate_buffer.write(*i, *test_map);
     if (ret < 0) {
       goto failed;
     }
     i++;
   }
+
+  for(int i = 0; i < 10; i++) {
+    std::cout << "wait " << i << "/10 "<< std::endl;
+    std::cout << "flush: " << aggregate_buffer.is_flush() << std::endl;
+    sleep(1);
+  }
+
 failed:
     // clear buffer
 
@@ -280,9 +287,9 @@ failed:
 }
 
 
-int batch_delete_objects(const unsigned obj_num, const unsigned object_size) 
+int batch_delete_objects(const unsigned& obj_num, const unsigned& object_size) 
 {
-
+  return 0;
 }
 
 
@@ -305,13 +312,6 @@ static int run_test(const std::map < std::string, std::string > &opts,
   std::optional<std::string> object_name;
   std::string input_file;
 
-  auto it = nargs.begin();
-
-  while(it != nargs.end()) {
-    cout << *it << " " << std::endl;
-    it++;
-  }
-
   i = opts.find("object-size");
   if (i != opts.end()) {
     if (sistrtoll(i, &object_size)) {
@@ -331,7 +331,7 @@ static int run_test(const std::map < std::string, std::string > &opts,
 
   unsigned object_num = 0;
   if (strcmp(nargs[0], "batch-put") == 0) {
-    if (!object_num) {
+    if (nargs.size() < 2 && !object_num) {
       object_num = default_object_num;
       cout << "use default object num" << default_object_num << std::endl;
     } else {
@@ -382,7 +382,8 @@ int main(int argc, const char **argv)
                                            CODE_ENVIRONMENT_UTILITY, 0);
   common_init_finish(g_ceph_context);
 
-  
+  aggregate_buffer.init(g_ceph_context);
+
   std::vector<const char*>::iterator i;
   for (i = args.begin(); i != args.end(); ) {
     if (ceph_argparse_double_dash(args, i)) {
