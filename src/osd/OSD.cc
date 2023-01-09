@@ -3625,11 +3625,6 @@ int OSD::init()
       }
     }
   }
-  
-  {
-    std::map<std::string, bufferlist> volume_meta;
-    store->get_volume_attrs(volume_meta);
-  }
 
   initial = get_osd_initial_compat_set();
   diff = superblock.compat_features.unsupported(initial);
@@ -4807,8 +4802,9 @@ PG* OSD::_make_pg(
   PGPool pool(createmap, pgid.pool(), pi, name);
   PG *pg;
   if (pi.type == pg_pool_t::TYPE_REPLICATED ||
-      pi.type == pg_pool_t::TYPE_ERASURE)
+      pi.type == pg_pool_t::TYPE_ERASURE) {
     pg = new PrimaryLogPG(&service, createmap, pool, ec_profile, pgid);
+  }
   else
     ceph_abort();
   return pg;

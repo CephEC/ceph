@@ -1498,6 +1498,7 @@ public:
   void do_request(
     OpRequestRef& op,
     ThreadPool::TPHandle &handle) override;
+  void load_volume_attrs() override;
   void do_op(OpRequestRef& op);
   void record_write_error(OpRequestRef op, const hobject_t &soid,
 			  MOSDOpReply *orig_reply, int r,

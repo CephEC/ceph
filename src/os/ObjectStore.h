@@ -629,9 +629,10 @@ public:
   }
 
   /*
-   * get_volume_attrs -- OSD init时需要将磁盘中的映射表信息加载到内存中
+   * load_volume_attrs -- 将磁盘中的映射表信息加载到内存中
    */
-  virtual void get_volume_attrs(std::map<std::string, bufferlist>& volume_meta) {};
+  virtual int load_volume_attrs(CollectionHandle &c,
+         std::map<std::string, bufferlist> &volume_meta) { return 0; };
 
   // collections
 

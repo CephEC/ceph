@@ -1974,6 +1974,12 @@ void PrimaryLogPG::do_request(
   }
 }
 
+void PrimaryLogPG::load_volume_attrs() 
+{
+  std::map<std::string, bufferlist> volume_meta;
+  get_pgbackend()->load_volume_attrs(volume_meta);
+}
+
 /** do_op - do an op
  * pg lock will be held (if multithreaded)
  * osd_lock NOT held.
@@ -2042,7 +2048,6 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
     return;
   }
 
-  // 不太懂backoff是什么意思？
   // 客户端的退避行为 https://docs.ceph.com/en/latest/dev/rados-client-protocol/#backoff
   bool can_backoff = false;
   ceph::ref_t<Session> session;

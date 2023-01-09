@@ -466,6 +466,11 @@ int PGBackend::objects_get_attr(
   return r;
 }
 
+int PGBackend::load_volume_attrs(std::map<std::string, bufferlist> &out)
+{
+  return store->load_volume_attrs(ch, out);
+}
+
 int PGBackend::objects_get_attrs(
   const hobject_t &hoid,
   map<string, bufferlist, less<>> *out)

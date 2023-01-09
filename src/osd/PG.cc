@@ -183,7 +183,8 @@ void PG::dump_live_ids()
 #endif
 
 void on_active_state(PG *pg) {
-
+  pg->init_aggregate_buffer();
+  pg->load_volume_attrs();
 }
 
 PG::PG(OSDService *o, OSDMapRef curmap,
@@ -218,7 +219,6 @@ PG::PG(OSDService *o, OSDMapRef curmap,
     _pool,
     curmap,
     this,
-    //this),
     this,
     std::bind(on_active_state, this)),
   pool(recovery_state.get_pool()),

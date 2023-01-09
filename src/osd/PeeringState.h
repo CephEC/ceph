@@ -584,7 +584,6 @@ public:
     spg_t spgid;
     DoutPrefixProvider *dpp;
     PeeringListener *pl;
-
     utime_t event_time;
     uint64_t event_count;
     std::function<void()> on_active_;
