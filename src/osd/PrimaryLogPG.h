@@ -32,6 +32,8 @@
 #include "PGTransaction.h"
 #include "cls/cas/cls_cas_ops.h"
 
+#include "AggregateBuffer.h"
+
 class CopyFromCallback;
 class PromoteCallback;
 struct RefCountCallback;
@@ -1929,6 +1931,16 @@ public:
 
 private:
   DynamicPerfStats m_dynamic_perf_stats;
+
+  // ----
+  /**
+   * aggregate_buffer - aggregate op for NDP
+   * 
+   * std::make_shared<AggregateBuffer>
+  */
+  typedef std::shared_ptr<AggregateBuffer> AggregateBufferRef;
+  AggregateBufferRef m_aggregate_buffer;
+   
 };
 
 inline ostream& operator<<(ostream& out, const PrimaryLogPG::RepGather& repop)

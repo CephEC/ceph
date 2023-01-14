@@ -1756,6 +1756,8 @@ PrimaryLogPG::PrimaryLogPG(OSDService *o, OSDMapRef curmap,
   snap_trimmer_machine.initiate();
 
   m_scrubber = make_unique<PrimaryLogScrub>(this);
+
+  m_aggregate_buffer = std::make_shared<AggregateBuffer>(cct, this);
 }
 
 PrimaryLogPG::~PrimaryLogPG()
