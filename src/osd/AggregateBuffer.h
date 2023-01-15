@@ -8,12 +8,14 @@
 
 #include "include/types.h"
 #include "messages/MOSDOp.h"
+#include "osd/PrimaryLogPG.h"
 
+#include "OpRequest.h"
+#include "OSD.h"
 #include "common/ceph_context.h"
 #include "common/Cond.h"
 #include "common/Finisher.h"
 #include "common/Thread.h"
-
 //using std::cout;
 
 //class volume_t;
@@ -26,7 +28,7 @@ class AggregateBuffer
   //friend class FlushContext;
 public:
   AggregateBuffer(CephContext* _cct, PrimaryLogPG *_pg) :cct(_cct), pg(_pg) {
-    std::cout << "init aggregate buffer " << index++ << std::endl;
+    
  };
 
   ~AggregateBuffer() { /*flush_timer->shutdown();*/ }
@@ -45,8 +47,6 @@ public:
 private:
   CephContext* cct;
   PrimaryLogPG *pg;
-
-  static int index;
 };
 
 

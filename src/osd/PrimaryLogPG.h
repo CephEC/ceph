@@ -38,6 +38,7 @@ class CopyFromCallback;
 class PromoteCallback;
 struct RefCountCallback;
 
+class AggregateBuffer;
 class PrimaryLogPG;
 class PGLSFilter;
 class HitSet;

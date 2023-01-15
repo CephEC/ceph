@@ -26,6 +26,7 @@
 #include <boost/tuple/tuple.hpp>
 
 #include "PrimaryLogPG.h"
+#include "AggregateBuffer.h"
 
 #include "cls/cas/cls_cas_ops.h"
 #include "common/CDC.h"
@@ -1986,6 +1987,10 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
     m->clear_payload();
   }
 
+  // temp status 
+  m_aggregate_buffer->write(op);
+
+
   dout(20) << __func__ << ": op " << *m << dendl;
 
   // 构建head对象
@@ -2196,6 +2201,7 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
   // 这一块检索对象丢失，和对象修复以及scrub的逻辑可以整合到聚合中来?
   // 如果发现要写入的volume丢失数据或是正在修复中，那么就选择另外一个volume写入
 
+ 
   // ceph会把丢失的object整合成一个map,这里就是检索map判断本次操作的对象是否丢失了
   // cephEC中可能需要改动对 已丢失对象 的管理方式，还需要细看ceph当前是如何感知对象丢失，以及恢复对象的流程
   // missing object?
