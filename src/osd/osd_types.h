@@ -369,6 +369,8 @@ enum {
   CEPH_OSD_RMW_FLAG_SKIP_PROMOTE      = (1 << 9),
   CEPH_OSD_RMW_FLAG_RWORDERED         = (1 << 10),
   CEPH_OSD_RMW_FLAG_RETURNVEC = (1 << 11),
+
+  CEPH_OSD_RMW_FLAG_AGGREGATE = (1 << 12),  // RMW FLAG
 };
 
 
@@ -6675,8 +6677,9 @@ struct chunk_id_t {
   int8_t id;
 
 public:
-  chunk_id_t() : id(0) {}
+  chunk_id_t() : name("empty"), id(0) {}
   chunk_id_t(int8_t _id) : name("temp"), id(_id) {}
+  chunk_id_t(std::string _name, int8_t _id): name(_name), id(_id) { }
 
   operator int8_t() const { return id; }
 
@@ -6699,10 +6702,6 @@ public:
 };
 //WRITE_CLASS_ENCODER(chunk_id_t)
 
-/**
- * @brief chunk实际上是来保存对象的元数据，将原生对象的元数据封装后存入rocksdb
- *
- */
 class chunk_t {
 public:
   typedef uint8_t state_t;
@@ -6719,21 +6718,18 @@ public:
 
   chunk_t() : chunk_id(chunk_id_t()), chunk_state(EMPTY),
               chunk_fill_offset(0), chunk_size(CHUNK_SIZE), 
-	      pg_id(spg_t()), soid(hobject_t()), is_erasure(false) {}
+	            pg_id(spg_t()), soid(hobject_t()), is_erasure(false) {}
   
-  chunk_t(uint8_t _id, spg_t _pg_id, uint64_t _size = CHUNK_SIZE) : chunk_id(_id), chunk_state(EMPTY),
+  chunk_t(uint8_t _id, spg_t _pg_id, uint64_t _size = CHUNK_SIZE, bool _is_erasure = false) : 
+              chunk_id(_id), chunk_state(EMPTY),
               chunk_fill_offset(0), chunk_size(CHUNK_SIZE), 
-	      pg_id(_pg_id), soid(hobject_t()), is_erasure(false) {}
+	            pg_id(_pg_id), soid(hobject_t()), is_erasure(false) {}
 
 
-  chunk_t(uint8_t _chunk_id, uint64_t _offset, uint64_t _chunk_size, hobject_t& _soid) :
-          chunk_id(_chunk_id), chunk_state(EMPTY),
-          chunk_fill_offset(_offset), chunk_size(_chunk_size),
-	  pg_id(spg_t()), soid(_soid), is_erasure(false) {}
-
-  void set_from_op(uint8_t _chunk_id, uint64_t _offset, const hobject_t& _soid,  bool _is_erasure = false, int64_t _chunk_size = CHUNK_SIZE)  
+  void set_from_op(uint8_t _chunk_id, uint64_t _offset, const hobject_t& _soid,  
+                    bool _is_erasure = false, int64_t _chunk_size = CHUNK_SIZE)  
   {
-    chunk_id = chunk_id_t(_chunk_id);
+    chunk_id = chunk_id_t(_soid.get_head(), _chunk_id);
     chunk_fill_offset = _offset;
     chunk_size = _chunk_size;
     soid = _soid;
@@ -6741,8 +6737,9 @@ public:
     is_erasure = _is_erasure;
   }
 
-  uint8_t get_chunk_id() { return chunk_id; }
+  chunk_id_t get_chunk_id() { return chunk_id; }
   spg_t get_spg() { return pg_id; }
+  uint64_t get_chunk_size() { return chunk_size; }
 
   void set_seq(uint8_t seq) { chunk_id = chunk_id_t(seq); }
   void set_empty() { chunk_state = EMPTY; }
@@ -6777,12 +6774,70 @@ private:
 };
 //WRITE_CLASS_ENCODER(chunk_t)
 
+inline bool operator==(const chunk_t& l, const chunk_t& r) {
+  return l.get_chunk_id() == r.get_chunk_id();
+}
+
 /**
  * volume_t - information about volume buffer
  *
  */
 
+class volume_t {
+public:
+  volume_t(int _cap, spg_t _pg_id): size(0), cap(_cap), pg_id(_pg_id) {}
+  volume_t(): volume_id(hobject_t()), size(0), cap(4), pg_id(spg_t()) {}
+  
+  void set_volume_id(hobject_t& oid) { volume_id = oid; }
 
+  bool full() { return size == cap; }
+  bool empty() {return size == 0; }
+  int get_size() { return size; }
+  int get_cap() { return cap; }
+  spg_t get_spg() { return pg_id; }
+
+  // 对象是否存在
+  bool exist(hobject_t& soid) { return chunks.count(soid); }
+  // 获取指定soid所在chunk（元数据）
+  chunk_t get_chunk(hobject_t& soid) { return chunks[soid]; }
+  
+  // chunk加入volume（元数据）
+  void add_chunk(const hobject_t& soid, chunk_t& chunk) 
+  {
+    chunks[soid] = chunk;
+    size++;
+  }
+  // 从volume中移除chunk（元数据）
+  void remove_chunk(hobject_t& soid) 
+  {
+    auto o = chunks.find(soid);
+    if(o != chunks.end())
+      chunks.erase(o); 
+    size--;
+  }
+  // 清空volume map, cap和pgid由pool配置决定，osd运行期间不改变
+  void clear()
+  {
+    chunks.clear();
+    size = 0;
+  }
+
+  // TODO: 加解码
+  // void encode(ceph::buffer::list &bl) const;
+  // void decode(ceph::buffer::list::const_iterator &bl);
+private:
+  // 通过oid索引，其顺序作为chunk id保存在chunk_t中，在chunk创建时赋值
+  std::unordered_map<hobject_t, chunk_t> chunks;
+  hobject_t volume_id;
+
+  // volume现有的chunk数
+  int size;
+  // volume容量
+  int cap;
+  // 所属pg编号
+  const spg_t pg_id;
+};
+//WRITE_CLASS_ENCODER(volume_t)
 
 
 

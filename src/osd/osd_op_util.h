@@ -51,6 +51,9 @@ public:
   bool may_cache() const;
   bool rwordered_forced() const;
   bool rwordered() const;
+
+  bool may_aggregate() const;
+
   bool includes_pg_op() const;
   bool need_read_cap() const;
   bool need_write_cap() const;

@@ -1987,11 +1987,27 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
     m->clear_payload();
   }
 
-  // temp status 
-  m_aggregate_buffer->write(op);
-
-
   dout(20) << __func__ << ": op " << *m << dendl;
+
+  // temp status 
+  if (op->may_aggregate()) {
+    if (op->may_write()) {
+      int r = m_aggregate_buffer->write(op);
+      if (r == AGGREGATE_PENDING_REPLY) {
+        dout(4) << "aggregate pending to reply " << dendl;
+        return;
+      } else if (r == AGGREGATE_FAILED || r == AGGREGATE_PENDING_OP) {
+        return;
+      } else {
+        
+      }
+
+    } else if (op->may_read()) {
+      // TODO: read
+    }
+  }
+  
+
 
   // 构建head对象
   const hobject_t head = m->get_hobj().get_head();
