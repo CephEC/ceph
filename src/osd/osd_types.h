@@ -6720,7 +6720,7 @@ public:
               chunk_fill_offset(0), chunk_size(CHUNK_SIZE), 
 	            pg_id(spg_t()), soid(hobject_t()), is_erasure(false) {}
   
-  chunk_t(uint8_t _id, spg_t _pg_id, uint64_t _size = CHUNK_SIZE, bool _is_erasure = false) : 
+  chunk_t(uint8_t _id, const spg_t& _pg_id, uint64_t _size = CHUNK_SIZE, bool _is_erasure = false) : 
               chunk_id(_id), chunk_state(EMPTY),
               chunk_fill_offset(0), chunk_size(CHUNK_SIZE), 
 	            pg_id(_pg_id), soid(hobject_t()), is_erasure(false) {}
@@ -6729,7 +6729,7 @@ public:
   void set_from_op(uint8_t _chunk_id, uint64_t _offset, const hobject_t& _soid,  
                     bool _is_erasure = false, int64_t _chunk_size = CHUNK_SIZE)  
   {
-    chunk_id = chunk_id_t(_soid.get_head(), _chunk_id);
+    chunk_id = chunk_id_t(_soid.get_head().oid.name, _chunk_id);
     chunk_fill_offset = _offset;
     chunk_size = _chunk_size;
     soid = _soid;
@@ -6737,9 +6737,9 @@ public:
     is_erasure = _is_erasure;
   }
 
-  chunk_id_t get_chunk_id() { return chunk_id; }
-  spg_t get_spg() { return pg_id; }
-  uint64_t get_chunk_size() { return chunk_size; }
+  chunk_id_t get_chunk_id() const { return chunk_id; }
+  spg_t get_spg() const { return pg_id; }
+  uint64_t get_chunk_size() const { return chunk_size; }
 
   void set_seq(uint8_t seq) { chunk_id = chunk_id_t(seq); }
   void set_empty() { chunk_state = EMPTY; }
@@ -6785,16 +6785,16 @@ inline bool operator==(const chunk_t& l, const chunk_t& r) {
 
 class volume_t {
 public:
-  volume_t(int _cap, spg_t _pg_id): size(0), cap(_cap), pg_id(_pg_id) {}
+  volume_t(int _cap, const spg_t& _pg_id): size(0), cap(_cap), pg_id(_pg_id) {}
   volume_t(): volume_id(hobject_t()), size(0), cap(4), pg_id(spg_t()) {}
   
   void set_volume_id(hobject_t& oid) { volume_id = oid; }
 
-  bool full() { return size == cap; }
-  bool empty() {return size == 0; }
-  int get_size() { return size; }
-  int get_cap() { return cap; }
-  spg_t get_spg() { return pg_id; }
+  bool full() const { return size == cap; }
+  bool empty() const {return size == 0; }
+  int get_size() const { return size; }
+  int get_cap() const { return cap; }
+  spg_t get_spg() const { return pg_id; }
 
   // 对象是否存在
   bool exist(hobject_t& soid) { return chunks.count(soid); }
@@ -6802,7 +6802,7 @@ public:
   chunk_t get_chunk(hobject_t& soid) { return chunks[soid]; }
   
   // chunk加入volume（元数据）
-  void add_chunk(const hobject_t& soid, chunk_t& chunk) 
+  void add_chunk(const hobject_t& soid, const chunk_t& chunk) 
   {
     chunks[soid] = chunk;
     size++;

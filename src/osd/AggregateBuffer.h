@@ -9,6 +9,7 @@
 #include "include/types.h"
 #include "messages/MOSDOp.h"
 #include "PrimaryLogPG.h"
+#include "AggregateVolume.h"
 #include "osd_types.h"
 
 #include "OpRequest.h"
@@ -25,23 +26,16 @@
 #define AGGREGATE_PENDING_REPLY 4
 
 class Volume;
+class PrimaryLogPG;
 
 class AggregateBuffer
 {
+
+  Volume* volume_buffer;
+
 public:
 
-  AggregateBuffer(CephContext* _cct, PrimaryLogPG* _pg) :cct(_cct), pg(_pg) {
-    // init volume
-    volume_buffer = new Volume(_cct->_conf.get_val<int>("osd_aggregate_buffer_capacity"),
-                                _cct->_conf.get_val<Option::size_t>("osd_aggregate_buffer_chunk_size"),
-                                pg->get_pgid(),
-                                this);
-
-    // init timer
-    flush_time_out = _cct->_conf.get_val<std::chrono::seconds>("osd_aggregate_buffer_flush_timeout");
-    flush_timer = new SafeTimer(cct, timer_lock);
-    flush_timer->init(); 
- };
+  AggregateBuffer(CephContext* _cct, const spg_t& _pgid, PrimaryLogPG* _pg);
 
   ~AggregateBuffer() { 
     flush_timer->shutdown(); 
@@ -75,7 +69,7 @@ private:
   Context* flush_callback;
   SafeTimer* flush_timer = NULL;
   bool is_flushing = false;
-  std::chrono::seconds flush_time_out;
+  double flush_time_out;
 
   class FlushContext: public Context
   {
@@ -83,9 +77,7 @@ private:
   public:
     explicit FlushContext(AggregateBuffer *_buffer): buffer(_buffer) {}
     void finish(int r) { 
-      dout(4) << __func__ << "volume timeout, flush. "<< dendl;
       buffer->flush();
-      dout(4) << "finish flush" << dendl;
     }
   };
  
@@ -98,8 +90,6 @@ private:
 private:
   CephContext* cct;
   PrimaryLogPG *pg;
-
-  Volume* volume_buffer;
 
   // 属于PG的VolumeMeta
   std::vector<volume_t> volume_meta_cache;

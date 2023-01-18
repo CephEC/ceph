@@ -16,24 +16,24 @@
 #include "messages/MOSDOp.h"
 #include "osd/OpRequest.h"
 
-#include "AggregateBuffer.h"
 #include "AggregateChunk.h"
 #include <sys/syscall.h>
+
 
 class Volume {
 
   volume_t volume_info;
 
 public:
-  Volume(uint64_t _cap, uint64_t _chunk_size, spg_t _pg_id, AggregateBuffer* _buffer);
+  Volume(uint64_t _cap, uint64_t _chunk_size, const spg_t& _pg_id/*, AggregateBuffer* _buffer*/);
 
   ~Volume();
   
   bool full() { return volume_info.full(); }
 
-  spg_t get_spg() { return volume_info.get_spg(); }
-  uint64_t get_cap() { return volume_info.get_cap(); }
-  volume_t get_volume_info() { return volume_info; }
+  spg_t get_spg() const { return volume_info.get_spg(); }
+  uint64_t get_cap() const { return volume_info.get_cap(); }
+  volume_t get_volume_info() const { return volume_info; }
 
   object_info_t find_object(hobject_t soid);
   /**
@@ -67,7 +67,7 @@ private:
   // TODO: EC块缓存
   // std::vector<ECChunk*> ec_chunks;
 
-  AggregateBuffer* volume_buffer;
+  // AggregateBuffer* volume_buffer;
   OpRequestRef vol_op;
 };
 

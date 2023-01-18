@@ -1,21 +1,30 @@
 #include "AggregateBuffer.h"
 
+AggregateBuffer::AggregateBuffer(CephContext* _cct, const spg_t& _pgid, PrimaryLogPG* _pg) :cct(_cct), pg(_pg) {
+    // init volume
+    volume_buffer = new Volume(_cct->_conf.get_val<uint64_t>("osd_aggregate_buffer_capacity"),
+                                _cct->_conf.get_val<uint64_t>("osd_aggregate_buffer_chunk_size"),
+                                _pgid);
+
+    // init timer
+    flush_time_out = _cct->_conf.get_val<double>("osd_aggregate_buffer_flush_timeout");
+    flush_timer = new SafeTimer(cct, timer_lock);
+    flush_timer->init(); 
+ };
+
+
+
 int AggregateBuffer::write(OpRequestRef op)
 {
   // volume满，未处于flushing状态，则等待flush（一般不会为真）
   if (volume_buffer && volume_buffer->full() && !is_flushing) {
-     dout(4) << "volume_buffer " << volume_buffer
-          << "is full, waiting to flush "
-          << dendl;
      if (!is_flushing) {
        int r = flush();
        if (r < 0) {
-         dout(4) << "failed to flush full volume." << dendl;
-	       return AGGREGATE_FAILED;
+         return AGGREGATE_FAILED;
        }
      }
      else {
-       dout(4) << "waiting to aggregate." << dendl;
        waiting_for_aggregate.push_back(op);
        return AGGREGATE_PENDING_OP;  
      }
@@ -24,7 +33,6 @@ int AggregateBuffer::write(OpRequestRef op)
   // ceph_assert(volume_buffer == nullptr);
 
   if (volume_buffer->add_chunk(op) < 0) {
-    dout(4) << "failed to add chunk in volume buffer." << dendl;
     return AGGREGATE_FAILED;
   }
 
@@ -48,14 +56,13 @@ int AggregateBuffer::flush()
   // when start to flush, lock
   flush_lock.lock();
   is_flushing = true;
-  dout(4) << "lock and flush volume " << volume_buffer << dendl;
-  volume_t vol_info = get_volume_info();
+  volume_t vol_info = volume_buffer->get_volume_info();
   // check full state and add in volume_not_full
   if (!volume_buffer->full()) {
     volume_not_full.push_back(vol_info);
   }
   // add in volume meta cache 
-  volume_meta_cache.push_back(get_volume_info());
+  volume_meta_cache.push_back(vol_info);
   
   // TODO: judge if cache ec chunk
 

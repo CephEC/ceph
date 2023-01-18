@@ -67,6 +67,7 @@ public:
   void set_cache();
   void set_class_read();
   void set_class_write();
+  void set_aggregate();
   void set_pg_op();
   void set_promote();
   void set_skip_handle_cache();

@@ -29,7 +29,7 @@ class Volume;
 class Chunk {
 public:
 
-  Chunk(uint8_t _seq, spg_t _pg_id, uint64_t _size, Volume* _vol): 
+  Chunk(uint8_t _seq, const spg_t& _pg_id, uint64_t _size, Volume* _vol): 
                         chunk_info(chunk_t(_seq, _pg_id, _size)), vol(_vol) {  }
 
   /**
@@ -45,15 +45,12 @@ public:
     const hobject_t& oid = m->get_hobj();
     const spg_t pg_id = m->get_spg();
     if (pg_id.pgid != chunk_info.get_spg().pgid) {
-      derr << __func__ << " " << chunk_info.get_spg().pgid << " does not match "
-	    << m->get_hobj().oid << " pg " << m->get_hobj().get_hash() << dendl;
       return chunk_t();
     }
       
     uint64_t data_len = m->get_data_len();
     // 检查data_len是否大于配置文件中的chunk_size 
     if(data_len > chunk_info.get_chunk_size()) {
-      derr << __func__ << " object is too big. " << dendl;
       return chunk_t();
     }
       

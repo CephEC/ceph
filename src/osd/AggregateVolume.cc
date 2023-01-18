@@ -5,9 +5,9 @@
 #include "AggregateVolume.h"
 
 
-Volume::Volume(uint64_t _cap, uint64_t _chunk_size, spg_t _pg_id, AggregateBuffer* _buffer)
+Volume::Volume(uint64_t _cap, uint64_t _chunk_size, const spg_t& _pg_id/*, AggregateBuffer* _buffer*/)
   : volume_info(_cap, _pg_id),
-    volume_buffer(_buffer),
+    /*volume_buffer(_buffer),*/
     vol_op(nullptr)
 {
  
@@ -40,7 +40,6 @@ void Volume::clear()
   }  
   // TODO: 处理vol_op
   volume_info.clear(); 
-  dout(4) << "clear buffer " << this << dendl; 
 }
 
 
@@ -62,7 +61,6 @@ int Volume::add_chunk(OpRequestRef op)
 
   int free_chunk_index = _find_free_chunk();
   if (free_chunk_index >= volume_info.get_cap()) {
-    derr << "failed to add chunk, volume is full." << dendl;
     return -1;
   }
   
@@ -72,11 +70,9 @@ int Volume::add_chunk(OpRequestRef op)
   // init chunk & return its metadata
   chunk_t chunk_meta = new_chunk->set_from_op(op, free_chunk_index);
   if (chunk_meta == chunk_t()) {
-    derr << __func__ << " failed to init chunk meta. " << dendl;
     return -1;
   }
-  dout(4) << "allocate chunk index " << free_chunk_index << dendl;
   // 最后处理volume元数据
-  volume_info.add_chunk(op->get_hobj(), chunk_meta);
+  volume_info.add_chunk(chunk_meta.get_oid(), chunk_meta);
   return 0;
 }
