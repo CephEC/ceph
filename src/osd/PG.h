@@ -747,6 +747,8 @@ public:
     OpRequestRef& op,
     ThreadPool::TPHandle &handle
   ) = 0;
+  
+  virtual void init_aggregate_buffer() = 0;
   virtual void clear_cache() = 0;
   virtual int get_cache_obj_count() = 0;
 

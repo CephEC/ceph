@@ -42,7 +42,6 @@ public:
     delete volume_buffer;
   }
 
-
   /**
    * @brief 对象写入buffer，在add_chunk中执行对象元数据的创建操作
    *

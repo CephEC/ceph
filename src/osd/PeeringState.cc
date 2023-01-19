@@ -5894,6 +5894,7 @@ PeeringState::Active::Active(my_context ctx)
     }
   }
   pl->publish_stats_to_osd();
+  pl->init_aggregate_buffer();
   psdout(10) << "Activate Finished" << dendl;
 }
 

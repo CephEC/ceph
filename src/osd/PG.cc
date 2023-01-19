@@ -182,6 +182,10 @@ void PG::dump_live_ids()
 }
 #endif
 
+void on_active_state(PG *pg) {
+  pg->init_aggregate_buffer();
+}
+
 PG::PG(OSDService *o, OSDMapRef curmap,
        const PGPool &_pool, spg_t p) :
   pg_whoami(o->whoami, p.shard),
@@ -214,7 +218,9 @@ PG::PG(OSDService *o, OSDMapRef curmap,
     _pool,
     curmap,
     this,
-    this),
+    //this),
+    this,
+    std::bind(on_active_state, this)),
   pool(recovery_state.get_pool()),
   info(recovery_state.get_info())
 {

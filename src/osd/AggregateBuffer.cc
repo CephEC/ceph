@@ -2,11 +2,12 @@
 
 AggregateBuffer::AggregateBuffer(CephContext* _cct, const spg_t& _pgid, PrimaryLogPG* _pg) :cct(_cct), pg(_pg) {
     // init volume
-    volume_buffer = new Volume(_cct->_conf.get_val<uint64_t>("osd_aggregate_buffer_capacity"),
-                                _cct->_conf.get_val<uint64_t>("osd_aggregate_buffer_chunk_size"),
+    volume_buffer = new Volume(/*_cct->_conf.get_val<std::uint64_t>("osd_aggregate_buffer_capacity")*/4,
+                               /*_cct->_conf.get_val<std::uint64_t>("osd_aggregate_buffer_chunk_size")*/128,
                                 _pgid);
 
     // init timer
+    // flush_time_out = g_conf().get_val<double>("osd_aggregate_buffer_flush_timeout");
     flush_time_out = _cct->_conf.get_val<double>("osd_aggregate_buffer_flush_timeout");
     flush_timer = new SafeTimer(cct, timer_lock);
     flush_timer->init(); 

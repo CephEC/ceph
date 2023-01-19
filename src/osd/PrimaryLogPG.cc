@@ -1758,7 +1758,7 @@ PrimaryLogPG::PrimaryLogPG(OSDService *o, OSDMapRef curmap,
 
   m_scrubber = make_unique<PrimaryLogScrub>(this);
 
-  m_aggregate_buffer = std::make_shared<AggregateBuffer>(cct, p, this);
+  // m_aggregate_buffer = std::make_shared<AggregateBuffer>(o->cct, p, this);
 }
 
 PrimaryLogPG::~PrimaryLogPG()
