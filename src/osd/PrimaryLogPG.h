@@ -1480,9 +1480,7 @@ public:
 	       spg_t p);
   ~PrimaryLogPG() override;
 
-  void init_aggregate_buffer() {
-    m_aggregate_buffer = std::make_shared<AggregateBuffer>(osd->cct, pg_id, this);
-  }
+  void init_aggregate_buffer() override;
 
   void do_command(
     const std::string_view& prefix,

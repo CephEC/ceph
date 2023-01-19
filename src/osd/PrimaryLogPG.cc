@@ -1739,6 +1739,11 @@ void PrimaryLogPG::release_object_locks(
   }
 }
 
+void PrimaryLogPG::init_aggregate_buffer()
+{
+  m_aggregate_buffer = std::make_shared<AggregateBuffer>(osd->cct, pg_id, this);
+}
+
 PrimaryLogPG::PrimaryLogPG(OSDService *o, OSDMapRef curmap,
 			   const PGPool &_pool,
 			   const map<string,string>& ec_profile, spg_t p) :

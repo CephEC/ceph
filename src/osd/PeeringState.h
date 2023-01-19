@@ -587,6 +587,7 @@ public:
 
     utime_t event_time;
     uint64_t event_count;
+    std::function<void()> on_active_;
 
     void clear_event_counters() {
       event_time = utime_t();
@@ -607,6 +608,20 @@ public:
       cct(cct), spgid(spgid),
       dpp(dpp), pl(pl),
       event_count(0) {}
+
+    PeeringMachine(
+      PeeringState *state, CephContext *cct,
+      spg_t spgid,
+      DoutPrefixProvider *dpp,
+      PeeringListener *pl,
+      PGStateHistory *state_history,
+      std::function<void()> on_active) :
+      state(state),
+      state_history(state_history),
+      cct(cct), spgid(spgid),
+      dpp(dpp), pl(pl),
+      event_count(0),
+      on_active_(on_active) {}
 
     /* Accessor functions for state methods */
     ObjectStore::Transaction& get_cur_transaction() {
@@ -1713,6 +1728,16 @@ public:
     OSDMapRef curmap,
     DoutPrefixProvider *dpp,
     PeeringListener *pl);
+
+  PeeringState(
+    CephContext *cct,
+    pg_shard_t pg_whoami,
+    spg_t spgid,
+    const PGPool &pool,
+    OSDMapRef curmap,
+    DoutPrefixProvider *dpp,
+    PeeringListener *pl,
+    std::function<void()> on_active);
 
   /// Process evt
   void handle_event(const boost::statechart::event_base &evt,
