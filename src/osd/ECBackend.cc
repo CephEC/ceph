@@ -838,6 +838,7 @@ bool ECBackend::_handle_message(
     return true;
   }
   case MSG_OSD_EC_READ: {
+    // 从OSD的读请求在这里处理
     auto op = _op->get_req<MOSDECSubOpRead>();
     MOSDECSubOpReadReply *reply = new MOSDECSubOpReadReply;
     reply->pgid = get_parent()->primary_spg_t();
@@ -1033,13 +1034,16 @@ void ECBackend::handle_sub_read(
   for(auto i = op.to_read.begin();
       i != op.to_read.end();
       ++i) {
+    // i.first --> 对象id
     int r = 0;
     for (auto j = i->second.begin(); j != i->second.end(); ++j) {
+      // j => {chunk_offset, length, flag}
       bufferlist bl;
       if ((op.subchunks.find(i->first)->second.size() == 1) && 
           (op.subchunks.find(i->first)->second.front().second == 
                                             ec_impl->get_sub_chunk_count())) {
         dout(25) << __func__ << " case1: reading the complete chunk/shard." << dendl;
+        // 去存储引擎上读数据
         r = store->read(
 	  ch,
 	  ghobject_t(i->first, ghobject_t::NO_GEN, shard),
@@ -1111,6 +1115,7 @@ void ECBackend::handle_sub_read(
           goto error;
         }
 	ceph_assert(hinfo->has_chunk_hash());
+  // 如果本次是把对象的所有chunk一次读出，那么就通过hash检查对象的数据正确性
 	if ((bl.length() == hinfo->get_total_chunk_size()) &&
 	    (j->get<0>() == 0)) {
 	  dout(20) << __func__ << ": Checking hash of " << i->first << dendl;
@@ -1208,6 +1213,7 @@ void ECBackend::handle_sub_read_reply(
   for (auto i = op.buffers_read.begin();
        i != op.buffers_read.end();
        ++i) {
+    // i.first => 对象id
     ceph_assert(!op.errors.count(i->first));	// If attribute error we better not have sent a buffer
     if (!rop.to_read.count(i->first)) {
       // We canceled this read! @see filter_read_op
@@ -1216,20 +1222,26 @@ void ECBackend::handle_sub_read_reply(
     }
     list<boost::tuple<uint64_t, uint64_t, uint32_t> >::const_iterator req_iter =
       rop.to_read.find(i->first)->second.to_read.begin();
+      // rop.to_read.find(i->first)->second得到read_request_t (在objects_read_and_reconstruct中构建的)
+      // req_iter实际上就是一个{以stripe对齐的off, length, flag}的元组链表
+      // 表示我想要读取的stripe数据
     list<
       boost::tuple<
 	uint64_t, uint64_t, map<pg_shard_t, bufferlist> > >::iterator riter =
-      rop.complete[i->first].returned.begin();
+      rop.complete[i->first].returned.begin(); // 指向一个 {以stripe对齐的off, length, 分片id -> bufferlist}的结构
+      // riter存放已经读取到的数据用于返回
     for (list<pair<uint64_t, bufferlist> >::iterator j = i->second.begin();
 	 j != i->second.end();
 	 ++j, ++req_iter, ++riter) {
+    // j => (chunk_offset, bufferlist)  第二个属性中保存了读入的数据
       ceph_assert(req_iter != rop.to_read.find(i->first)->second.to_read.end());
       ceph_assert(riter != rop.complete[i->first].returned.end());
       pair<uint64_t, uint64_t> adjusted =
 	sinfo.aligned_offset_len_to_chunk(
 	  make_pair(req_iter->get<0>(), req_iter->get<1>()));
       ceph_assert(adjusted.first == j->first);
-      riter->get<2>()[from] = std::move(j->second);
+      riter->get<2>()[from] = std::move(j->second); 
+      // 将从from分片（或者说从OSD）上读到的数据填入riter指向的bufferlist中
     }
   }
   for (auto i = op.attrs_read.begin();
@@ -1262,11 +1274,13 @@ void ECBackend::handle_sub_read_reply(
 
   ceph_assert(rop.in_progress.count(from));
   rop.in_progress.erase(from);
+  // 从shard_to_read_map和in_progress中擦除数据，表示收到对应分片的数据
   unsigned is_complete = 0;
   bool need_resend = false;
   // For redundant reads check for completion as each shard comes in,
   // or in a non-recovery read check for completion once all the shards read.
   if (rop.do_redundant_reads || rop.in_progress.empty()) {
+    // in_progress为空，表示所有需要的从OSD（分片）的数据都已经收到
     for (map<hobject_t, read_result_t>::const_iterator iter =
         rop.complete.begin();
       iter != rop.complete.end();
@@ -1276,11 +1290,14 @@ void ECBackend::handle_sub_read_reply(
           iter->second.returned.front().get<2>().begin();
         j != iter->second.returned.front().get<2>().end();
         ++j) {
+        // 把该对象已经读取到的分片ID记录下来
         have.insert(j->first.shard);
         dout(20) << __func__ << " have shard=" << j->first.shard << dendl;
       }
       map<int, vector<pair<int, int>>> dummy_minimum;
       int err;
+      // 根据want_to_read和have来判断目前读取到的数据 是否已经满足本次读请求的需要
+      // 但是注意，这里并没有把数据传进去，而只是比对一下分片id
       if ((err = ec_impl->minimum_to_decode(rop.want_to_read[iter->first], have, &dummy_minimum)) < 0) {
 	dout(20) << __func__ << " minimum_to_decode failed" << dendl;
         if (rop.in_progress.empty()) {
@@ -1349,6 +1366,7 @@ void ECBackend::complete_read_op(ReadOp &rop, RecoveryMessages *m)
     if (reqiter->second.cb) {
       pair<RecoveryMessages *, read_result_t &> arg(
 	m, resiter->second);
+      // 调用CallClientContexts::finish
       reqiter->second.cb->complete(arg);
       reqiter->second.cb = nullptr;
     }
@@ -1649,9 +1667,12 @@ int ECBackend::get_min_avail_to_read_shards(
   map<shard_id_t, pg_shard_t> shards;
   set<pg_shard_t> error_shards;
 
+  // 这里应该是筛选确定哪些EC分片还是有效的，哪些丢失了
   get_all_avail_shards(hoid, error_shards, have, shards, for_recovery);
 
   map<int, vector<pair<int, int>>> need;
+  // 如果我们要读取的分片目前都正常，那么need = {want[i] -> {<0, 1>}}，只读取所需要的分片即可
+  // 如果要读取的数据分片丢失了，那么需要额外读取编码k个分片来“恢复”数据 
   int r = ec_impl->minimum_to_decode(want, have, &need);
   if (r < 0)
     return r;
@@ -1728,6 +1749,7 @@ void ECBackend::start_read_op(
   bool do_redundant_reads,
   bool for_recovery)
 {
+  // 数据搬运过程，没有实际内容
   ceph_tid_t tid = get_parent()->get_tid();
   ceph_assert(!tid_to_read_map.count(tid));
   auto &op = tid_to_read_map.emplace(
@@ -1759,15 +1781,19 @@ void ECBackend::do_read_op(ReadOp &op)
   for (map<hobject_t, read_request_t>::iterator i = op.to_read.begin();
        i != op.to_read.end();
        ++i) {
+    // 从async_read下来的话,need_attrs = false
     bool need_attrs = i->second.want_attrs;
 
     for (auto j = i->second.need.begin();
 	 j != i->second.need.end();
 	 ++j) {
+      // 这个循环遍历每个实际需要访问的分片
       if (need_attrs) {
 	messages[j->first].attrs_to_read.insert(i->first);
 	need_attrs = false;
       }
+      // message[分片id].subchunk[对象id] = j.second
+      // j.second 默认好像是pair<0, 1>, 没看出subchunk有什么意义？
       messages[j->first].subchunks[i->first] = j->second;
       op.obj_to_source[i->first].insert(j->first);
       op.source_to_obj[j->first].insert(i->first);
@@ -1776,11 +1802,13 @@ void ECBackend::do_read_op(ReadOp &op)
 	   i->second.to_read.begin();
 	 j != i->second.to_read.end();
 	 ++j) {
+      // 把stripe的id和length,转换为分片内的chunk offset和length
       pair<uint64_t, uint64_t> chunk_off_len =
 	sinfo.aligned_offset_len_to_chunk(make_pair(j->get<0>(), j->get<1>()));
       for (auto k = i->second.need.begin();
 	   k != i->second.need.end();
 	   ++k) {
+     // message[分片id].to_read[对象id] = {chunk_offset, chunk_length, flag}
 	messages[k->first].to_read[i->first].push_back(
 	  boost::make_tuple(
 	    chunk_off_len.first,
@@ -1790,12 +1818,13 @@ void ECBackend::do_read_op(ReadOp &op)
       ceph_assert(!need_attrs);
     }
   }
-
+  // m = vector{<发送者的osd编号, Message>}
   std::vector<std::pair<int, Message*>> m;
   m.reserve(messages.size());
   for (map<pg_shard_t, ECSubRead>::iterator i = messages.begin();
        i != messages.end();
        ++i) {
+    // 构造MOSDECSubOpRead请求
     op.in_progress.insert(i->first);
     shard_to_read_map[i->first].insert(op.tid);
     i->second.tid = tid;
@@ -1806,6 +1835,7 @@ void ECBackend::do_read_op(ReadOp &op)
       i->first.shard);
     msg->map_epoch = get_osdmap_epoch();
     msg->min_epoch = get_parent()->get_interval_start_epoch();
+    // 把刚才构建的ECSubRead塞进去
     msg->op = i->second;
     msg->op.from = get_parent()->whoami_shard();
     msg->op.tid = tid;
@@ -1817,6 +1847,7 @@ void ECBackend::do_read_op(ReadOp &op)
     m.push_back(std::make_pair(i->first.osd, msg));
   }
   if (!m.empty()) {
+    // 调用OSD的send_message_osd_cluster接口发送消息给从OSD
     get_parent()->send_message_osd_cluster(m, get_osdmap_epoch());
   }
 
@@ -2230,6 +2261,7 @@ void ECBackend::objects_read_async(
 
   uint32_t flags = 0;
   extent_set es;
+  if 
   for (list<pair<boost::tuple<uint64_t, uint64_t, uint32_t>,
 	 pair<bufferlist*, Context*> > >::const_iterator i =
 	 to_read.begin();
@@ -2238,7 +2270,8 @@ void ECBackend::objects_read_async(
     pair<uint64_t, uint64_t> tmp =
       sinfo.offset_len_to_stripe_bounds(
 	make_pair(i->first.get<0>(), i->first.get<1>()));
-
+    // 这里将对象的offset和length对齐到stripe_width
+    // reads oid -> {起始offset所在的条带起始地址，本次需要读取的条带数，flag}
     es.union_insert(tmp.first, tmp.second);
     flags |= i->first.get<2>();
   }
@@ -2274,6 +2307,7 @@ void ECBackend::objects_read_async(
 	to_read(to_read),
 	on_complete(on_complete) {}
     void operator()(map<hobject_t,pair<int, extent_map> > &&results) {
+      // results => map{objectID, pair<error , {off, length, bufferlist}}
       auto dpp = ec->get_parent()->get_dpp();
       ldpp_dout(dpp, 20) << "objects_read_async_cb: got: " << results
 			 << dendl;
@@ -2283,6 +2317,7 @@ void ECBackend::objects_read_async(
       auto &got = results[hoid];
 
       int r = 0;
+      // to_read中记录的offset和length没有对齐到stripe_width，它表示client真实想要读取的数据段
       for (auto &&read: to_read) {
 	if (got.first < 0) {
 	  if (read.second.second) {
@@ -2309,6 +2344,8 @@ void ECBackend::objects_read_async(
 	    offset - range.first.get_off(),
 	    length);
 	  if (read.second.second) {
+      // read.second.second => FillInVerifyExtent(在primaryLogPG::do_read中初始化并填入to_read)
+      // 相当于调用FillInVerifyExtent::finish，主要就是在全对象读取的场景比对一下crc校验码
 	    read.second.second->complete(length);
 	    read.second.second = nullptr;
 	  }
@@ -2316,6 +2353,7 @@ void ECBackend::objects_read_async(
       }
       to_read.clear();
       if (on_complete) {
+      // OpContext::finish_read
 	on_complete.release()->complete(r);
       }
     }
@@ -2351,12 +2389,13 @@ struct CallClientContexts :
     : hoid(hoid), ec(ec), status(status), to_read(to_read) {}
   void finish(pair<RecoveryMessages *, ECBackend::read_result_t &> &in) override {
     ECBackend::read_result_t &res = in.second;
-    extent_map result;
+    extent_map result;  // {off, length, bufferlist}
     if (res.r != 0)
       goto out;
     ceph_assert(res.returned.size() == to_read.size());
     ceph_assert(res.errors.empty());
     for (auto &&read: to_read) {
+      // to_read应该在objects_read_and_reconstruct中就对stripe对齐了才传入CallClientContexts？
       pair<uint64_t, uint64_t> adjusted =
 	ec->sinfo.offset_len_to_stripe_bounds(
 	  make_pair(read.get<0>(), read.get<1>()));
@@ -2368,8 +2407,10 @@ struct CallClientContexts :
 	     res.returned.front().get<2>().begin();
 	   j != res.returned.front().get<2>().end();
 	   ++j) {
+      // 把读到的数据搬到to_decode结构中
 	to_decode[j->first.shard] = std::move(j->second);
       }
+      // 调用EC插件的decode函数解码数据
       int r = ECUtil::decode(
 	ec->sinfo,
 	ec->ec_impl,
@@ -2391,7 +2432,7 @@ struct CallClientContexts :
     }
 out:
     status->complete_object(hoid, res.r, std::move(result));
-    ec->kick_reads();
+    ec->kick_reads(); // 最终调用objects_read_async中构建的cb()
   }
 };
 
@@ -2411,11 +2452,16 @@ void ECBackend::objects_read_and_reconstruct(
 
   map<hobject_t, set<int>> obj_want_to_read;
   set<int> want_to_read;
+  // 正常情况下就是得到一个含k个编号的数组
+  //（在个别情况下不同分片内的数据可能重排序，所以分片的编号也会变化）
+  // 看get_chunk_mapping的注释，解释的很清晰
   get_want_to_read_shards(&want_to_read);
-    
+  
   map<hobject_t, read_request_t> for_read_op;
   for (auto &&to_read: reads) {
     map<pg_shard_t, vector<pair<int, int>>> shards;
+    // 判断want_to_read中的数据分片是否都能正常读取
+    // 如果存在数据分片无法正常读取，则需要额外读取编码分片来恢复数据
     int r = get_min_avail_to_read_shards(
       to_read.first,
       want_to_read,
@@ -2431,10 +2477,10 @@ void ECBackend::objects_read_and_reconstruct(
       to_read.second);
     for_read_op.insert(
       make_pair(
-	to_read.first,
+	to_read.first,  // 对象id
 	read_request_t(
-	  to_read.second,
-	  shards,
+	  to_read.second,  // 本次需要读取的{起始stripe的offset，length，flag}
+	  shards,     // 实际读取的分片编号
 	  false,
 	  c)));
     obj_want_to_read.insert(make_pair(to_read.first, want_to_read));

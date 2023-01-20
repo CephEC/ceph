@@ -130,6 +130,7 @@ int ErasureCode::minimum_to_decode(const set<int> &want_to_read,
   vector<pair<int, int>> default_subchunks;
   default_subchunks.push_back(make_pair(0, get_sub_chunk_count()));
   for (auto &&id : minimum_shard_ids) {
+    // default_subchunks --> (0, 1)
     minimum->insert(make_pair(id, default_subchunks));
   }
   return 0;

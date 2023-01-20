@@ -9,6 +9,8 @@ using ceph::bufferlist;
 using ceph::ErasureCodeInterfaceRef;
 using ceph::Formatter;
 
+// 理论上来说，cephEC的正常读流程不需要进入这个函数
+// 只有数据分片丢失，需要重建整个条带时，才需要进入这里，decode的内部逻辑不需要修改
 int ECUtil::decode(
   const stripe_info_t &sinfo,
   ErasureCodeInterfaceRef &ec_impl,
@@ -18,6 +20,7 @@ int ECUtil::decode(
 
   uint64_t total_data_size = to_decode.begin()->second.length();
   ceph_assert(total_data_size % sinfo.get_chunk_size() == 0);
+  // 确定每个分片读入的数据为chunk_size的整数倍
 
   ceph_assert(out);
   ceph_assert(out->length() == 0);
@@ -25,6 +28,7 @@ int ECUtil::decode(
   for (map<int, bufferlist>::iterator i = to_decode.begin();
        i != to_decode.end();
        ++i) {
+    // 确定每个分片读入的数据长度一致
     ceph_assert(i->second.length() == total_data_size);
   }
 
@@ -32,6 +36,7 @@ int ECUtil::decode(
     return 0;
 
   for (uint64_t i = 0; i < total_data_size; i += sinfo.get_chunk_size()) {
+    // 每一轮循环处理一个条带的数据
     map<int, bufferlist> chunks;
     for (map<int, bufferlist>::iterator j = to_decode.begin();
 	 j != to_decode.end();
@@ -40,6 +45,7 @@ int ECUtil::decode(
     }
     bufferlist bl;
     int r = ec_impl->decode_concat(chunks, &bl);
+    // 将分片数据拼装成一个条带
     ceph_assert(r == 0);
     ceph_assert(bl.length() == sinfo.get_stripe_width());
     out->claim_append(bl);

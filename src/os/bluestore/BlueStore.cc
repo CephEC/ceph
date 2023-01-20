@@ -11057,6 +11057,7 @@ int BlueStore::_do_read(
   }
 
   if (offset + length > o->onode.size) {
+    // 如果实际长度不足，那么需要调整length参数
     length = o->onode.size - offset;
   }
 

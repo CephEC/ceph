@@ -1888,6 +1888,7 @@ void PrimaryLogPG::do_request(
   }
 
   ceph_assert(is_peered() && !recovery_state.needs_flush());
+  // 对于从OSD而言，它会在这一步接收并处理主OSD的子请求（读或写）,然后返回
   if (pgbackend->handle_message(op))
     return;
 
@@ -4394,7 +4395,7 @@ void PrimaryLogPG::execute_ctx(OpContext *ctx)
     if (result >= 0)
       do_osd_op_effects(ctx, m->get_connection());
 
-    complete_read_ctx(result, ctx);
+    complete_read_ctx(result, ctx); // 读请求最后会到这里
     return;
   }
 
@@ -5483,7 +5484,7 @@ static int check_offset_and_length(uint64_t offset, uint64_t length,
 }
 
 struct FillInVerifyExtent : public Context {
-  ceph_le64 *r;
+  ceph_le64 *r;     // op.extent.length的指针
   int32_t *rval;
   bufferlist *outdatap;
   std::optional<uint32_t> maybe_crc;
