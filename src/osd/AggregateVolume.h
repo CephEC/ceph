@@ -64,6 +64,11 @@ public:
    */
   int _find_free_chunk();
 
+  /**
+   * @brief 拼接数据
+  */
+  void _append_data(MOSDOp* d, MOSDOp* s);
+
   void dump_op();
   // chunk
 

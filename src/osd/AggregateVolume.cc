@@ -108,6 +108,11 @@ MOSDOp* Volume::_prepare_volume_op(MOSDOp *m)
   
 }
 
+void Volume::_append_data(MOSDOp* d, MOSDOp* s)
+{
+  // TODO: s中OSDOp的indata全部接到d中OSDOp的indata后面
+}
+
 
 
 // 倾向于用最后一个op的信息隐藏前面的op，保留了最新的OSDMap？
@@ -141,13 +146,13 @@ OpRequestRef Volume::generate_op()
     while (c != chunks.end()) {
       if ((*c)->is_valid()) {
         MOSDOp* temp_m = (*c)->get_nonconst_message();
-        append_data(newest_m, temp_m);
+        _append_data(newest_m, temp_m);
       }
       c++;
     }
   }
   
-  
+  volume_m.encode();
 
   // TODO： 生成OpRequest
   OpRequestRef volume_op = op_tracker.create_request<OpRequest, Message*>(m);
