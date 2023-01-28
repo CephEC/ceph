@@ -1,13 +1,17 @@
 #include "AggregateBuffer.h"
 
-AggregateBuffer::AggregateBuffer(CephContext* _cct, const spg_t& _pgid, PrimaryLogPG* _pg) :cct(_cct), pg(_pg) {
+AggregateBuffer::AggregateBuffer(CephContext* _cct, const spg_t& _pgid, PrimaryLogPG* _pg) :
+  volume_buffer(_cct->_conf.get_val<std::uint64_t>("osd_aggregate_buffer_capacity"),
+                _cct->_conf.get_val<std::uint64_t>("osd_aggregate_buffer_chunk_size"),
+                _pgid),
+  cct(_cct), 
+  pg(_pg) {
     // init volume
-    volume_buffer = new Volume(/*_cct->_conf.get_val<std::uint64_t>("osd_aggregate_buffer_capacity")*/4,
-                               /*_cct->_conf.get_val<std::uint64_t>("osd_aggregate_buffer_chunk_size")*/128,
-                                _pgid);
+    // volume_buffer = new Volume(_cct->_conf.get_val<std::uint64_t>("osd_aggregate_buffer_capacity"),
+    //                            _cct->_conf.get_val<std::uint64_t>("osd_aggregate_buffer_chunk_size"),
+    //                             _pgid);
 
     // init timer
-    // flush_time_out = g_conf().get_val<double>("osd_aggregate_buffer_flush_timeout");
     flush_time_out = _cct->_conf.get_val<double>("osd_aggregate_buffer_flush_timeout");
     flush_timer = new SafeTimer(cct, timer_lock);
     flush_timer->init(); 
@@ -15,10 +19,10 @@ AggregateBuffer::AggregateBuffer(CephContext* _cct, const spg_t& _pgid, PrimaryL
 
 
 
-int AggregateBuffer::write(OpRequestRef op)
+int AggregateBuffer::write(OpRequestRef op, MOSDOp* m)
 {
   // volume满，未处于flushing状态，则等待flush（一般不会为真）
-  if (volume_buffer && volume_buffer->full() && !is_flushing) {
+  if (volume_buffer.full() && !is_flushing) {
      if (!is_flushing) {
        int r = flush();
        if (r < 0) {
@@ -33,11 +37,11 @@ int AggregateBuffer::write(OpRequestRef op)
 
   // ceph_assert(volume_buffer == nullptr);
 
-  if (volume_buffer->add_chunk(op) < 0) {
+  if (volume_buffer.add_chunk(op, m) < 0) {
     return AGGREGATE_FAILED;
   }
 
-  if (volume_buffer->full()) {
+  if (volume_buffer.full()) {
     flush();
   } else {
     if (flush_callback != nullptr) 
@@ -57,9 +61,9 @@ int AggregateBuffer::flush()
   // when start to flush, lock
   flush_lock.lock();
   is_flushing = true;
-  volume_t vol_info = volume_buffer->get_volume_info();
+  volume_t vol_info = volume_buffer.get_volume_info();
   // check full state and add in volume_not_full
-  if (!volume_buffer->full()) {
+  if (!volume_buffer.full()) {
     volume_not_full.push_back(vol_info);
   }
   // add in volume meta cache 
@@ -68,13 +72,25 @@ int AggregateBuffer::flush()
   // TODO: judge if cache ec chunk
 
   // TODO: generate new op for volume and requeue it
-  
+  OpRequestRef op = volume_buffer.generate_op();
+
+  pg->requeue_op(op);
 
   flush_lock.unlock();
   
-  volume_buffer->clear();
+  volume_buffer.clear();
   is_flushing = false;
   flush_timer->cancel_event(flush_callback);
   flush_callback = nullptr;
   return 0;
+}
+
+void AggregateBuffer::send_reply(Message* reply)
+{
+  while (!waiting_for_reply.empty()) {
+    auto op = waiting_for_reply.front();
+    auto m = op->get_req<MOSDOp>();
+    pg->osd->send_message_osd_client(reply, m->get_connection());
+    waiting_for_reply.pop_front();
+  }
 }

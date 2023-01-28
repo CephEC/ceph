@@ -1943,6 +1943,7 @@ private:
   */
   typedef std::shared_ptr<AggregateBuffer> AggregateBufferRef;
   AggregateBufferRef m_aggregate_buffer;
+  bool aggregate_enabled = false;
    
 };
 

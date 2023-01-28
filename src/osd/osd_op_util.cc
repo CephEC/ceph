@@ -30,10 +30,6 @@ bool OpInfo::rwordered() const {
   return may_write() || may_cache() || rwordered_forced();
 }
 
-bool OpInfo::may_aggregate() const {
-  return check_rmw(CEPH_OSD_RMW_FLAG_AGGREGATE); 
-}
-
 bool OpInfo::includes_pg_op() const {
   return check_rmw(CEPH_OSD_RMW_FLAG_PGOP);
 }
