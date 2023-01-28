@@ -6690,8 +6690,8 @@ public:
    }
 };
 WRITE_CLASS_ENCODER(chunk_id_t)
-WRITE_EQ_OPERATORS_1(shard_id_t, id)
-WRITE_CMP_OPERATORS_1(shard_id_t, id)
+WRITE_EQ_OPERATORS_1(chunk_id_t, id)
+WRITE_CMP_OPERATORS_1(chunk_id_t, id)
 
 class chunk_t {
 public:
@@ -6869,7 +6869,7 @@ private:
   // 所属pg编号
   const spg_t pg_id;
 };
-//WRITE_CLASS_ENCODER(volume_t)
+WRITE_CLASS_ENCODER(volume_t)
 
 
 
