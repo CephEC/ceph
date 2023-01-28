@@ -25,7 +25,7 @@ class Volume {
   volume_t volume_info;
 
 public:
-  Volume(uint64_t _cap, uint64_t _chunk_size, const spg_t& _pg_id/*, AggregateBuffer* _buffer*/);
+  Volume(uint64_t _cap, uint64_t _chunk_size, const spg_t& _pg_id);
 
   ~Volume();
   
@@ -42,13 +42,22 @@ public:
    * @param chunk
    * @return int
    */
-  int add_chunk(OpRequestRef op);
+  int add_chunk(OpRequestRef op, MOSDOp* m);
 
   void remove_chunk(hobject_t soid);
   
   void clear(); 
 
   void flush();
+
+  /**
+   * @brief 生成volume的op
+   *
+   * @return OpRequestRef
+   */
+  OpRequestRef generate_op(MOSDOp* m);
+
+  MOSDOp* _prepare_volume_op(MOSDOp *m);
 
   /*
    * @return free chunk index
@@ -67,7 +76,6 @@ private:
   // TODO: EC块缓存
   // std::vector<ECChunk*> ec_chunks;
 
-  // AggregateBuffer* volume_buffer;
   OpRequestRef vol_op;
 };
 

@@ -37,7 +37,6 @@ public:
   bool may_read() const { return op_info.may_read(); }
   bool may_write() const { return op_info.may_write(); }
   bool may_cache() const { return op_info.may_cache(); }
-  bool may_aggregate() const { return op_info.may_aggregate(); }
   bool rwordered_forced() const { return op_info.rwordered_forced(); }
   bool rwordered() const { return op_info.rwordered(); }
   bool includes_pg_op() const { return op_info.includes_pg_op(); }

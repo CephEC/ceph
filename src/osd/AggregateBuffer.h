@@ -31,7 +31,7 @@ class PrimaryLogPG;
 class AggregateBuffer
 {
 
-  Volume* volume_buffer;
+  Volume volume_buffer;
 
 public:
 
@@ -39,18 +39,35 @@ public:
 
   ~AggregateBuffer() { 
     flush_timer->shutdown(); 
-    delete volume_buffer;
   }
 
   /**
    * @brief 对象写入buffer，在add_chunk中执行对象元数据的创建操作
    *
    * @param op
-   * @param osdmap
    * @return int
    */
    int write(OpRequestRef op);
-   // int write_list(MOSDOp*, const OSDMap &osdmap);
+   
+   /**
+    * @brief 加载元数据，未满volume加入volume_not_full，已满volume加入volume_meta_cache
+    * 
+    * 
+   */
+   void load_volume_attr();
+
+  //  /**
+  //   * @brief 调用osd的enqueue函数重排队op
+  //   * 
+  //  */
+  // void requeue_op(OpRequestRef op);
+
+  /**
+   * @brief 把waiting_for_reply
+   * 
+  */
+  void send_reply(Message* reply);
+
   
    /**
    * @brief 预留函数，用于根据请求到来的历史信息预测此时的IO模式，判断是否提前计算EC并缓存

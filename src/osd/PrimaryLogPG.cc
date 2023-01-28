@@ -1742,6 +1742,7 @@ void PrimaryLogPG::release_object_locks(
 void PrimaryLogPG::init_aggregate_buffer()
 {
   m_aggregate_buffer = std::make_shared<AggregateBuffer>(osd->cct, pg_id, this);
+  aggregate_enabled = cct->_conf.get_val<bool>("osd_aggregate_buffer_enabled")
 }
 
 PrimaryLogPG::PrimaryLogPG(OSDService *o, OSDMapRef curmap,
@@ -1762,8 +1763,6 @@ PrimaryLogPG::PrimaryLogPG(OSDService *o, OSDMapRef curmap,
   snap_trimmer_machine.initiate();
 
   m_scrubber = make_unique<PrimaryLogScrub>(this);
-
-  // m_aggregate_buffer = std::make_shared<AggregateBuffer>(o->cct, p, this);
 }
 
 PrimaryLogPG::~PrimaryLogPG()
@@ -1995,16 +1994,14 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
   dout(20) << __func__ << ": op " << *m << dendl;
 
   // temp status 
-  if (op->may_aggregate()) {
+  if (aggregate_enabled) {
     if (op->may_write()) {
-      int r = m_aggregate_buffer->write(op);
+      int r = m_aggregate_buffer->write(op, m);
       if (r == AGGREGATE_PENDING_REPLY) {
         dout(4) << "aggregate pending to reply " << dendl;
         return;
-      } else if (r == AGGREGATE_FAILED || r == AGGREGATE_PENDING_OP) {
-        return;
       } else {
-        
+        return;
       }
 
     } else if (op->may_read()) {
@@ -4396,8 +4393,16 @@ void PrimaryLogPG::execute_ctx(OpContext *ctx)
 	MOSDOpReply *reply = ctx->reply;
 	ctx->reply = nullptr;
 	reply->add_flags(CEPH_OSD_FLAG_ACK | CEPH_OSD_FLAG_ONDISK);
+  if (cct->)
 	dout(10) << " sending reply on " << *m << " " << reply << dendl;
-	osd->send_message_osd_client(reply, m->get_connection());
+  if (aggregate_enabled) {
+    aggregate_buffer->send_reply(reply);
+    // TODO：flush元数据
+    
+
+  } else {
+    osd->send_message_osd_client(reply, m->get_connection());
+  }
 	ctx->sent_reply = true;
 	ctx->op->mark_commit_sent();
       }
