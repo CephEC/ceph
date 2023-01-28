@@ -5129,9 +5129,6 @@ PeeringState::WaitRemoteBackfillReserved::WaitRemoteBackfillReserved(my_context 
   DECLARE_LOCALS;
 
   ps->state_set(PG_STATE_BACKFILL_WAIT);
-  if (context< PeeringMachine >().on_active_ != nullptr) {
-    context< PeeringMachine >().on_active_(); // 从rocksdb中读取属于当前PG的元数据
-  }
   post_event(RemoteBackfillReserved());
 }
 
@@ -5923,7 +5920,10 @@ PeeringState::Active::Active(my_context ctx)
     }
   }
   pl->publish_stats_to_osd();
-  pl->init_aggregate_buffer();
+ if (context< PeeringMachine >().on_active_ != nullptr) {
+    context< PeeringMachine >().on_active_(); // 从rocksdb中读取属于当前PG的元数据
+  }
+ 
   psdout(10) << "Activate Finished" << dendl;
 }
 
