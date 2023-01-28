@@ -2001,7 +2001,7 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
   dout(20) << __func__ << ": op " << *m << dendl;
 
   // temp status 
-  if (aggregate_enabled) {
+  if (aggregate_enabled && !(m->get_flags() & CEPH_OSD_FLAG_AGGREGATE)) {
     if (op->may_write()) {
       int r = m_aggregate_buffer->write(op, m);
       if (r == AGGREGATE_PENDING_REPLY) {
