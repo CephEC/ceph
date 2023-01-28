@@ -75,7 +75,7 @@ public:
 
   void filled_with_zero(uint64_t _data_len, uint64_t _chunk_size) {
     // TODO: chunk填充0
-
+    // ops里面每个op的indata填到128M
   }
 
   void clear() { 

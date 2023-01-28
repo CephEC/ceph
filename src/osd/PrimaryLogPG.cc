@@ -1986,10 +1986,17 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
   MOSDOp *m = static_cast<MOSDOp*>(op->get_nonconst_req());
   ceph_assert(m->get_type() == CEPH_MSG_OSD_OP);
   // 对message中的信息解码
-  if (m->finish_decode()) {
+  if (m->get_flags() & CEPH_OSD_FLAG_AGGREGATE) {
+    m->decode_payload();
     op->reset_desc();   // for TrackedOp
     m->clear_payload();
+  } else {
+    if (m->finish_decode()) {
+      op->reset_desc();   // for TrackedOp
+      m->clear_payload();
+    }
   }
+  
 
   dout(20) << __func__ << ": op " << *m << dendl;
 

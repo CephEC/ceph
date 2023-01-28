@@ -84,7 +84,7 @@ MOSDOp* Volume::_prepare_volume_op(MOSDOp *m)
   auto volume_m = new MOSDOp(m->get_client_inc(), newest_m->get_tid(),
 		      m->get_hobj(), m->get_spg(),
 		      m->get_map_epoch(),
-		      m->get_flags(), m->get_features());
+		      m->get_flags() | CEPH_OSD_FLAG_AGGREGATE, m->get_features());
   // oloc? ops?
   volume_m->set_snapid(m->get_snapid());
   volume_m->set_snap_seq(m->get_snap_seq());
@@ -108,9 +108,14 @@ MOSDOp* Volume::_prepare_volume_op(MOSDOp *m)
   
 }
 
+template<typename V>
 void Volume::_append_data(MOSDOp* d, MOSDOp* s)
 {
-  // TODO: s中OSDOp的indata全部接到d中OSDOp的indata后面
+  V& dops = d->ops;
+  V& sops = s->ops;
+  // s中ops全部挂到d的ops后面
+  dops.insert(dops.end(), sops.begin(), sops.end());
+
 }
 
 
@@ -122,13 +127,11 @@ OpRequestRef Volume::generate_op()
 {
   // TODO: 生成新op然后将数据部分接在op的后面，并且要修改op的部分flag
   MOSDOp* newest_m = nullptr;
-  Chunks* newest_c = nullptr;
   // 逆序
   std::vector<Chunks*>::iterator c = chunks.begin();
   while (c != chunks.end()) {
     if ((*c)->is_valid()) {
       newest_m = (*c)->get_nonconst_message();
-      newest_c = *c; 
       c++;
       break;
     }
@@ -140,9 +143,7 @@ OpRequestRef Volume::generate_op()
   if (newest_m) {
     volume_m = _prepare_volume_op(newest_m);
 
-    // TODO: 拼装&encode，如果不事先encode，message会被截断
-    // encode的开销？
-  
+    // 拼装
     while (c != chunks.end()) {
       if ((*c)->is_valid()) {
         MOSDOp* temp_m = (*c)->get_nonconst_message();
@@ -150,11 +151,15 @@ OpRequestRef Volume::generate_op()
       }
       c++;
     }
+    
+    // 如果不encode，转化为Message会被截断
+    // encode的开销？
+    volume_m->encode_payload(0);
   }
   
-  volume_m.encode();
+  
 
-  // TODO： 生成OpRequest
+  // 生成OpRequest
   OpRequestRef volume_op = op_tracker.create_request<OpRequest, Message*>(m);
   
   return volume_op;
