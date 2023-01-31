@@ -72,7 +72,9 @@ int AggregateBuffer::flush()
   // TODO: judge if cache ec chunk
 
   // TODO: generate new op for volume and requeue it
-  OpRequestRef op = volume_buffer.generate_op();
+  MOSDOp* m = volume_buffer.generate_op();
+  // OpRequestRef op = pg->osd->op_tracker.create_request<OpRequest, Message*>(m);
+  OpRequestRef op = pg->osd->osd->create_request(m);
 
   pg->requeue_op(op);
 

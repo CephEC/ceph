@@ -1742,7 +1742,7 @@ void PrimaryLogPG::release_object_locks(
 void PrimaryLogPG::init_aggregate_buffer()
 {
   m_aggregate_buffer = std::make_shared<AggregateBuffer>(osd->cct, pg_id, this);
-  aggregate_enabled = cct->_conf.get_val<bool>("osd_aggregate_buffer_enabled")
+  aggregate_enabled = cct->_conf.get_val<bool>("osd_aggregate_buffer_enabled");
 }
 
 PrimaryLogPG::PrimaryLogPG(OSDService *o, OSDMapRef curmap,
@@ -4400,10 +4400,9 @@ void PrimaryLogPG::execute_ctx(OpContext *ctx)
 	MOSDOpReply *reply = ctx->reply;
 	ctx->reply = nullptr;
 	reply->add_flags(CEPH_OSD_FLAG_ACK | CEPH_OSD_FLAG_ONDISK);
-  if (cct->)
 	dout(10) << " sending reply on " << *m << " " << reply << dendl;
   if (aggregate_enabled) {
-    aggregate_buffer->send_reply(reply);
+    m_aggregate_buffer->send_reply(reply);
     // TODO：flush元数据
     
 

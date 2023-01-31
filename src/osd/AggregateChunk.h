@@ -67,7 +67,7 @@ public:
   chunk_t get_chunk_info() { return chunk_info; }
   uint64_t get_chunk_size() { return chunk_info.get_chunk_size(); }
   OpRequestRef get_req() { return op; }
-  MOSDOp* get_nonconst_message() { return m_op }
+  MOSDOp* get_nonconst_message() { return m_op; }
 
   bool is_empty() { return chunk_info.is_empty(); }
   bool is_valid() { return chunk_info.is_valid(); }

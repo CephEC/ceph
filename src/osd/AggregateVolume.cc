@@ -79,10 +79,10 @@ int Volume::add_chunk(OpRequestRef op, MOSDOp* m)
 MOSDOp* Volume::_prepare_volume_op(MOSDOp *m)
 {
   // 这里直接用了其中一个写入的obj的名字
-  volume_info.seg_volume_id(m->get_hobj()); 
+  volume_info.set_volume_id(m->get_hobj());  
 
-  auto volume_m = new MOSDOp(m->get_client_inc(), newest_m->get_tid(),
-		      m->get_hobj(), m->get_spg(),
+  auto volume_m = new MOSDOp(m->get_client_inc(), m->get_tid(),
+		      m->get_hobj(), volume_info.get_spg(),
 		      m->get_map_epoch(),
 		      m->get_flags() | CEPH_OSD_FLAG_AGGREGATE, m->get_features());
   // oloc? ops?
@@ -95,27 +95,17 @@ MOSDOp* Volume::_prepare_volume_op(MOSDOp *m)
   volume_m->set_retry_attempt(m->get_retry_attempt());
 
   // 优先级
-  if (m->priority)
-    volume_m->set_priority(m->priority);
+  if (m->get_priority())
+    volume_m->set_priority(m->get_priority());
   // else
   //   volume_m->set_priority(cct->_conf->osd_client_op_priority);
 
-  if (m->reqid != osd_reqid_t()) {
-    volume_m->set_reqid(m->reqid);
+  if (m->get_reqid() != osd_reqid_t()) {
+    volume_m->set_reqid(m->get_reqid());
   }
 
   return volume_m;
   
-}
-
-template<typename V>
-void Volume::_append_data(MOSDOp* d, MOSDOp* s)
-{
-  V& dops = d->ops;
-  V& sops = s->ops;
-  // s中ops全部挂到d的ops后面
-  dops.insert(dops.end(), sops.begin(), sops.end());
-
 }
 
 
@@ -123,12 +113,12 @@ void Volume::_append_data(MOSDOp* d, MOSDOp* s)
 // 倾向于用最后一个op的信息隐藏前面的op，保留了最新的OSDMap？
 // 生成一个新op吧，不然很混乱
 // 部分写的逻辑还需要完善，因为需要读过来再写回去
-OpRequestRef Volume::generate_op()
+MOSDOp* Volume::generate_op()
 {
   // TODO: 生成新op然后将数据部分接在op的后面，并且要修改op的部分flag
   MOSDOp* newest_m = nullptr;
   // 逆序
-  std::vector<Chunks*>::iterator c = chunks.begin();
+  std::vector<Chunk*>::iterator c = chunks.begin();
   while (c != chunks.end()) {
     if ((*c)->is_valid()) {
       newest_m = (*c)->get_nonconst_message();
@@ -138,7 +128,7 @@ OpRequestRef Volume::generate_op()
     c++;
   }
 
-  MOSDOp* volume_m;
+  MOSDOp* volume_m = nullptr;
   
   if (newest_m) {
     volume_m = _prepare_volume_op(newest_m);
@@ -147,7 +137,7 @@ OpRequestRef Volume::generate_op()
     while (c != chunks.end()) {
       if ((*c)->is_valid()) {
         MOSDOp* temp_m = (*c)->get_nonconst_message();
-        _append_data(newest_m, temp_m);
+        _append_data<std::vector<OSDOp>>(newest_m, temp_m);
       }
       c++;
     }
@@ -160,7 +150,7 @@ OpRequestRef Volume::generate_op()
   
 
   // 生成OpRequest
-  OpRequestRef volume_op = op_tracker.create_request<OpRequest, Message*>(m);
+  // OpRequestRef volume_op = op_tracker.create_request<OpRequest, Message*>(m);
   
-  return volume_op;
+  return volume_m;
 }

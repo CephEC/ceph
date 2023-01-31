@@ -47,7 +47,7 @@ public:
    * @param op
    * @return int
    */
-   int write(OpRequestRef op);
+   int write(OpRequestRef op, MOSDOp* m);
    
    /**
     * @brief 加载元数据，未满volume加入volume_not_full，已满volume加入volume_meta_cache
@@ -108,7 +108,8 @@ private:
   PrimaryLogPG *pg;
 
   // 属于PG的VolumeMeta
-  std::vector<volume_t> volume_meta_cache;
+  // std::vector<volume_t> volume_meta_cache;
+  std::map<hobject_t, volume_t> volume_meta_cache;
 
   // 保存非空闲volume的meta
   std::list<volume_t/*, bufferlist*/> volume_not_full;

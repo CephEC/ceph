@@ -6746,14 +6746,15 @@ public:
     chunk_state = (chunk_fill_offset != 0)? INVALID: EMPTY;
   }
    // TODO: 加解码函数
-  void encode(ceph::buffer::list &bl) const {
+   void encode(ceph::buffer::list &bl) const {
     // using ceph::encode;
     ENCODE_START(1, 1, bl);
     encode(chunk_id, bl);
     encode(chunk_state, bl);
     encode(chunk_fill_offset, bl);
     encode(chunk_size, bl);
-    encode(pg_id, bl);
+    encode(pg_id.pgid, bl);
+    encode(pg_id.shard, bl);
     encode(soid, bl);
     encode(is_erasure, bl);
     ENCODE_FINISH(bl);
@@ -6765,10 +6766,17 @@ public:
     decode(chunk_state, bl);
     decode(chunk_fill_offset, bl);
     decode(chunk_size, bl);
-    decode(pg_id, bl);
+    decode(pg_id.pgid, bl);
+    decode(pg_id.shard, bl);
     decode(soid, bl);
     decode(is_erasure, bl);
     DECODE_FINISH(bl);
+  }
+
+  void dump(ceph::Formatter *f) const {
+  }
+
+  static void generate_test_instances(std::list<chunk_t*>& o) {
   }
 private:
   chunk_id_t chunk_id;    // chunk id
@@ -6800,7 +6808,7 @@ public:
   volume_t(int _cap, const spg_t& _pg_id): size(0), cap(_cap), pg_id(_pg_id) {}
   volume_t(): volume_id(hobject_t()), size(0), cap(4), pg_id(spg_t()) {}
   
-  void set_volume_id(hobject_t& oid) { volume_id = oid; }
+  void set_volume_id(const hobject_t& oid) { volume_id = oid; }
 
   bool full() const { return size == cap; }
   bool empty() const {return size == 0; }
@@ -6808,7 +6816,7 @@ public:
   int get_cap() const { return cap; }
   spg_t get_spg() const { return pg_id; }
 
-  void set_oid(const hobject& _oid) { volume_id = _oid; }
+  void set_oid(const hobject_t& _oid) { volume_id = _oid; }
 
   // 对象是否存在
   bool exist(hobject_t& soid) { return chunks.count(soid); }
@@ -6837,26 +6845,28 @@ public:
   }
 
   // TODO: 加解码
-  void encode(ceph::buffer::list &bl) const {
-    // using ceph::encode;
-    ENCODE_START(1, 1, bl);
-    encode(chunks, bl);
-    encode(volume_id, bl);
-    encode(size, bl);
-    encode(cap, bl);
-    encode(pg_id, bl);
-    ENCODE_FINISH(bl);
-  }
-  void decode(ceph::buffer::list::const_iterator &bl) {
-    // using ceph::decode;
-    DECODE_START(81, bl);
-    decode(chunks, bl);
-    decode(volume_id, bl);
-    decode(size, bl);
-    decode(cap, bl);
-    decode(pg_id, bl);
-    DECODE_FINISH(bl);
-  }
+  // void encode(ceph::buffer::list &bl) const {
+    // // using ceph::encode;
+    // ENCODE_START(1, 1, bl);
+    // encode(pg_id.pgid, bl);
+    // encode(chunks, bl);
+    // encode(volume_id, bl);
+    // encode(size, bl);
+    // encode(cap, bl);
+    // encode(pg_id.shard, bl);
+    // ENCODE_FINISH(bl);
+  // }
+  // void decode(ceph::buffer::list::const_iterator &bl) {
+    // // using ceph::decode;
+    // DECODE_START(1, bl);
+    // decode(pg_id.pgid, bl);
+    // decode(chunks, bl);
+    // decode(volume_id, bl);
+    // decode(size, bl);
+    // decode(cap, bl);
+    // decode(pg_id.shard, bl);
+    // DECODE_FINISH(bl);
+  // }
 private:
   // 通过oid索引，其顺序作为chunk id保存在chunk_t中，在chunk创建时赋值
   std::unordered_map<hobject_t, chunk_t> chunks;
@@ -6869,7 +6879,7 @@ private:
   // 所属pg编号
   const spg_t pg_id;
 };
-WRITE_CLASS_ENCODER(volume_t)
+// WRITE_CLASS_ENCODER(volume_t)
 
 
 

@@ -55,6 +55,8 @@
 #include "common/Finisher.h"
 #include "scrubber/osd_scrub_sched.h"
 
+// #include "AggregateBuffer.h"
+
 #define CEPH_OSD_PROTOCOL    10 /* cluster internal */
 
 /*
@@ -1553,12 +1555,17 @@ private:
   void do_waiters();
 
   // -- op tracking --
-  OpTracker op_tracker;
+   OpTracker op_tracker;
   void test_ops(std::string command, std::string args, std::ostream& ss);
   friend class TestOpsSocketHook;
   TestOpsSocketHook *test_ops_hook;
   friend struct C_FinishSplits;
   friend struct C_OpenPGs;
+
+public:
+  OpRequestRef create_request(Message* m) {
+    return op_tracker.create_request<OpRequest, Message*>(m);
+  }
 
 protected:
 
@@ -1695,6 +1702,8 @@ protected:
   friend class PG;
   friend struct OSDShard;
   friend class PrimaryLogPG;
+ // friend class AggregateBuffer;
+
   friend class PgScrubber;
 
 

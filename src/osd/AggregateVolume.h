@@ -55,7 +55,7 @@ public:
    *
    * @return OpRequestRef
    */
-  OpRequestRef generate_op(MOSDOp* m);
+  MOSDOp* generate_op();
 
   MOSDOp* _prepare_volume_op(MOSDOp *m);
 
@@ -67,7 +67,14 @@ public:
   /**
    * @brief 拼接数据
   */
-  void _append_data(MOSDOp* d, MOSDOp* s);
+  template<typename V>
+  void _append_data(MOSDOp* d, MOSDOp* s)
+  {
+    V& dops = d->ops;
+    V& sops = s->ops;
+    // s中ops全部挂到d的ops后面
+    dops.insert(dops.end(), sops.begin(), sops.end());
+}
 
   void dump_op();
   // chunk

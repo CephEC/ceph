@@ -200,6 +200,7 @@ public:
   friend class PromoteCallback;
   friend struct PromoteFinisher;
   friend struct C_gather;
+  friend class AggregateBuffer;
   
   struct ProxyReadOp {
     OpRequestRef op;

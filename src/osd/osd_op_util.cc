@@ -60,7 +60,6 @@ void OpInfo::set_read() { set_rmw_flags(CEPH_OSD_RMW_FLAG_READ); }
 void OpInfo::set_write() { set_rmw_flags(CEPH_OSD_RMW_FLAG_WRITE); }
 void OpInfo::set_class_read() { set_rmw_flags(CEPH_OSD_RMW_FLAG_CLASS_READ); }
 void OpInfo::set_class_write() { set_rmw_flags(CEPH_OSD_RMW_FLAG_CLASS_WRITE); }
-void OpInfo::set_aggregate() { set_rmw_flags(CEPH_OSD_RMW_FLAG_AGGREGATE); }
 void OpInfo::set_pg_op() { set_rmw_flags(CEPH_OSD_RMW_FLAG_PGOP); }
 void OpInfo::set_cache() { set_rmw_flags(CEPH_OSD_RMW_FLAG_CACHE); }
 void OpInfo::set_promote() { set_rmw_flags(CEPH_OSD_RMW_FLAG_FORCE_PROMOTE); }
