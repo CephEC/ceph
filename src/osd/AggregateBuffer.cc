@@ -1,8 +1,8 @@
 #include "AggregateBuffer.h"
 
 AggregateBuffer::AggregateBuffer(CephContext* _cct, const spg_t& _pgid, PrimaryLogPG* _pg) :
-  volume_buffer(_cct->_conf.get_val<std::uint64_t>("osd_aggregate_buffer_capacity"),
-                _cct->_conf.get_val<std::uint64_t>("osd_aggregate_buffer_chunk_size"),
+  volume_buffer(/*_cct->_conf.get_val<std::uint64_t>("osd_aggregate_buffer_capacity")*/3,
+               /*_cct->_conf.get_val<std::uint64_t>("osd_aggregate_buffer_chunk_size")*/128,
                 _pgid),
   cct(_cct), 
   pg(_pg) {
@@ -12,7 +12,8 @@ AggregateBuffer::AggregateBuffer(CephContext* _cct, const spg_t& _pgid, PrimaryL
     //                             _pgid);
 
     // init timer
-    flush_time_out = _cct->_conf.get_val<double>("osd_aggregate_buffer_flush_timeout");
+    flush_time_out = 5;
+    // flush_time_out = _cct->_conf.get_val<double>("osd_aggregate_buffer_flush_timeout");
     flush_timer = new SafeTimer(cct, timer_lock);
     flush_timer->init(); 
  };
