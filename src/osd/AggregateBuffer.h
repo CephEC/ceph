@@ -108,11 +108,11 @@ private:
   PrimaryLogPG *pg;
 
   // 属于PG的VolumeMeta
-  // std::vector<volume_t> volume_meta_cache;
-  std::unordered_map<hobject_t, volume_t*> volume_meta_cache;
+  std::vector<volume_t> volume_meta_cache;
+  // std::unordered_map<hobject_t, volume_t> volume_meta_cache;
 
   // 保存非空闲volume的meta
-  std::list<volume_t*> volume_not_full;
+  std::list<volume_t> volume_not_full;
 
   // TODO: 缓存EC块
   // std::map<volume_t, bufferlist> ec_buffer;

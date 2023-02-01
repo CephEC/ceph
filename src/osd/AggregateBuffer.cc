@@ -68,7 +68,7 @@ int AggregateBuffer::flush()
     volume_not_full.push_back(vol_info);
   }
   // add in volume meta cache
-  // volume_meta_cache.push_back(vol_info);
+  volume_meta_cache.push_back(vol_info);
   
   
   // TODO: judge if cache ec chunk
