@@ -56,6 +56,7 @@ int AggregateBuffer::write(OpRequestRef op, MOSDOp* m)
   return AGGREGATE_SUCCESS;
 }
 
+
 int AggregateBuffer::flush()
 {
   // when start to flush, lock
@@ -66,8 +67,9 @@ int AggregateBuffer::flush()
   if (!volume_buffer.full()) {
     volume_not_full.push_back(vol_info);
   }
-  // add in volume meta cache 
-  volume_meta_cache.push_back(vol_info);
+  // add in volume meta cache
+  // volume_meta_cache.push_back(vol_info);
+  
   
   // TODO: judge if cache ec chunk
 

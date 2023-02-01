@@ -6778,6 +6778,17 @@ public:
 
   static void generate_test_instances(std::list<chunk_t*>& o) {
   }
+
+  chunk_t& operator=(const chunk_t& rhs) {
+    this->chunk_id = rhs.chunk_id;
+    this->chunk_state = rhs.chunk_state;
+    this->chunk_fill_offset = rhs.chunk_fill_offset;
+    this->chunk_size = rhs.chunk_size;
+    this->pg_id = rhs.pg_id;
+    this->soid = rhs.soid;
+    this->is_erasure = rhs.is_erasure;
+    return *this;
+  }
 private:
   chunk_id_t chunk_id;    // chunk id
 
@@ -6867,6 +6878,18 @@ public:
     // decode(pg_id.shard, bl);
     // DECODE_FINISH(bl);
   // }
+  //
+  volume_t& operator=(const volume_t& rhs) {
+    this->chunks.clear();
+    for(auto chunk: rhs.chunks) {
+      this->chunks[chunk.first] = chunk.second;
+    }
+    this->volume_id = rhs.volume_id;
+    this->size = rhs.size;
+    this->cap = rhs.cap;
+    this->pg_id = rhs.pg_id;
+    return *this;
+  }
 private:
   // 通过oid索引，其顺序作为chunk id保存在chunk_t中，在chunk创建时赋值
   std::unordered_map<hobject_t, chunk_t> chunks;
@@ -6877,7 +6900,7 @@ private:
   // volume容量
   int cap;
   // 所属pg编号
-  const spg_t pg_id;
+  spg_t pg_id;
 };
 // WRITE_CLASS_ENCODER(volume_t)
 

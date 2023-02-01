@@ -192,6 +192,26 @@ public:
     // be used before the full message is decoded.
     reqid.inc = inc;
   }
+
+  MOSDOp(int inc, long tid, const hobject_t& ho, const spg_t& _pgid,
+	 epoch_t _osdmap_epoch,
+	 int _flags, uint64_t feat)
+    : MOSDFastDispatchOp(CEPH_MSG_OSD_OP, HEAD_VERSION, COMPAT_VERSION),
+      client_inc(inc),
+      osdmap_epoch(_osdmap_epoch), flags(_flags), retry_attempt(-1),
+      hobj(ho),
+      pgid(_pgid),
+      partial_decode_needed(false),
+      final_decode_needed(false),
+      features(feat),
+      bdata_encode(false) {
+    set_tid(tid);
+
+    // also put the client_inc in reqid.inc, so that get_reqid() can
+    // be used before the full message is decoded.
+    reqid.inc = inc;
+  }
+
 private:
   ~MOSDOp() final {}
 
