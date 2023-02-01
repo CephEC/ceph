@@ -4,7 +4,8 @@
 
 #include "AggregateVolume.h"
 
-Volume::Volume(uint64_t _cap, uint64_t _chunk_size, const spg_t& _pg_id)
+
+Volume::Volume(uint32_t _cap, uint32_t _chunk_size, const spg_t& _pg_id)
   : volume_info(_cap, _pg_id),
     vol_op(nullptr)
 {
@@ -44,11 +45,9 @@ void Volume::init(uint64_t _cap, uint64_t _chunk_size)
   // TODO: 预分配EC Chunk，这里需要获取ec pool的配置，m的值
 
 
-}
-
-int Volume::_find_free_chunk()
+uint32_t Volume::_find_free_chunk()
 {
-  int free_index = 0;
+  uint32_t free_index = 0;
   while (free_index < volume_info.get_cap() && bitmap[free_index]) 
     free_index++;
   return free_index;
@@ -57,11 +56,9 @@ int Volume::_find_free_chunk()
 
 int Volume::add_chunk(OpRequestRef op, MOSDOp* m) 
 {
-  int ret = 0;
-  
   // TODO：查找oid是否存在（覆盖写情况）
 
-  int free_chunk_index = _find_free_chunk();
+  uint32_t free_chunk_index = _find_free_chunk();
   if (free_chunk_index >= volume_info.get_cap()) {
     return -1;
   }

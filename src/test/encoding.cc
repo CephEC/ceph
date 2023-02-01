@@ -1,5 +1,6 @@
 #include "include/buffer.h"
 #include "include/encoding.h"
+#include "osd/osd_types.h"
 
 #include <fmt/format.h>
 #include "gtest/gtest.h"
@@ -14,6 +15,23 @@ static void test_encode_and_decode(const T& src)
   T dst;
   auto i = bl.cbegin();
   decode(dst, i);
+  ASSERT_EQ(src, dst) << "Encoding roundtrip changed the string: orig=" << src << ", but new=" << dst;
+}
+
+TEST(EncodingRoundTrip, VolumeMetaSimple) {
+  bufferlist bl(1000000);
+  volume_t src();
+  hobject_t arr[4];
+  arr[0].set_key("0"); arr[1].set_key("1"); arr[2].set_key("2"); arr[3].set_key("3");
+  src.add_chunk(arr[0], chunk_t());
+  src.add_chunk(arr[1], chunk_t());
+  src.add_chunk(arr[2], chunk_t());
+  src.add_chunk(arr[3], chunk_t());
+  encode(src, bl);
+  auto i = bl.cbegin();
+  volume_t dst();
+  decode(dst, i);
+  std::cout << dst << std::endl;
   ASSERT_EQ(src, dst) << "Encoding roundtrip changed the string: orig=" << src << ", but new=" << dst;
 }
 

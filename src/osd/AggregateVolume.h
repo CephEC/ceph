@@ -25,7 +25,7 @@ class Volume {
   volume_t volume_info;
 
 public:
-  Volume(uint64_t _cap, uint64_t _chunk_size, const spg_t& _pg_id);
+  Volume(uint32_t _cap, uint32_t _chunk_size, const spg_t& _pg_id);
 
   ~Volume();
   
@@ -34,7 +34,7 @@ public:
   void set_cap(uint64_t _cap) { volume_info.set_cap(_cap); }
 
   spg_t get_spg() const { return volume_info.get_spg(); }
-  uint64_t get_cap() const { return volume_info.get_cap(); }
+  uint32_t get_cap() const { return volume_info.get_cap(); }
   volume_t get_volume_info() const { return volume_info; }
 
   object_info_t find_object(hobject_t soid);
@@ -66,7 +66,7 @@ public:
   /*
    * @return free chunk index
    */
-  int _find_free_chunk();
+  uint32_t _find_free_chunk();
 
   /**
    * @brief 拼接数据
