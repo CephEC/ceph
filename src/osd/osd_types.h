@@ -6784,6 +6784,27 @@ public:
     this->is_erasure = rhs.is_erasure;
     return *this;
   }
+
+  bool operator==(const chunk_t& rhs) const {
+    return get_chunk_id() == rhs.get_chunk_id() && chunk_state == rhs.chunk_state &&
+      chunk_fill_offset == rhs.chunk_fill_offset && chunk_size == rhs.chunk_size &&
+      is_erasure == rhs.is_erasure && soid == rhs.soid;
+  }
+  bool operator!=(const chunk_t& rhs) const {
+    return get_chunk_id() != rhs.get_chunk_id() || chunk_state != rhs.chunk_state ||
+      chunk_fill_offset != rhs.chunk_fill_offset || chunk_size != rhs.chunk_size ||
+      is_erasure != rhs.is_erasure || soid != rhs.soid;
+  }
+  friend std::ostream& operator<<(std::ostream& out, const chunk_t& o) {
+    out << "chunk_id = " << int8_t(o.chunk_id) << std::endl;
+    out << "chunk_state = " << o.chunk_state << std::endl;
+    out << "chunk_fill_offset = " << o.chunk_fill_offset << std::endl;
+    out << "chunk_size = " << o.chunk_size << std::endl;
+    out << "pg_id = " << o.pg_id << std::endl;
+    out << "soid = " << o.soid << std::endl;
+    out << "is_erasure = " << o.is_erasure << std::endl;
+    return out;
+  }
   void dump(ceph::Formatter *f) const {
   }
 
@@ -6803,15 +6824,6 @@ private:
   bool is_erasure;
 };
 WRITE_CLASS_ENCODER(chunk_t)
-
-inline bool operator==(const chunk_t& l, const chunk_t& r) {
-  if (l.get_chunk_id() == r.get_chunk_id() 
-		  && l.get_spg() == r.get_spg()
-		  && l.get_oid() == r.get_oid()
-		  && l.get_type() == r.get_type())
-  	return true;
-  return false;
-}
 
 /**
  * volume_t - information about volume buffer
@@ -6865,6 +6877,7 @@ public:
     ENCODE_START(1, 1, bl);
     encode(cap, bl);
     encode(size, bl);
+    encode(volume_id, bl);
     encode(chunks, bl);
     ENCODE_FINISH(bl);
   }
@@ -6873,6 +6886,7 @@ public:
     DECODE_START(1, bl);
     decode(cap, bl);
     decode(size, bl);
+    decode(volume_id, bl);
     decode(chunks, bl);
     DECODE_FINISH(bl);
   }
@@ -6887,6 +6901,32 @@ public:
     this->pg_id = rhs.pg_id;
     return *this;
   }
+
+  bool operator==(const volume_t& rhs) const {
+    if (rhs.chunks.size() != chunks.size()) {
+      return false;
+    }
+    for(auto &kv: rhs.chunks) {
+      auto it = chunks.find(kv.first);
+      if (it == chunks.end()) {
+        return false;
+      }
+      if (it->second != kv.second) {
+        return false;
+      }
+    }
+    return volume_id == rhs.volume_id && 
+      size == rhs.size && cap == rhs.cap;
+  }
+
+  friend std::ostream& operator<<(std::ostream& out, const volume_t& o) {
+    for(auto &kv: o.chunks) {
+      out << "oid = " << kv.first << std::endl;
+      out << "chunk_meta = " << kv.second << std::endl;
+    }
+    return out;
+  }
+
   void dump(ceph::Formatter *f) const {
   }
   static void generate_test_instances(std::list<volume_t*>& o) {}

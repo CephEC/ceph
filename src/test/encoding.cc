@@ -20,18 +20,18 @@ static void test_encode_and_decode(const T& src)
 
 TEST(EncodingRoundTrip, VolumeMetaSimple) {
   bufferlist bl(1000000);
-  volume_t src();
+  volume_t src;
   hobject_t arr[4];
   arr[0].set_key("0"); arr[1].set_key("1"); arr[2].set_key("2"); arr[3].set_key("3");
-  src.add_chunk(arr[0], chunk_t());
-  src.add_chunk(arr[1], chunk_t());
-  src.add_chunk(arr[2], chunk_t());
-  src.add_chunk(arr[3], chunk_t());
+  chunk_t ck;
+  src.add_chunk(arr[0], ck);
+  src.add_chunk(arr[1], ck);
+  src.add_chunk(arr[2], ck);
+  src.add_chunk(arr[3], ck);
   encode(src, bl);
   auto i = bl.cbegin();
-  volume_t dst();
+  volume_t dst;
   decode(dst, i);
-  std::cout << dst << std::endl;
   ASSERT_EQ(src, dst) << "Encoding roundtrip changed the string: orig=" << src << ", but new=" << dst;
 }
 

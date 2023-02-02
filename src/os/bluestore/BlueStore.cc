@@ -11616,7 +11616,7 @@ int BlueStore::load_volume_attrs(
   Collection *c = static_cast<Collection *>(c_.get());
   if (!c->exists)
     return -ENOENT;
-  dout(10) << __func__  << c_.get_cid() << " start to read volume_attrs " <<  dendl;
+  dout(10) << __func__ << " start to read volume_attrs " <<  dendl;
   std::shared_lock l(c->lock);
   // 遍历得到Onode
   KeyValueDB::Iterator it = db->get_iterator(PREFIX_OBJ);
