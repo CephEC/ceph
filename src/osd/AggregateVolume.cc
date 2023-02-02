@@ -10,18 +10,7 @@ Volume::Volume(uint64_t _cap, uint64_t _chunk_size, const spg_t& _pg_id)
     vol_op(nullptr)
 {
  
-  bitmap.resize(_cap);
-  bitmap.assign(_cap, false);
-
-  // 预分配Chunk
-  for (uint8_t i = 0; i < _cap; i++) {
-    Chunk* c = new Chunk(i, _pg_id, _chunk_size, this);
-    chunks.push_back(c);
-  }
-
-  // TODO: 预分配EC Chunk，这里需要获取ec pool的配置，m的值
-
-} 
+ } 
 
 Volume::~Volume()
 {
@@ -41,7 +30,22 @@ void Volume::clear()
   volume_info.clear(); 
 }
 
+void Volume::init(uint64_t _cap, uint64_t _chunk_size)
+{
+  volume_info.set_cap(_cap);
+  bitmap.resize(_cap);
+  bitmap.assign(_cap, false);
 
+  // 预分配Chunk
+  for (uint8_t i = 0; i < _cap; i++) {
+    Chunk* c = new Chunk(i, get_spg(), _chunk_size, this);
+    chunks.push_back(c);
+  }
+
+  // TODO: 预分配EC Chunk，这里需要获取ec pool的配置，m的值
+
+
+}
 
 int Volume::_find_free_chunk()
 {

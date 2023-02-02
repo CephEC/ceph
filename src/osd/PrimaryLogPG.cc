@@ -1739,11 +1739,6 @@ void PrimaryLogPG::release_object_locks(
   }
 }
 
-void PrimaryLogPG::init_aggregate_buffer()
-{
-  m_aggregate_buffer = std::make_shared<AggregateBuffer>(osd->cct, pg_id, this);
-  aggregate_enabled = cct->_conf.get_val<bool>("osd_aggregate_buffer_enabled");
-}
 
 PrimaryLogPG::PrimaryLogPG(OSDService *o, OSDMapRef curmap,
 			   const PGPool &_pool,
@@ -1762,6 +1757,7 @@ PrimaryLogPG::PrimaryLogPG(OSDService *o, OSDMapRef curmap,
     pgbackend->get_is_recoverable_predicate());
   snap_trimmer_machine.initiate();
 
+  m_aggregate_buffer = std::make_shared<AggregateBuffer>(o->cct, p, this);
   m_scrubber = make_unique<PrimaryLogScrub>(this);
 }
 
@@ -1985,6 +1981,21 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
   // change anything that will break other reads on m (operator<<).
   MOSDOp *m = static_cast<MOSDOp*>(op->get_nonconst_req());
   ceph_assert(m->get_type() == CEPH_MSG_OSD_OP);
+  
+  // lazy initialize
+  if (!m_aggregate_buffer->is_initialized() && cct->_conf.get_val<bool>("osd_aggregate_buffer_enabled")) {
+    aggregate_enabled = true;
+    uint64_t cap = cct->_conf.get_val<std::uint64_t>("osd_aggregate_buffer_capacity");
+    uint64_t chunk_size = cct->_conf.get_val<std::uint64_t>("osd_aggregate_buffer_chunk_size");
+    double time_out = cct->_conf.get_val<std::uint64_t>("osd_aggregate_buffer_chunk_size");
+    dout(5) << __func__ << "init aggregate buffer, cap = " << cap 
+	    << " chunk_size = " << chunk_size
+	    << " flush_time_out = " << time_out << dendl;
+    
+    m_aggregate_buffer->init(cap, chunk_size, time_out);
+    
+  }
+  
   // 对message中的信息解码
   if (m->get_flags() & CEPH_OSD_FLAG_AGGREGATE) {
     m->decode_payload();

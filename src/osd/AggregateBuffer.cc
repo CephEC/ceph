@@ -1,9 +1,11 @@
 #include "AggregateBuffer.h"
 
 AggregateBuffer::AggregateBuffer(CephContext* _cct, const spg_t& _pgid, PrimaryLogPG* _pg) :
-  volume_buffer(/*_cct->_conf.get_val<std::uint64_t>("osd_aggregate_buffer_capacity")*/3,
-               /*_cct->_conf.get_val<std::uint64_t>("osd_aggregate_buffer_chunk_size")*/128,
-                _pgid),
+  // volume_buffer(_cct->_conf.get_val<std::uint64_t>("osd_aggregate_buffer_capacity"),
+               // _cct->_conf.get_val<std::uint64_t>("osd_aggregate_buffer_chunk_size"),
+                // _pgid),
+  volume_buffer(0, 0, _pgid),
+  flush_time_out(0),
   cct(_cct), 
   pg(_pg) {
     // init volume
@@ -12,13 +14,18 @@ AggregateBuffer::AggregateBuffer(CephContext* _cct, const spg_t& _pgid, PrimaryL
     //                             _pgid);
 
     // init timer
-    flush_time_out = 5;
+    // flush_time_out = 5;
     // flush_time_out = _cct->_conf.get_val<double>("osd_aggregate_buffer_flush_timeout");
     flush_timer = new SafeTimer(cct, timer_lock);
     flush_timer->init(); 
  };
 
-
+void AggregateBuffer::init(uint64_t _volume_cap, uint64_t _chunk_size, double _time_out)
+{
+  initialized = true; 
+  volume_buffer.init(_volume_cap, _chunk_size);
+  flush_time_out = _time_out; 
+}
 
 int AggregateBuffer::write(OpRequestRef op, MOSDOp* m)
 {

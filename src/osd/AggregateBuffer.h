@@ -28,9 +28,12 @@
 class Volume;
 class PrimaryLogPG;
 
+static constexpr uint64_t default_capacity = 3;
+static constexpr uint64_t default_chunk_size = 128;
+static constexpr double default_time_out = 200;
+
 class AggregateBuffer
 {
-
   Volume volume_buffer;
 
 public:
@@ -40,6 +43,13 @@ public:
   ~AggregateBuffer() { 
     flush_timer->shutdown(); 
   }
+
+  /**
+   * @brief 初始化buffer(lazy)
+   */
+  void init(uint64_t _volume_cap, uint64_t _chunk_size, double _time_out);
+  bool is_initialized() { return initialized; }
+
 
   /**
    * @brief 对象写入buffer，在add_chunk中执行对象元数据的创建操作
@@ -106,6 +116,8 @@ private:
 private:
   CephContext* cct;
   PrimaryLogPG *pg;
+
+  bool initialized = false;
 
   // 属于PG的VolumeMeta
   std::vector<volume_t> volume_meta_cache;

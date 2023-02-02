@@ -1481,7 +1481,6 @@ public:
 	       spg_t p);
   ~PrimaryLogPG() override;
 
-  void init_aggregate_buffer() override;
 
   void do_command(
     const std::string_view& prefix,
@@ -1945,6 +1944,7 @@ private:
   typedef std::shared_ptr<AggregateBuffer> AggregateBufferRef;
   AggregateBufferRef m_aggregate_buffer;
   bool aggregate_enabled = false;
+  bool aggregate_initialized = false;
    
 };
 

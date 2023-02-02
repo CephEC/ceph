@@ -6820,6 +6820,7 @@ public:
   volume_t(): volume_id(hobject_t()), size(0), cap(4), pg_id(spg_t()) {}
   
   void set_volume_id(const hobject_t& oid) { volume_id = oid; }
+  void set_cap(uint64_t _cap) { cap = _cap; }
 
   bool full() const { return size == cap; }
   bool empty() const {return size == 0; }
@@ -6827,7 +6828,6 @@ public:
   int get_cap() const { return cap; }
   spg_t get_spg() const { return pg_id; }
 
-  void set_oid(const hobject_t& _oid) { volume_id = _oid; }
 
   // 对象是否存在
   bool exist(hobject_t& soid) { return chunks.count(soid); }

@@ -31,11 +31,15 @@ public:
   
   bool full() { return volume_info.full(); }
 
+  void set_cap(uint64_t _cap) { volume_info.set_cap(_cap); }
+
   spg_t get_spg() const { return volume_info.get_spg(); }
   uint64_t get_cap() const { return volume_info.get_cap(); }
   volume_t get_volume_info() const { return volume_info; }
 
   object_info_t find_object(hobject_t soid);
+
+  void init(uint64_t _cap, uint64_t _chunk_size);
   /**
    * @brief chunk加进volume
    *
