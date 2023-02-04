@@ -76,6 +76,19 @@ int Volume::add_chunk(OpRequestRef op, MOSDOp* m)
   return 0;
 }
 
+OSDOp Volume::generate_write_meta_op() {
+  OSDOp op{CEPH_OSD_OP_SETXATTR};
+  std::string name("volume_meta");
+  bufferlist bl;
+  encode(volume_info, bl);
+  op.op.xattr.name_len = std::strlen(name);
+  op.op.xattr.value_len = bl.length();
+  op.indata.append(name, op.op.xattr.name_len);
+  op.indata.append(bl);
+  return op;
+}
+
+
 MOSDOp* Volume::_prepare_volume_op(MOSDOp *m)
 {
   // 这里直接用了其中一个写入的obj的名字
@@ -149,6 +162,11 @@ MOSDOp* Volume::generate_op()
 
     volume_m->set_connection(ConnectionRef());
     
+    // 将volume_t元数据编码封装为一个写扩展属性的OSDOp
+    // 这个OSDOp放置在MOSDOp中OSDOp数组的最末端，便于在on_commit回调中找到它
+    OSDOp write_meta_op = generate_write_meta_op();
+    (volume_m->ops).push_back(write_meta_op);
+
     // 如果不encode，转化为Message会被截断
     // encode的开销？
     volume_m->encode_payload(volume_m->get_features());

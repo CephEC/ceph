@@ -65,12 +65,13 @@ public:
    */
    int write(OpRequestRef op, MOSDOp* m);
    
-   /**
-    * @brief 加载元数据，未满volume加入volume_not_full，已满volume加入volume_meta_cache
-    * 
-    * 
+  /**
+   * @brief 读rados对象，需要经过元数据转译成对 volume对象的读(通过指针直接修改MOSDOp内容)
+   *
+   * @param m
+   * @return int
    */
-   void load_volume_attr();
+   int read(MOSDOp* m);
 
   //  /**
   //   * @brief 调用osd的enqueue函数重排队op
@@ -86,7 +87,18 @@ public:
   
   void send_reply(MOSDOpReply* reply, bool ignore_out_data);
 
-  
+  /**
+   * @brief 将已编码的元数据信息解码更新到volume_meta_cache中
+   * 
+  */
+  void insert_to_meta_cache(bufferlist& bl);
+
+  /**
+   * @brief volume对象写盘完成后，将其元信息更新到内存的缓存中
+   * 
+  */
+  void update_meta_cache(std::vector<OSDOp> *ops);
+
    /**
    * @brief 预留函数，用于根据请求到来的历史信息预测此时的IO模式，判断是否提前计算EC并缓存
    * 调用位置：volume flush函数中
@@ -146,11 +158,11 @@ private:
   bool initialized = false;
 
   // 属于PG的VolumeMeta
-  std::vector<volume_t> volume_meta_cache;
-  // std::unordered_map<hobject_t, volume_t> volume_meta_cache;
+  // std::vector<volume_t> volume_meta_cache;
+  std::map<hobject_t, std::shared_ptr<volume_t>> volume_meta_cache;
 
   // 保存非空闲volume的meta
-  std::list<volume_t> volume_not_full;
+  std::list<std::shared_ptr<volume_t>> volume_not_full;
 
   // TODO: 缓存EC块
   // std::map<volume_t, bufferlist> ec_buffer;

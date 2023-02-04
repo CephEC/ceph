@@ -63,6 +63,12 @@ public:
 
   MOSDOp* _prepare_volume_op(MOSDOp *m);
 
+  /**
+   * @brief 生成volume元数据的Op（SETXATTR）
+   *
+   */
+  OSDOp generate_write_meta_op();
+
   /*
    * @return free chunk index
    */

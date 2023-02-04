@@ -111,10 +111,7 @@ int AggregateBuffer::flush()
   // when start to flush, lock
   is_flushing = true;
   volume_t vol_info = volume_buffer.get_volume_info();
-  // check full state and add in volume_not_full
-  if (!volume_buffer.full()) {
-    volume_not_full.push_back(vol_info);
-  }
+
   // TODO: judge if cache ec chunk
 
   // TODO: generate new op for volume and requeue it
@@ -137,7 +134,27 @@ int AggregateBuffer::flush()
 
 }
 
-void AggregateBuffer::send_reply(MOSDOpReply* reply, bool ignore_out_data)
+void AggregateBuffer::update_meta_cache(std::vector<OSDOp> *ops) {
+  for (auto &osd_op : ctx->ops) {
+    if (osd_op.op.op == CEPH_OSD_OP_SETXATTR) {
+      bufferlist bl;
+      string aname;
+      osd_op.indata.copy(osd_op.op.xattr.name_len, aname);
+      osd_op.indata.copy(osd_op.op.xattr.value_len, bl);
+      // TODO(zhengfuyu): 容量先写死为4了，后面再看需不需要改成配置参数
+      auto meta_ptr = std::make_shared<volume_t>(4, get_pgid());
+      auto p = bl.cbegin();
+      decode(*meta_ptr, p);
+      insert_to_meta_cache(meta_ptr);
+      if (!meta_ptr.full()) {
+        // 未满的volume添加到volume_not_full
+        volume_not_full.push_back(meta_ptr);
+      }
+    }
+  }
+}
+
+void AggregateBuffer::send_reply(Message* reply)
 {
   while (!waiting_for_reply.empty()) {
     auto op = waiting_for_reply.front();
@@ -168,20 +185,44 @@ void AggregateBuffer::cancel_flush_timeout()
 
 void AggregateBuffer::reset_flush_timeout()
 {
-  
-   cancel_flush_timeout();
+  cancel_flush_timeout();
+  dout(4) << "reset flush timer" << dendl;
+  flush_callback =  new C_FlushContext{this, [this](int) {
+          dout(4) << " time out, start to flush. " << dendl; 
+    flush();	  
+  }};  
+  std::lock_guard l(timer_lock);    
+    if(flush_timer.add_event_after(flush_time_out, flush_callback)) {
+    dout(4) << " reset_flush_timeout " << flush_callback
+      << " after " << flush_time_out << " seconds " << dendl;
+  } else {
+    flush_callback = nullptr;
+  }
+}
 
-   dout(4) << "reset flush timer" << dendl;
-   flush_callback =  new C_FlushContext{this, [this](int) {
-       	   dout(4) << " time out, start to flush. " << dendl; 
-	   flush();	  
-	  }};  
-    std::lock_guard l(timer_lock);    
-      if(flush_timer.add_event_after(flush_time_out, flush_callback)) {
-      dout(4) << " reset_flush_timeout " << flush_callback
-	      << " after " << flush_time_out << " seconds " << dendl;
-    } else {
-      flush_callback = nullptr;
+void AggregateBuffer::insert_to_meta_cache(std::shared_ptr<volume_t> meta_ptr) {
+  auto soid_vec = meta_ptr->get_all_soid();
+  for (auto soid : soid_vec) {
+    volume_meta_cache[*soid] = meta_ptr;
+  }
+}
+
+int AggregateBuffer::read(MOSDOp* m) {
+  auto volume_meta_ptr = volume_meta_cache.find(m->get_hobj());
+  if (volume_meta_ptr == volume_meta_cache.end()) {
+    // rados对象不存在
+    return -1;
+  }
+  auto chunk_meta = volume_meta_ptr->get_chunk(m->get_hobj());
+  m->set_hobj(volume_meta_ptr->get_oid());
+  for (auto &osd_op : m->ops) {
+    if (osd_op.op.op == CEPH_OSD_OP_READ ||
+        osd_op.op.op == CEPH_OSD_OP_SPARSE_READ ||
+        osd_op.op.op == CEPH_OSD_OP_SYNC_READ) {
+      // TODO(zhengfuyu): 目前默认所有对rados的读请求都是全量读取对象
+      osd_op.extent.offset = uint8_t(chunk_meta.get_chunk_id()) * chunk_meta.get_chunk_size();
+      osd_op.extent.length = chunk_meta.get_chunk_size();
     }
-
+  }
+  return 0;
 }

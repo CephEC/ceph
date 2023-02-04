@@ -83,6 +83,8 @@ public:
     pgid = p;
   }
 
+  void set_hobj(const hobject_t& h) { hobj = h; }
+
   // Fields decoded in partial decoding
   pg_t get_pg() const {
     ceph_assert(!partial_decode_needed);

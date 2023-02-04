@@ -1976,8 +1976,15 @@ void PrimaryLogPG::do_request(
 
 void PrimaryLogPG::load_volume_attrs() 
 {
-  std::map<std::string, bufferlist> volume_meta;
+  std::vector<bufferlist> volume_meta;
   get_pgbackend()->load_volume_attrs(volume_meta);
+  for (auto &bp : volume_meta) {
+    // TODO(zhengfuyu): 容量先写死为4了，后面再看需不需要改成配置参数
+    meta_ptr = std::make_shared<volume_t>(4, get_pgid());
+    auto p = bp.cbegin();
+    decode(*meta_ptr, p);
+    m_aggregate_buffer->insert_to_meta_cache(meta_ptr);
+  }
 }
 
 /** do_op - do an op
@@ -2024,6 +2031,28 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
    
 
   dout(20) << __func__ << ": op " << *m << dendl;
+
+  // temp status 
+  if (aggregate_enabled && !(m->get_flags() & CEPH_OSD_FLAG_AGGREGATE)) {
+    if (op->may_write()) {
+      int r = m_aggregate_buffer->write(op, m);
+      if (r == AGGREGATE_PENDING_REPLY) {
+        dout(4) << "aggregate pending to reply " << dendl;
+        return;
+      } else {
+        return;
+      }
+
+    } else if (op->may_read()) {
+      // 查元数据表，如果找到rados object和volume的对应关系，则将
+      int r = m_aggregate_buffer->read(m);
+      if (r < 0) {
+        // 元数据表中找不到对应的对象
+        osd->reply_op_error(op, -EINVAL);
+        return;
+      }
+    }
+  }
   
 
 
@@ -4453,10 +4482,9 @@ void PrimaryLogPG::execute_ctx(OpContext *ctx)
     dout(10) << " sending reply on " << *m << " " << reply << dendl;
    
   if (aggregate_enabled) {
+    // 更新内存中的volume_meta_cache和volume_not_full
+    m_aggregate_buffer->update_meta_cache(ctx->ops);
     m_aggregate_buffer->send_reply(reply, ignore_out_data);
-    // TODO：flush元数据
-    
-
   } else {
     dout(10) << " sending reply to " << m->get_connection()->get_peer_addr() << dendl; 
     osd->send_message_osd_client(reply, m->get_connection());

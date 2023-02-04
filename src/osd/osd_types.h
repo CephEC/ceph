@@ -6671,13 +6671,13 @@ using missing_map_t = std::map<hobject_t,
 //chunk id
 struct chunk_id_t {
   // 在volume中的位置编号
-  int8_t id;
+  uint8_t id;
 
 public:
   chunk_id_t() : id(0) {}
-  chunk_id_t(int8_t _id) : id(_id) {}
+  chunk_id_t(uint8_t _id) : id(_id) {}
 
-  operator int8_t() const { return id; }
+  operator uint8_t() const { return id; }
 
   // TODO: 加解码函数
   void encode(ceph::buffer::list &bl) const {
@@ -6844,12 +6844,23 @@ public:
   uint32_t get_cap() const { return cap; }
   const spg_t get_spg() const { return pg_id; }
 
+  void set_oid(const hobject_t& _oid) { volume_id = _oid; }
+  hobject_t get_oid() { return volume_id; }
 
   // 对象是否存在
   bool exist(hobject_t& soid) { return chunks.count(soid); }
   // 获取指定soid所在chunk（元数据）
-  chunk_t get_chunk(hobject_t& soid) { return chunks[soid]; }
+  chunk_t& get_chunk(hobject_t& soid) { return chunks[soid]; }
   
+  std::vector<hobject_t*> get_all_soid() {
+    std::vector<hobject_t*> out;
+    out.reserve(cap);
+    for (auto &kv : chunks) {
+      out.push_back(&(kv.first));
+    }
+    return out;
+  }
+
   // chunk加入volume（元数据）
   void add_chunk(const hobject_t& soid, const chunk_t& chunk) 
   {
@@ -6944,7 +6955,5 @@ private:
   spg_t pg_id;
 };
 WRITE_CLASS_ENCODER(volume_t)
-
-
 
 #endif

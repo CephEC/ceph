@@ -555,8 +555,7 @@ typedef std::shared_ptr<const OSDMap> OSDMapRef;
      const std::string &attr,
      ceph::buffer::list *out);
 
-   int load_volume_attrs(
-    std::map<std::string, bufferlist> &out);
+   int load_volume_attrs(std::vector<bufferlist> &out);
 
    virtual int objects_get_attrs(
      const hobject_t &hoid,

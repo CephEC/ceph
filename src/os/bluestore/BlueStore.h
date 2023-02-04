@@ -3047,7 +3047,7 @@ public:
 
   // volume_meta Vol_id->chunk_meta list
   int load_volume_attrs(CollectionHandle &c,
-         std::map<std::string, bufferlist>& volume_meta) override;
+         std::vector<bufferlist> &volume_meta) override;
 
   int list_collections(std::vector<coll_t>& ls) override;
 

@@ -11611,7 +11611,7 @@ int BlueStore::getattrs(
 
 int BlueStore::load_volume_attrs(
   CollectionHandle &c_,
-  std::map<std::string, bufferlist> &volume_meta)
+  std::vector<bufferlist> &volume_meta)
 {
   Collection *c = static_cast<Collection *>(c_.get());
   if (!c->exists)
@@ -11637,13 +11637,13 @@ int BlueStore::load_volume_attrs(
     bufferlist bl;
     // 解析Onode的attr,找到chunk_meta信息并保存
     for (auto& attr : o->onode.attrs) {
-      if (boost::starts_with(attr.first, "_chunk_meta")) {
+      if (boost::starts_with(attr.first, "_volume_meta")) {
         // onode释放后,指向attr的bufferptr是否会失效？可能改成bufferlist传回更合适
         bl.push_back(attr.second);
         dout(10) << __func__ << " vol_meta loaded: " << attr.first <<  dendl;
       }
     }
-    volume_meta[it->key()] = bl;
+    volume_meta.push_back(bl)
     delete o;
   }
   return 0;

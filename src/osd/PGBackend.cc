@@ -466,7 +466,7 @@ int PGBackend::objects_get_attr(
   return r;
 }
 
-int PGBackend::load_volume_attrs(std::map<std::string, bufferlist> &out)
+int PGBackend::load_volume_attrs(std::vector<bufferlist> &out)
 {
   return store->load_volume_attrs(ch, out);
 }

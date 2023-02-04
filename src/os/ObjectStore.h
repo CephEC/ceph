@@ -632,7 +632,7 @@ public:
    * load_volume_attrs -- 将磁盘中的映射表信息加载到内存中
    */
   virtual int load_volume_attrs(CollectionHandle &c,
-         std::map<std::string, bufferlist> &volume_meta) { return 0; };
+         std::vector<bufferlist> &volume_meta) { return 0; };
 
   // collections
 
