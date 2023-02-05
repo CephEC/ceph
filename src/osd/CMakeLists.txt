@@ -13,6 +13,7 @@ set(osd_srcs
   OSD.cc
   Watch.cc
   ClassHandler.cc
+  AggregateChunk.cc
   AggregateVolume.cc
   AggregateBuffer.cc
   PG.cc

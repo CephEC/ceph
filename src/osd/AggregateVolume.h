@@ -19,7 +19,7 @@
 #include "AggregateChunk.h"
 #include <sys/syscall.h>
 
-
+class Chunk;
 class Volume {
 
   volume_t volume_info;

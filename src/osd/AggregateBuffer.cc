@@ -5,6 +5,7 @@ AggregateBuffer::AggregateBuffer(CephContext* _cct, const spg_t& _pgid, PrimaryL
                // _cct->_conf.get_val<std::uint64_t>("osd_aggregate_buffer_chunk_size"),
                 // _pgid),
   volume_buffer(0, 0, _pgid),
+  flush_callback(nullptr),
   flush_time_out(0),
   cct(_cct), 
   pg(_pg) {
@@ -16,15 +17,16 @@ AggregateBuffer::AggregateBuffer(CephContext* _cct, const spg_t& _pgid, PrimaryL
     // init timer
     // flush_time_out = 5;
     // flush_time_out = _cct->_conf.get_val<double>("osd_aggregate_buffer_flush_timeout");
-    flush_timer = new SafeTimer(cct, timer_lock);
-    flush_timer->init(); 
- };
+  };
 
 void AggregateBuffer::init(uint64_t _volume_cap, uint64_t _chunk_size, double _time_out)
 {
   initialized = true; 
   volume_buffer.init(_volume_cap, _chunk_size);
-  flush_time_out = _time_out; 
+  flush_time_out = _time_out;
+  flush_timer = new SafeTimer(cct, timer_lock);
+  flush_timer->init(); 
+
 }
 
 int AggregateBuffer::write(OpRequestRef op, MOSDOp* m)
@@ -49,14 +51,14 @@ int AggregateBuffer::write(OpRequestRef op, MOSDOp* m)
     return AGGREGATE_FAILED;
   }
 
+  if (flush_callback != nullptr) 
+    flush_timer->cancel_event(flush_callback);
+  flush_callback = new FlushContext(this);
+  flush_timer->add_event_after(flush_time_out, flush_callback);
+ 
   if (volume_buffer.full()) {
     flush();
   } else {
-    if (flush_callback != nullptr) 
-      flush_timer->cancel_event(flush_callback);
-    flush_callback = new FlushContext(this);
-    flush_timer->add_event_after(flush_time_out, flush_callback);
-    
     waiting_for_reply.push_back(op);
     return AGGREGATE_PENDING_REPLY;
   }
@@ -92,7 +94,8 @@ int AggregateBuffer::flush()
   
   volume_buffer.clear();
   is_flushing = false;
-  flush_timer->cancel_event(flush_callback);
+  if (flush_callback != nullptr)
+    flush_timer->cancel_event(flush_callback);
   flush_callback = nullptr;
   return 0;
 }

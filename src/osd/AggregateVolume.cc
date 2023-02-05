@@ -4,7 +4,6 @@
 
 #include "AggregateVolume.h"
 
-
 Volume::Volume(uint64_t _cap, uint64_t _chunk_size, const spg_t& _pg_id)
   : volume_info(_cap, _pg_id),
     vol_op(nullptr)

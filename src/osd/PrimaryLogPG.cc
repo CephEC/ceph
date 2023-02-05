@@ -1982,12 +1982,18 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
   MOSDOp *m = static_cast<MOSDOp*>(op->get_nonconst_req());
   ceph_assert(m->get_type() == CEPH_MSG_OSD_OP);
   
+  // aggregate_enabled = cct->_conf->osd_aggregate_buffer_enabled;
+  aggregate_enabled = true;
+
+  volatile uint64_t flags = m->get_flags();
+
   // lazy initialize
-  if (!m_aggregate_buffer->is_initialized() && cct->_conf.get_val<bool>("osd_aggregate_buffer_enabled")) {
+  if (!m_aggregate_buffer->is_initialized() && aggregate_enabled) {
     aggregate_enabled = true;
-    uint64_t cap = cct->_conf.get_val<std::uint64_t>("osd_aggregate_buffer_capacity");
-    uint64_t chunk_size = cct->_conf.get_val<std::uint64_t>("osd_aggregate_buffer_chunk_size");
-    double time_out = cct->_conf.get_val<std::uint64_t>("osd_aggregate_buffer_chunk_size");
+    // uint64_t cap = cct->_conf->osd_aggregate_buffer_capacity;
+    uint64_t cap = 1;
+    uint64_t chunk_size = cct->_conf->osd_aggregate_buffer_chunk_size;
+    double time_out = cct->_conf->osd_aggregate_buffer_chunk_size;
     dout(5) << __func__ << "init aggregate buffer, cap = " << cap 
 	    << " chunk_size = " << chunk_size
 	    << " flush_time_out = " << time_out << dendl;
@@ -1997,7 +2003,7 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
   }
   
   // 对message中的信息解码
-  if (m->get_flags() & CEPH_OSD_FLAG_AGGREGATE) {
+  if (m->has_flag(CEPH_OSD_FLAG_AGGREGATE)) {
     m->decode_payload();
     op->reset_desc();   // for TrackedOp
     m->clear_payload();
@@ -2010,23 +2016,23 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
   
 
   dout(20) << __func__ << ": op " << *m << dendl;
-
-  // temp status 
-  if (aggregate_enabled && !(m->get_flags() & CEPH_OSD_FLAG_AGGREGATE)) {
-    if (op->may_write()) {
-      int r = m_aggregate_buffer->write(op, m);
-      if (r == AGGREGATE_PENDING_REPLY) {
-        dout(4) << "aggregate pending to reply " << dendl;
-        return;
-      } else {
-        return;
-      }
-
-    } else if (op->may_read()) {
-      // TODO: read
-    }
-  }
   
+
+  // if (aggregate_enabled && !(m->has_flag(CEPH_OSD_FLAG_AGGREGATE))) {
+    // if (m->has_flag(CEPH_OSD_FLAG_WRITE)) {
+      // int r = m_aggregate_buffer->write(op, m);
+      // if (r == AGGREGATE_PENDING_REPLY) {
+        // dout(4) << "aggregate pending to reply " << dendl;
+        // return;
+      // } else {
+        // return;
+      // }
+
+    // } else if (op->may_read()) {
+      // // TODO: read
+    // }
+  // }
+
 
 
   // 构建head对象
@@ -2237,8 +2243,22 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
   // 这一块检索对象丢失，和对象修复以及scrub的逻辑可以整合到聚合中来?
   // 如果发现要写入的volume丢失数据或是正在修复中，那么就选择另外一个volume写入
 
- 
-  // ceph会把丢失的object整合成一个map,这里就是检索map判断本次操作的对象是否丢失了
+  if (aggregate_enabled && !(m->has_flag(CEPH_OSD_FLAG_AGGREGATE))) {
+    if (op->may_write()) {
+      int r = m_aggregate_buffer->write(op, m);
+      if (r == AGGREGATE_PENDING_REPLY) {
+	dout(4) << "aggregate pending to reply " << dendl;
+	return;
+      } else {
+	return;
+      }
+
+    } else if (op->may_read()) {
+      // todo: read
+    }
+  }
+
+  // // ceph会把丢失的object整合成一个map,这里就是检索map判断本次操作的对象是否丢失了
   // cephEC中可能需要改动对 已丢失对象 的管理方式，还需要细看ceph当前是如何感知对象丢失，以及恢复对象的流程
   // missing object?
   if (is_unreadable_object(head)) {

@@ -40,8 +40,9 @@ public:
 
   AggregateBuffer(CephContext* _cct, const spg_t& _pgid, PrimaryLogPG* _pg);
 
-  ~AggregateBuffer() { 
-    flush_timer->shutdown(); 
+  ~AggregateBuffer() {
+    if (flush_timer)  
+      flush_timer->shutdown(); 
   }
 
   /**
@@ -93,7 +94,7 @@ private:
   ceph::mutex timer_lock = ceph::make_mutex("AggregateBuffer::timer_lock");
   ceph::condition_variable flush_cond;
   Context* flush_callback;
-  SafeTimer* flush_timer = NULL;
+  SafeTimer* flush_timer = nullptr;
   bool is_flushing = false;
   double flush_time_out;
 

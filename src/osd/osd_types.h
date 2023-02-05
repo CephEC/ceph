@@ -6731,6 +6731,8 @@ public:
   chunk_id_t get_chunk_id() const { return chunk_id; }
   spg_t get_spg() const { return pg_id; }
   uint64_t get_chunk_size() const { return chunk_size; }
+  uint64_t get_offset() const { return chunk_fill_offset; }
+  bool get_type() const { return is_erasure; }
 
   void set_seq(uint8_t seq) { chunk_id = chunk_id_t(seq); }
   void set_empty() { chunk_state = EMPTY; }
@@ -6740,7 +6742,7 @@ public:
    bool is_valid() { return chunk_state == VALID; }
    bool is_invalid() { return chunk_state == INVALID; }
    uint64_t offset() { return chunk_fill_offset; }
-   hobject_t get_oid() { return soid; }
+   hobject_t get_oid() const { return soid; }
 
   void clear() {
     chunk_state = (chunk_fill_offset != 0)? INVALID: EMPTY;
@@ -6806,7 +6808,12 @@ private:
 WRITE_CLASS_ENCODER(chunk_t)
 
 inline bool operator==(const chunk_t& l, const chunk_t& r) {
-  return l.get_chunk_id() == r.get_chunk_id();
+  if (l.get_chunk_id() == r.get_chunk_id() 
+		  && l.get_spg() == r.get_spg()
+		  && l.get_oid() == r.get_oid()
+		  && l.get_type() == r.get_type())
+  	return true;
+  return false;
 }
 
 /**
