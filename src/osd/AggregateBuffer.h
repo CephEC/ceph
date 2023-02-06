@@ -21,6 +21,7 @@
 
 /* return code for aggregate buffer */
 #define AGGREGATE_FAILED -1
+#define NOT_TARGET 0
 #define AGGREGATE_SUCCESS 1
 #define AGGREGATE_PENDING_OP 2
 #define AGGREGATE_PENDING_REPLY 4
@@ -51,6 +52,11 @@ public:
   void init(uint64_t _volume_cap, uint64_t _chunk_size, double _time_out);
   bool is_initialized() { return initialized; }
 
+  /**
+   * @brief 判断是否为写入请求
+   *
+   */
+  bool may_aggregate(MOSDOp* m);
 
   /**
    * @brief 对象写入buffer，在add_chunk中执行对象元数据的创建操作

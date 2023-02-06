@@ -1553,7 +1553,11 @@ OSDMapRef OSDService::try_get_map(epoch_t epoch)
 
 void OSDService::reply_op_error(OpRequestRef op, int err)
 {
-  reply_op_error(op, err, eversion_t(), 0, {});
+  if (!op->is_requeued_op())
+    reply_op_error(op, err, eversion_t(), 0, {});
+  else {
+    // TODO: 处理pending request
+  }
 }
 
 void OSDService::reply_op_error(OpRequestRef op, int err, eversion_t v,
@@ -1569,7 +1573,11 @@ void OSDService::reply_op_error(OpRequestRef op, int err, eversion_t v,
 				       !m->has_flag(CEPH_OSD_FLAG_RETURNVEC));
   reply->set_reply_versions(v, uv);
   reply->set_op_returns(op_returns);
-  m->get_connection()->send_message(reply);
+  if (!op->is_requeued_op())
+    m->get_connection()->send_message(reply);
+  else {
+    // TODO: 处理pending request
+  }
 }
 
 void OSDService::handle_misdirected_op(PG *pg, OpRequestRef op)
@@ -9828,9 +9836,10 @@ void OSD::dequeue_op(
 
   logger->tinc(l_osd_op_before_dequeue_op_lat, latency);
 
-  service.maybe_share_map(m->get_connection().get(),
-			  pg->get_osdmap(),
-			  op->sent_epoch);
+  if (!op->is_requeued_op())
+    service.maybe_share_map(m->get_connection().get(),
+  			    pg->get_osdmap(),
+  			    op->sent_epoch);
 
   if (pg->is_deleting())
     return;

@@ -107,6 +107,11 @@ MOSDOp* Volume::_prepare_volume_op(MOSDOp *m)
     volume_m->set_reqid(m->get_reqid());
   }
 
+  volume_m->set_header(m->get_header());
+  volume_m->set_footer(m->get_footer());
+
+  // throttler?
+
   return volume_m;
   
 }
@@ -148,6 +153,8 @@ MOSDOp* Volume::generate_op()
     // 如果不encode，转化为Message会被截断
     // encode的开销？
     volume_m->encode_payload(0);
+    // volume_m->set_final_decode_needed(true);
+    // volume_m->set_partial_decode_needed(true);
   }
   
   

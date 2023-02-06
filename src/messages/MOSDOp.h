@@ -221,6 +221,9 @@ public:
     mtime = ceph::real_clock::to_timespec(mt);
   }
 
+  void set_final_decode_needed(bool val) { final_decode_needed = val; }
+  void set_partial_decode_needed(bool val) { partial_decode_needed = val; }
+
   // ops
   void add_simple_op(int o, uint64_t off, uint64_t len) {
     OSDOp osd_op;

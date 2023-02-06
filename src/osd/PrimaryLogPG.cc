@@ -1829,6 +1829,8 @@ void PrimaryLogPG::do_request(
   // pg-wide backoffs
   const Message *m = op->get_req();
   int msg_type = m->get_type();
+  dout(4) << "message type " << msg_type << dendl;
+  if (!op->is_requeued_op()) {
   if (m->get_connection()->has_feature(CEPH_FEATURE_RADOS_BACKOFF)) {
     auto session = ceph::ref_cast<Session>(m->get_connection()->get_priv());
     if (!session)
@@ -1862,9 +1864,11 @@ void PrimaryLogPG::do_request(
       }
     }
   }
+  }
 
   if (!is_peered()) {
     // Delay unless PGBackend says it's ok
+    // ECBackend says false
     if (pgbackend->can_handle_while_inactive(op)) {
       bool handled = pgbackend->handle_message(op);
       ceph_assert(handled);
@@ -1985,15 +1989,13 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
   // aggregate_enabled = cct->_conf->osd_aggregate_buffer_enabled;
   aggregate_enabled = true;
 
-  volatile uint64_t flags = m->get_flags();
-
   // lazy initialize
   if (!m_aggregate_buffer->is_initialized() && aggregate_enabled) {
     aggregate_enabled = true;
     // uint64_t cap = cct->_conf->osd_aggregate_buffer_capacity;
     uint64_t cap = 1;
     uint64_t chunk_size = cct->_conf->osd_aggregate_buffer_chunk_size;
-    double time_out = cct->_conf->osd_aggregate_buffer_chunk_size;
+    double time_out = cct->_conf->osd_aggregate_buffer_flush_timeout;
     dout(5) << __func__ << "init aggregate buffer, cap = " << cap 
 	    << " chunk_size = " << chunk_size
 	    << " flush_time_out = " << time_out << dendl;
@@ -2003,35 +2005,42 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
   }
   
   // 对message中的信息解码
-  if (m->has_flag(CEPH_OSD_FLAG_AGGREGATE)) {
-    m->decode_payload();
-    op->reset_desc();   // for TrackedOp
-    m->clear_payload();
-  } else {
+  // if (m->has_flag(CEPH_OSD_FLAG_AGGREGATE)) {
+    // m->decode_payload();
+    // op->reset_desc();   // for TrackedOp
+    // m->clear_payload();
+  // } else {
     if (m->finish_decode()) {
       op->reset_desc();   // for TrackedOp
       m->clear_payload();
     }
-  }
+  // }
   
 
   dout(20) << __func__ << ": op " << *m << dendl;
   
+  volatile bool if_has_flag = m->has_flag(CEPH_OSD_FLAG_AGGREGATE);
 
-  // if (aggregate_enabled && !(m->has_flag(CEPH_OSD_FLAG_AGGREGATE))) {
-    // if (m->has_flag(CEPH_OSD_FLAG_WRITE)) {
-      // int r = m_aggregate_buffer->write(op, m);
-      // if (r == AGGREGATE_PENDING_REPLY) {
-        // dout(4) << "aggregate pending to reply " << dendl;
-        // return;
-      // } else {
-        // return;
-      // }
+  dout(4) << __func__ << "has flag ceph_osd_flag_aggregate " << if_has_flag << dendl;
 
-    // } else if (op->may_read()) {
-      // // TODO: read
-    // }
-  // }
+  if (aggregate_enabled && !(m->has_flag(CEPH_OSD_FLAG_AGGREGATE))) {
+    if (m->has_flag(CEPH_OSD_FLAG_WRITE)) {
+      dout(4) << "write op " << op << " in buffer." << dendl;
+      int r = m_aggregate_buffer->write(op, m);
+      if (r == AGGREGATE_PENDING_REPLY) {
+	dout(4) << "aggregate pending to reply " << dendl;
+	return;
+      } else if (r != NOT_TARGET){
+	dout(4) << "aggregate failed." << dendl;
+	return;
+      } else {
+	dout(4) << "op continue." << dendl;
+      }
+
+    } 
+     // TODO: read
+    
+  }
 
 
 
@@ -2053,9 +2062,12 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
 
   // 不太懂backoff是什么意思？
   // 客户端的退避行为 https://docs.ceph.com/en/latest/dev/rados-client-protocol/#backoff
-  bool can_backoff =
-    m->get_connection()->has_feature(CEPH_FEATURE_RADOS_BACKOFF);
+  bool can_backoff = false;
   ceph::ref_t<Session> session;
+ 
+  if (!op->is_requeued_op()) {
+  can_backoff =
+    m->get_connection()->has_feature(CEPH_FEATURE_RADOS_BACKOFF);
   if (can_backoff) {
     session = static_cast<Session*>(m->get_connection()->get_priv().get());
     if (!session.get()) {
@@ -2067,6 +2079,7 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
       return;
     }
   }
+  } 
 
   if (m->has_flag(CEPH_OSD_FLAG_PARALLELEXEC)) {
     // not implemented.
@@ -2108,7 +2121,7 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
   }
 
   // 查看用户权限（cephFS相关）
-  if (!op_has_sufficient_caps(op)) {
+  if (!op->is_requeued_op() && !op_has_sufficient_caps(op)) {
     osd->reply_op_error(op, -EPERM);
     return;
   }
@@ -2243,20 +2256,20 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
   // 这一块检索对象丢失，和对象修复以及scrub的逻辑可以整合到聚合中来?
   // 如果发现要写入的volume丢失数据或是正在修复中，那么就选择另外一个volume写入
 
-  if (aggregate_enabled && !(m->has_flag(CEPH_OSD_FLAG_AGGREGATE))) {
-    if (op->may_write()) {
-      int r = m_aggregate_buffer->write(op, m);
-      if (r == AGGREGATE_PENDING_REPLY) {
-	dout(4) << "aggregate pending to reply " << dendl;
-	return;
-      } else {
-	return;
-      }
+  // if (aggregate_enabled && !(m->has_flag(CEPH_OSD_FLAG_AGGREGATE))) {
+    // if (op->may_write()) {
+      // int r = m_aggregate_buffer->write(op, m);
+      // if (r == AGGREGATE_PENDING_REPLY) {
+	// dout(4) << "aggregate pending to reply " << dendl;
+	// return;
+      // } else if (r != NOT_TARGET){
+	// return;
+      // }
 
-    } else if (op->may_read()) {
-      // todo: read
-    }
-  }
+    // } else if (op->may_read()) {
+      // // todo: read
+    // }
+  // }
 
   // // ceph会把丢失的object整合成一个map,这里就是检索map判断本次操作的对象是否丢失了
   // cephEC中可能需要改动对 已丢失对象 的管理方式，还需要细看ceph当前是如何感知对象丢失，以及恢复对象的流程

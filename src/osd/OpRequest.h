@@ -47,6 +47,10 @@ public:
   bool need_skip_promote() const { return op_info.need_skip_promote(); }
   bool allows_returnvec() const { return op_info.allows_returnvec(); }
 
+  bool is_requeued_op() const { return is_requeued; }
+  void set_requeued() { is_requeued = true; }
+  void unset_requeued() { is_requeued = false; }
+
   std::vector<OpInfo::ClassInfo> classes() const {
     return op_info.get_classes();
   }
@@ -64,6 +68,7 @@ private:
   uint8_t hit_flag_points;
   uint8_t latest_flag_point;
   utime_t dequeued_time;
+  bool is_requeued = false;
   static const uint8_t flag_queued_for_pg=1 << 0;
   static const uint8_t flag_reached_pg =  1 << 1;
   static const uint8_t flag_delayed =     1 << 2;

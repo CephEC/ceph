@@ -2268,6 +2268,10 @@ ostream& operator<<(ostream& out, const PG& pg)
 
 bool PG::can_discard_op(OpRequestRef& op)
 {
+  if (op->is_requeued_op()) { 
+    dout(4) << "requeued op, skip." << dendl;	  
+    return false; 
+  }
   auto m = op->get_req<MOSDOp>();
   if (cct->_conf->osd_discard_disconnected_ops && OSD::op_is_discardable(m)) {
     dout(20) << " discard " << *m << dendl;

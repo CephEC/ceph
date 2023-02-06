@@ -29,8 +29,29 @@ void AggregateBuffer::init(uint64_t _volume_cap, uint64_t _chunk_size, double _t
 
 }
 
+bool AggregateBuffer::may_aggregate(MOSDOp* m)
+{
+  bool ret = false;
+  std::vector<OSDOp>::const_iterator iter;
+
+  for (iter = m->ops.begin(); iter != m->ops.end(); ++iter) {
+    volatile uint64_t op = iter->op.op;
+    volatile uint32_t flag = iter->op.flags;
+    if (iter->op.op == CEPH_OSD_OP_WRITEFULL) {
+      ret = true;
+      break;
+    }
+  }
+
+  return ret;
+
+}
+
 int AggregateBuffer::write(OpRequestRef op, MOSDOp* m)
 {
+  if (!may_aggregate(m)) 
+    return NOT_TARGET;
+	
   // volume满，未处于flushing状态，则等待flush（一般不会为真）
   if (volume_buffer.full() && !is_flushing) {
      if (!is_flushing) {
@@ -51,19 +72,18 @@ int AggregateBuffer::write(OpRequestRef op, MOSDOp* m)
     return AGGREGATE_FAILED;
   }
 
-  if (flush_callback != nullptr) 
-    flush_timer->cancel_event(flush_callback);
-  flush_callback = new FlushContext(this);
-  flush_timer->add_event_after(flush_time_out, flush_callback);
+  // if (flush_callback != nullptr) 
+    // flush_timer->cancel_event(flush_callback);
+  // flush_callback = new FlushContext(this);
+  // flush_timer->add_event_after(flush_time_out, flush_callback);
  
   if (volume_buffer.full()) {
     flush();
+    return AGGREGATE_PENDING_REPLY;
   } else {
     waiting_for_reply.push_back(op);
     return AGGREGATE_PENDING_REPLY;
   }
-
-  return AGGREGATE_SUCCESS;
 }
 
 
@@ -87,6 +107,7 @@ int AggregateBuffer::flush()
   MOSDOp* m = volume_buffer.generate_op();
   // OpRequestRef op = pg->osd->op_tracker.create_request<OpRequest, Message*>(m);
   OpRequestRef op = pg->osd->osd->create_request(m);
+  op->set_requeued();
 
   pg->requeue_op(op);
 
@@ -94,9 +115,9 @@ int AggregateBuffer::flush()
   
   volume_buffer.clear();
   is_flushing = false;
-  if (flush_callback != nullptr)
-    flush_timer->cancel_event(flush_callback);
-  flush_callback = nullptr;
+  // if (flush_callback != nullptr)
+    // flush_timer->cancel_event(flush_callback);
+  // flush_callback = nullptr;
   return 0;
 }
 
