@@ -164,6 +164,30 @@ public:
       }
     }
   }
+
+  MOSDOpReply(const MOSDOp *req, MOSDOpReply* reply, bool ignore_out_data)
+    : Message{CEPH_MSG_OSD_OPREPLY, HEAD_VERSION, COMPAT_VERSION},
+      oid(req->hobj.oid), pgid(req->pgid.pgid), ops(req->ops),
+      bdata_encode(false) {
+    set_tid(req->get_tid());
+    result = reply->get_result();
+    flags = reply->get_flags();
+    osdmap_epoch = reply->get_map_epoch();
+    user_version = reply->get_user_version();
+    retry_attempt = req->get_retry_attempt();
+    do_redirect = false;
+
+    for (unsigned i = 0; i < ops.size(); i++) {
+      // zero out input data
+      ops[i].indata.clear();
+      if (ignore_out_data) {
+      // original request didn't set the RETURNVEC flag
+	 ops[i].outdata.clear();
+      }
+    }    
+  }
+
+
 private:
   ~MOSDOpReply() final {}
 

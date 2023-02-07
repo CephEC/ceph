@@ -42,8 +42,7 @@ public:
   AggregateBuffer(CephContext* _cct, const spg_t& _pgid, PrimaryLogPG* _pg);
 
   ~AggregateBuffer() {
-    if (flush_timer)  
-      flush_timer->shutdown(); 
+    flush_timer.shutdown(); 
   }
 
   /**
@@ -79,11 +78,13 @@ public:
   //  */
   // void requeue_op(OpRequestRef op);
 
+
   /**
    * @brief 把waiting_for_reply
    * 
   */
-  void send_reply(Message* reply);
+  
+  void send_reply(MOSDOpReply* reply, bool ignore_out_data);
 
   
    /**
@@ -100,22 +101,40 @@ private:
   ceph::mutex timer_lock = ceph::make_mutex("AggregateBuffer::timer_lock");
   ceph::condition_variable flush_cond;
   Context* flush_callback;
-  SafeTimer* flush_timer = nullptr;
+  SafeTimer flush_timer;
   bool is_flushing = false;
   double flush_time_out;
 
-  class FlushContext: public Context
-  {
-    AggregateBuffer* buffer;
-  public:
-    explicit FlushContext(AggregateBuffer *_buffer): buffer(_buffer) {}
-    void finish(int r) { 
-      buffer->flush();
-    }
+  // class FlushContext: public Context
+  // {
+    // AggregateBuffer* buffer;
+  // public:
+    // explicit FlushContext(AggregateBuffer *_buffer): buffer(_buffer) {}
+    // void finish(int r) { 
+      // buffer->flush();
+    // }
+  // };
+
+  template<typename T>
+  class C_FlushContext : public LambdaContext<T> {
+    public:
+      C_FlushContext(const AggregateBuffer* _buffer, T&& f) :
+  	LambdaContext<T>(std::forward<T>(f)),
+	buffer(_buffer)
+      {}
+      void finish(int r) override {
+        LambdaContext<T>::finish(r);
+      } 
+    private:
+      const AggregateBuffer* buffer;
   };
- 
+
+  void cancel_flush_timeout();
+  void reset_flush_timeout();
+
   int flush();
 
+public:
   std::list<OpRequestRef> waiting_for_aggregate;
   std::list<OpRequestRef> waiting_for_reply;
   

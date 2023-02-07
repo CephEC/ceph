@@ -30,7 +30,7 @@ public:
   ~Volume();
   
   bool full() { return volume_info.full(); }
-
+  bool empty() { return volume_info.empty(); }
   void set_cap(uint64_t _cap) { volume_info.set_cap(_cap); }
 
   spg_t get_spg() const { return volume_info.get_spg(); }

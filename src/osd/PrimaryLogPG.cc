@@ -1993,7 +1993,7 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
   if (!m_aggregate_buffer->is_initialized() && aggregate_enabled) {
     aggregate_enabled = true;
     // uint64_t cap = cct->_conf->osd_aggregate_buffer_capacity;
-    uint64_t cap = 1;
+    uint64_t cap = 2;
     uint64_t chunk_size = cct->_conf->osd_aggregate_buffer_chunk_size;
     double time_out = cct->_conf->osd_aggregate_buffer_flush_timeout;
     dout(5) << __func__ << "init aggregate buffer, cap = " << cap 
@@ -2019,29 +2019,6 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
 
   dout(20) << __func__ << ": op " << *m << dendl;
   
-  volatile bool if_has_flag = m->has_flag(CEPH_OSD_FLAG_AGGREGATE);
-
-  dout(4) << __func__ << "has flag ceph_osd_flag_aggregate " << if_has_flag << dendl;
-
-  if (aggregate_enabled && !(m->has_flag(CEPH_OSD_FLAG_AGGREGATE))) {
-    if (m->has_flag(CEPH_OSD_FLAG_WRITE)) {
-      dout(4) << "write op " << op << " in buffer." << dendl;
-      int r = m_aggregate_buffer->write(op, m);
-      if (r == AGGREGATE_PENDING_REPLY) {
-	dout(4) << "aggregate pending to reply " << dendl;
-	return;
-      } else if (r != NOT_TARGET){
-	dout(4) << "aggregate failed." << dendl;
-	return;
-      } else {
-	dout(4) << "op continue." << dendl;
-      }
-
-    } 
-     // TODO: read
-    
-  }
-
 
 
   // 构建head对象
@@ -2255,6 +2232,25 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
 
   // 这一块检索对象丢失，和对象修复以及scrub的逻辑可以整合到聚合中来?
   // 如果发现要写入的volume丢失数据或是正在修复中，那么就选择另外一个volume写入
+  if (aggregate_enabled && !(m->has_flag(CEPH_OSD_FLAG_AGGREGATE))) {
+    if (m->has_flag(CEPH_OSD_FLAG_WRITE)) {
+      dout(4) << "write op " << op << " in buffer." << dendl;
+      int r = m_aggregate_buffer->write(op, m);
+      if (r == AGGREGATE_PENDING_REPLY) {
+	dout(4) << "aggregate pending to reply " << dendl;
+	return;
+      } else if (r != NOT_TARGET){
+	dout(4) << "aggregate failed." << dendl;
+	return;
+      } else {
+	dout(4) << "op continue." << dendl;
+      }
+
+    } 
+     // TODO: read
+    
+  }
+
 
   // if (aggregate_enabled && !(m->has_flag(CEPH_OSD_FLAG_AGGREGATE))) {
     // if (op->may_write()) {
@@ -4436,21 +4432,23 @@ void PrimaryLogPG::execute_ctx(OpContext *ctx)
   // no need to capture PG ref, repop cancel will handle that
   // Can capture the ctx by pointer, it's owned by the repop
   ctx->register_on_commit(
-    [m, ctx, this](){
+    [m, ctx, ignore_out_data, this](){
       if (ctx->op)
 	log_op_stats(*ctx->op, ctx->bytes_written, ctx->bytes_read);
 
       if (m && !ctx->sent_reply) {
-	MOSDOpReply *reply = ctx->reply;
-	ctx->reply = nullptr;
-	reply->add_flags(CEPH_OSD_FLAG_ACK | CEPH_OSD_FLAG_ONDISK);
-	dout(10) << " sending reply on " << *m << " " << reply << dendl;
+    MOSDOpReply *reply = ctx->reply;
+    ctx->reply = nullptr;
+    reply->add_flags(CEPH_OSD_FLAG_ACK | CEPH_OSD_FLAG_ONDISK);
+    dout(10) << " sending reply on " << *m << " " << reply << dendl;
+   
   if (aggregate_enabled) {
-    m_aggregate_buffer->send_reply(reply);
+    m_aggregate_buffer->send_reply(reply, ignore_out_data);
     // TODO：flush元数据
     
 
   } else {
+  
     osd->send_message_osd_client(reply, m->get_connection());
   }
 	ctx->sent_reply = true;
@@ -4459,10 +4457,20 @@ void PrimaryLogPG::execute_ctx(OpContext *ctx)
     });
   ctx->register_on_success(
     [ctx, this]() {
+      if (aggregate_enabled 
+		      && ctx->op
+		      && ctx->op->is_requeued_op()) {
+        // 流程中还有很多类似的地方需要处理
+	// 出问题了再说
+        dout(4) << " aggregate reply send" << dendl;
+        do_osd_op_effects_split(ctx);   
+      } else {
       do_osd_op_effects(
 	ctx,
 	ctx->op ? ctx->op->get_req()->get_connection() :
 	ConnectionRef());
+
+      }
     });
   ctx->register_on_finish(
     [ctx]() {
@@ -8966,6 +8974,20 @@ void PrimaryLogPG::do_osd_op_effects(OpContext *ctx, const ConnectionRef& conn)
       i->second->notify_ack(p->notify_id, p->reply_bl);
     }
   }
+}
+
+
+void PrimaryLogPG::do_osd_op_effects_split(OpContext* ctx)
+{
+  auto& waiting = m_aggregate_buffer->waiting_for_reply;
+  for (auto iter = waiting.begin(); 
+		  iter != waiting.end(); 
+		  iter++){
+    do_osd_op_effects(
+		    ctx,
+		    ctx->op ? (*iter)->get_req()->get_connection() :
+		    ConnectionRef());
+  } 
 }
 
 hobject_t PrimaryLogPG::generate_temp_object(const hobject_t& target)

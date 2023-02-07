@@ -149,6 +149,8 @@ MOSDOp* Volume::generate_op()
       }
       c++;
     }
+
+    volume_m->set_connection(ConnectionRef());
     
     // 如果不encode，转化为Message会被截断
     // encode的开销？
