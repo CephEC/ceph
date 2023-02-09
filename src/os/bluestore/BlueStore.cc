@@ -11643,7 +11643,7 @@ int BlueStore::load_volume_attrs(
         dout(10) << __func__ << " vol_meta loaded: " << attr.first <<  dendl;
       }
     }
-    volume_meta.push_back(bl)
+    volume_meta.push_back(bl);
     delete o;
   }
   return 0;

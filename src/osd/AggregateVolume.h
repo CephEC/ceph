@@ -67,7 +67,7 @@ public:
    * @brief 生成volume元数据的Op（SETXATTR）
    *
    */
-  OSDOp generate_write_meta_op();
+  OSDOp _generate_write_meta_op();
 
   /*
    * @return free chunk index

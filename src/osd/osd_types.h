@@ -6850,10 +6850,10 @@ public:
   // 对象是否存在
   bool exist(hobject_t& soid) { return chunks.count(soid); }
   // 获取指定soid所在chunk（元数据）
-  chunk_t& get_chunk(hobject_t& soid) { return chunks[soid]; }
+  chunk_t& get_chunk(const hobject_t& soid) { return chunks[soid]; }
   
-  std::vector<hobject_t*> get_all_soid() {
-    std::vector<hobject_t*> out;
+  std::vector<const hobject_t*> get_all_soid() {
+    std::vector<const hobject_t*> out;
     out.reserve(cap);
     for (auto &kv : chunks) {
       out.push_back(&(kv.first));

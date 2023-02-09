@@ -183,7 +183,6 @@ void PG::dump_live_ids()
 #endif
 
 void on_active_state(PG *pg) {
-  pg->init_aggregate_buffer();
   pg->load_volume_attrs();
 }
 

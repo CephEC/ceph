@@ -54,14 +54,28 @@ bool AggregateBuffer::may_aggregate(MOSDOp* m)
       break;
     }
   }
-
   return ret;
+}
 
+bool AggregateBuffer::may_aggregate_read(MOSDOp* m)
+{
+  bool ret = false;
+  std::vector<OSDOp>::const_iterator iter;
+
+  for (iter = m->ops.begin(); iter != m->ops.end(); ++iter) {
+    if (iter->op.op == CEPH_OSD_OP_READ ||
+        iter->op.op == CEPH_OSD_OP_SPARSE_READ ||
+        iter->op.op == CEPH_OSD_OP_SYNC_READ) {
+      ret = true;
+      break;
+    }
+  }
+  return ret;
 }
 
 int AggregateBuffer::write(OpRequestRef op, MOSDOp* m)
 {
-  if (!may_aggregate(m)) 
+  if (!may_aggregate(m))
     return NOT_TARGET;
 	
   // volume满，未处于flushing状态，则等待flush（一般不会为真）
@@ -135,18 +149,19 @@ int AggregateBuffer::flush()
 }
 
 void AggregateBuffer::update_meta_cache(std::vector<OSDOp> *ops) {
-  for (auto &osd_op : ctx->ops) {
+  for (auto &osd_op : *ops) {
     if (osd_op.op.op == CEPH_OSD_OP_SETXATTR) {
       bufferlist bl;
-      string aname;
-      osd_op.indata.copy(osd_op.op.xattr.name_len, aname);
-      osd_op.indata.copy(osd_op.op.xattr.value_len, bl);
+      std::string aname;
+      auto bp = osd_op.indata.cbegin();
+      bp.copy(osd_op.op.xattr.name_len, aname);
+      bp.copy(osd_op.op.xattr.value_len, bl);
       // TODO(zhengfuyu): 容量先写死为4了，后面再看需不需要改成配置参数
-      auto meta_ptr = std::make_shared<volume_t>(4, get_pgid());
+      auto meta_ptr = std::make_shared<volume_t>(4, pg->get_pgid());
       auto p = bl.cbegin();
       decode(*meta_ptr, p);
       insert_to_meta_cache(meta_ptr);
-      if (!meta_ptr.full()) {
+      if (!meta_ptr->full()) {
         // 未满的volume添加到volume_not_full
         volume_not_full.push_back(meta_ptr);
       }
@@ -154,7 +169,7 @@ void AggregateBuffer::update_meta_cache(std::vector<OSDOp> *ops) {
   }
 }
 
-void AggregateBuffer::send_reply(Message* reply)
+void AggregateBuffer::send_reply(MOSDOpReply* reply, bool ignore_out_data)
 {
   while (!waiting_for_reply.empty()) {
     auto op = waiting_for_reply.front();
@@ -166,7 +181,6 @@ void AggregateBuffer::send_reply(Message* reply)
     split_reply->put();
     op->put();
     op->mark_commit_sent();
-
   }
 }
 
@@ -208,11 +222,14 @@ void AggregateBuffer::insert_to_meta_cache(std::shared_ptr<volume_t> meta_ptr) {
 }
 
 int AggregateBuffer::read(MOSDOp* m) {
-  auto volume_meta_ptr = volume_meta_cache.find(m->get_hobj());
-  if (volume_meta_ptr == volume_meta_cache.end()) {
+  if (!may_aggregate_read(m))
+    return NOT_TARGET;
+  auto it = volume_meta_cache.find(m->get_hobj());
+  if (it == volume_meta_cache.end()) {
     // rados对象不存在
     return -1;
   }
+  auto volume_meta_ptr = volume_meta_cache[m->get_hobj()];
   auto chunk_meta = volume_meta_ptr->get_chunk(m->get_hobj());
   m->set_hobj(volume_meta_ptr->get_oid());
   for (auto &osd_op : m->ops) {
@@ -220,8 +237,8 @@ int AggregateBuffer::read(MOSDOp* m) {
         osd_op.op.op == CEPH_OSD_OP_SPARSE_READ ||
         osd_op.op.op == CEPH_OSD_OP_SYNC_READ) {
       // TODO(zhengfuyu): 目前默认所有对rados的读请求都是全量读取对象
-      osd_op.extent.offset = uint8_t(chunk_meta.get_chunk_id()) * chunk_meta.get_chunk_size();
-      osd_op.extent.length = chunk_meta.get_chunk_size();
+      osd_op.op.extent.offset = uint8_t(chunk_meta.get_chunk_id()) * chunk_meta.get_chunk_size();
+      osd_op.op.extent.length = chunk_meta.get_chunk_size();
     }
   }
   return 0;

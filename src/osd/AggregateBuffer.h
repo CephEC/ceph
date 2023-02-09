@@ -58,6 +58,15 @@ public:
   bool may_aggregate(MOSDOp* m);
 
   /**
+   * @brief 判断是否为读请求
+   * 
+   * @param m 
+   * @return true 
+   * @return false 
+   */
+  bool may_aggregate_read(MOSDOp* m);
+
+  /**
    * @brief 对象写入buffer，在add_chunk中执行对象元数据的创建操作
    *
    * @param op
@@ -91,7 +100,7 @@ public:
    * @brief 将已编码的元数据信息解码更新到volume_meta_cache中
    * 
   */
-  void insert_to_meta_cache(bufferlist& bl);
+  void insert_to_meta_cache(std::shared_ptr<volume_t> meta_ptr);
 
   /**
    * @brief volume对象写盘完成后，将其元信息更新到内存的缓存中

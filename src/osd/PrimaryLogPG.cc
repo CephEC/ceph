@@ -1980,7 +1980,7 @@ void PrimaryLogPG::load_volume_attrs()
   get_pgbackend()->load_volume_attrs(volume_meta);
   for (auto &bp : volume_meta) {
     // TODO(zhengfuyu): 容量先写死为4了，后面再看需不需要改成配置参数
-    meta_ptr = std::make_shared<volume_t>(4, get_pgid());
+    auto meta_ptr = std::make_shared<volume_t>(4, get_pgid());
     auto p = bp.cbegin();
     decode(*meta_ptr, p);
     m_aggregate_buffer->insert_to_meta_cache(meta_ptr);
@@ -2006,7 +2006,7 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
   if (!m_aggregate_buffer->is_initialized() && aggregate_enabled) {
     aggregate_enabled = true;
     // uint64_t cap = cct->_conf->osd_aggregate_buffer_capacity;
-    uint64_t cap = 2;
+    uint64_t cap = 1;
     uint64_t chunk_size = cct->_conf->osd_aggregate_buffer_chunk_size;
     double time_out = cct->_conf->osd_aggregate_buffer_flush_timeout;
     dout(5) << __func__ << "init aggregate buffer, cap = " << cap 
@@ -2031,31 +2031,7 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
    
 
   dout(20) << __func__ << ": op " << *m << dendl;
-
-  // temp status 
-  if (aggregate_enabled && !(m->get_flags() & CEPH_OSD_FLAG_AGGREGATE)) {
-    if (op->may_write()) {
-      int r = m_aggregate_buffer->write(op, m);
-      if (r == AGGREGATE_PENDING_REPLY) {
-        dout(4) << "aggregate pending to reply " << dendl;
-        return;
-      } else {
-        return;
-      }
-
-    } else if (op->may_read()) {
-      // 查元数据表，如果找到rados object和volume的对应关系，则将
-      int r = m_aggregate_buffer->read(m);
-      if (r < 0) {
-        // 元数据表中找不到对应的对象
-        osd->reply_op_error(op, -EINVAL);
-        return;
-      }
-    }
-  }
   
-
-
   // 构建head对象
   const hobject_t head = m->get_hobj().get_head();
  
