@@ -154,7 +154,7 @@ MOSDOp* Volume::generate_op()
     
     // 如果不encode，转化为Message会被截断
     // encode的开销？
-    volume_m->encode_payload(0);
+    volume_m->encode_payload(volume_m->get_features());
     // volume_m->set_final_decode_needed(true);
     // volume_m->set_partial_decode_needed(true);
   }

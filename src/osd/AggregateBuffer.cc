@@ -49,8 +49,6 @@ bool AggregateBuffer::may_aggregate(MOSDOp* m)
   std::vector<OSDOp>::const_iterator iter;
 
   for (iter = m->ops.begin(); iter != m->ops.end(); ++iter) {
-    volatile uint64_t op = iter->op.op;
-    volatile uint32_t flag = iter->op.flags;
     if (iter->op.op == CEPH_OSD_OP_WRITEFULL) {
       ret = true;
       break;
@@ -149,10 +147,13 @@ void AggregateBuffer::send_reply(MOSDOpReply* reply, bool ignore_out_data)
     auto op = waiting_for_reply.front();
     auto m = op->get_req<MOSDOp>();
     MOSDOpReply* split_reply = new MOSDOpReply(m, reply, ignore_out_data);
+    dout(4) << __func__ << ": send reply to " << m->get_connection()->get_peer_addr() << dendl;
     pg->osd->send_message_osd_client(split_reply, m->get_connection());
     waiting_for_reply.pop_front();
     split_reply->put();
     op->put();
+    op->mark_commit_sent();
+
   }
 }
 

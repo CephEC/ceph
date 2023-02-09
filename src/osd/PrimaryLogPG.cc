@@ -2015,7 +2015,7 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
       m->clear_payload();
     }
   // }
-  
+   
 
   dout(20) << __func__ << ": op " << *m << dendl;
   
@@ -2023,6 +2023,11 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
 
   // 构建head对象
   const hobject_t head = m->get_hobj().get_head();
+ 
+  dout(4) << __func__ << " pg: " << info.pgid.pgid << " head: "
+	  	 << head << " pg_num " << pool.info.get_pg_num() << " hash "
+		 	 << std::hex << head.get_hash() << std::dec 
+	      		 << " op " << *m << dendl;
 
   // 当前的pg不包含本对象,返回错误
   // 这里似乎是通过计算的方式来验证
@@ -4448,7 +4453,7 @@ void PrimaryLogPG::execute_ctx(OpContext *ctx)
     
 
   } else {
-  
+    dout(10) << " sending reply to " << m->get_connection()->get_peer_addr() << dendl; 
     osd->send_message_osd_client(reply, m->get_connection());
   }
 	ctx->sent_reply = true;

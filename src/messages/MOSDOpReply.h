@@ -149,7 +149,7 @@ public:
     set_tid(req->get_tid());
     result = r;
     flags =
-      (req->flags & ~(CEPH_OSD_FLAG_ONDISK|CEPH_OSD_FLAG_ONNVRAM|CEPH_OSD_FLAG_ACK)) | acktype;
+      (req->flags & ~(CEPH_OSD_FLAG_ONDISK|CEPH_OSD_FLAG_ONNVRAM|CEPH_OSD_FLAG_ACK|CEPH_OSD_FLAG_AGGREGATE)) | acktype;
     osdmap_epoch = e;
     user_version = 0;
     retry_attempt = req->get_retry_attempt();
