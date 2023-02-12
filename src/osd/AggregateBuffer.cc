@@ -153,6 +153,9 @@ void AggregateBuffer::update_meta_cache(std::vector<OSDOp> *ops) {
     if (osd_op.op.op == CEPH_OSD_OP_SETXATTR) {
       bufferlist bl;
       std::string aname;
+      if (aname != "_volume_meta") {
+        continue;
+      }
       auto bp = osd_op.indata.cbegin();
       bp.copy(osd_op.op.xattr.name_len, aname);
       bp.copy(osd_op.op.xattr.value_len, bl);
@@ -171,16 +174,20 @@ void AggregateBuffer::update_meta_cache(std::vector<OSDOp> *ops) {
 
 void AggregateBuffer::send_reply(MOSDOpReply* reply, bool ignore_out_data)
 {
-  while (!waiting_for_reply.empty()) {
-    auto op = waiting_for_reply.front();
+  for (auto &op : waiting_for_reply) {
     auto m = op->get_req<MOSDOp>();
     MOSDOpReply* split_reply = new MOSDOpReply(m, reply, ignore_out_data);
     dout(4) << __func__ << ": send reply to " << m->get_connection()->get_peer_addr() << dendl;
     pg->osd->send_message_osd_client(split_reply, m->get_connection());
-    waiting_for_reply.pop_front();
-    split_reply->put();
+    op->mark_commit_sent(); 
+  }
+}
+
+void AggregateBuffer::delete_request() {
+  while (!waiting_for_reply.empty()) {
+    auto op = waiting_for_reply.front();
     op->put();
-    op->mark_commit_sent();
+    waiting_for_reply.pop_front();
   }
 }
 

@@ -4487,8 +4487,11 @@ void PrimaryLogPG::execute_ctx(OpContext *ctx)
       }
     });
   ctx->register_on_finish(
-    [ctx]() {
+    [ctx, this]() {
       delete ctx;
+      if (aggregate_enabled) {
+        m_aggregate_buffer->delete_request();
+      }
     });
 
   // issue replica writes

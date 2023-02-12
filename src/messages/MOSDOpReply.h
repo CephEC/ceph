@@ -176,7 +176,7 @@ public:
     user_version = reply->get_user_version();
     retry_attempt = req->get_retry_attempt();
     do_redirect = false;
-
+    set_reply_versions(reply->get_replay_version(), reply->get_user_version());
     for (unsigned i = 0; i < ops.size(); i++) {
       // zero out input data
       ops[i].indata.clear();
