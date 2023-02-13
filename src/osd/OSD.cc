@@ -1553,10 +1553,11 @@ OSDMapRef OSDService::try_get_map(epoch_t epoch)
 
 void OSDService::reply_op_error(OpRequestRef op, int err)
 {
-  if (!op->is_requeued_op())
+  if (op->is_write_volume_op()) {
+    // TODO: 对已聚合的Op发送错误信息
+    dout(5) << __func__ << ": " << " aggregate failed" << dendl;
+  } else {
     reply_op_error(op, err, eversion_t(), 0, {});
-  else {
-    // TODO: 处理pending request
   }
 }
 
@@ -1573,10 +1574,11 @@ void OSDService::reply_op_error(OpRequestRef op, int err, eversion_t v,
 				       !m->has_flag(CEPH_OSD_FLAG_RETURNVEC));
   reply->set_reply_versions(v, uv);
   reply->set_op_returns(op_returns);
-  if (!op->is_requeued_op())
+  if (op->is_write_volume_op()) {
+    // TODO: 对已聚合的Op发送错误信息
+    dout(5) << __func__ << ": " << " aggregate failed" << dendl;
+  } else {
     m->get_connection()->send_message(reply);
-  else {
-    // TODO: 处理pending request
   }
 }
 
@@ -9837,10 +9839,11 @@ void OSD::dequeue_op(
 
   logger->tinc(l_osd_op_before_dequeue_op_lat, latency);
 
-  if (!op->is_requeued_op())
+  if (!op->is_requeued_op()) {
     service.maybe_share_map(m->get_connection().get(),
   			    pg->get_osdmap(),
   			    op->sent_epoch);
+  }
 
   if (pg->is_deleting())
     return;

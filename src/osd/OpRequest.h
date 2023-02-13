@@ -50,6 +50,9 @@ public:
   bool is_requeued_op() const { return is_requeued; }
   void set_requeued() { is_requeued = true; }
   void unset_requeued() { is_requeued = false; }
+  bool is_write_volume_op() const { return is_write_volume; }
+  void set_write_volume() { is_write_volume = true; }
+  void unset_write_volume() { is_write_volume = false; }
 
   std::vector<OpInfo::ClassInfo> classes() const {
     return op_info.get_classes();
@@ -69,6 +72,7 @@ private:
   uint8_t latest_flag_point;
   utime_t dequeued_time;
   bool is_requeued = false;
+  bool is_write_volume = false;
   static const uint8_t flag_queued_for_pg=1 << 0;
   static const uint8_t flag_reached_pg =  1 << 1;
   static const uint8_t flag_delayed =     1 << 2;

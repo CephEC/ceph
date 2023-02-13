@@ -87,7 +87,6 @@ int AggregateBuffer::write(OpRequestRef op, MOSDOp* m)
        }
      }
      else {
-      // 可能重复获取refcount，下次进入write时也会触发op->get()
        waiting_for_aggregate.push_back(op);
        return AGGREGATE_PENDING_OP;  
      }
@@ -130,6 +129,7 @@ int AggregateBuffer::flush()
   // OpRequestRef op = pg->osd->op_tracker.create_request<OpRequest, Message*>(m);
   volume_op = pg->osd->osd->create_request(m);
   volume_op->set_requeued();
+  volume_op->set_write_volume();
 
   pg->requeue_op(volume_op);
 

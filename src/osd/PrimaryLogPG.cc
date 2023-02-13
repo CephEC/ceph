@@ -4473,9 +4473,8 @@ void PrimaryLogPG::execute_ctx(OpContext *ctx)
     [ctx, this]() {
       if (aggregate_enabled 
 		      && ctx->op
-		      && ctx->op->is_requeued_op()) {
+		      && ctx->op->is_write_volume_op()) {
         // 流程中还有很多类似的地方需要处理
-	// 出问题了再说
         dout(4) << " aggregate reply send" << dendl;
         do_osd_op_effects_split(ctx);   
       } else {
@@ -4488,7 +4487,7 @@ void PrimaryLogPG::execute_ctx(OpContext *ctx)
     });
   ctx->register_on_finish(
     [ctx, this]() {
-      if (aggregate_enabled && ctx->op->is_requeued_op()) {
+      if (aggregate_enabled && ctx->op->is_write_volume_op()) {
         m_aggregate_buffer->clear();
       }
       delete ctx;
