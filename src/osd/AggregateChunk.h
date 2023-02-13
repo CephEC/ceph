@@ -56,7 +56,8 @@ public:
 
   void clear() { 
     chunk_info.clear();
-    // TODO: 处理request 
+    m_op = nullptr;
+    op.reset();
   }
 
 private:

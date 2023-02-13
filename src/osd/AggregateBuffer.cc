@@ -87,7 +87,7 @@ int AggregateBuffer::write(OpRequestRef op, MOSDOp* m)
        }
      }
      else {
-       op->get();
+      // 可能重复获取refcount，下次进入write时也会触发op->get()
        waiting_for_aggregate.push_back(op);
        return AGGREGATE_PENDING_OP;  
      }
@@ -103,10 +103,7 @@ int AggregateBuffer::write(OpRequestRef op, MOSDOp* m)
     // flush_timer->cancel_event(flush_callback);
   // flush_callback = new FlushContext(this);
   // flush_timer->add_event_after(flush_time_out, flush_callback);
-
-   op->get();
-   waiting_for_reply.push_back(op);
-
+  waiting_for_reply.push_back(op);
 
   reset_flush_timeout();
 
@@ -131,10 +128,10 @@ int AggregateBuffer::flush()
   // TODO: generate new op for volume and requeue it
   MOSDOp* m = volume_buffer.generate_op();
   // OpRequestRef op = pg->osd->op_tracker.create_request<OpRequest, Message*>(m);
-  OpRequestRef op = pg->osd->osd->create_request(m);
-  op->set_requeued();
+  volume_op = pg->osd->osd->create_request(m);
+  volume_op->set_requeued();
 
-  pg->requeue_op(op);
+  pg->requeue_op(volume_op);
 
   flush_lock.unlock();
   volume_buffer.clear();
@@ -145,7 +142,6 @@ int AggregateBuffer::flush()
     flush_callback = NULL;
     return NOT_TARGET;
   }
-
 }
 
 void AggregateBuffer::update_meta_cache(std::vector<OSDOp> *ops) {
@@ -183,12 +179,14 @@ void AggregateBuffer::send_reply(MOSDOpReply* reply, bool ignore_out_data)
   }
 }
 
-void AggregateBuffer::delete_request() {
+void AggregateBuffer::clear() {
   while (!waiting_for_reply.empty()) {
-    auto op = waiting_for_reply.front();
-    op->put();
     waiting_for_reply.pop_front();
   }
+  if (volume_op) {
+    volume_op.reset();
+  }
+  volume_buffer.clear();
 }
 
 /************ timer *************/

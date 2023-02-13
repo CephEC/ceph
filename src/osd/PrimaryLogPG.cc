@@ -4488,10 +4488,10 @@ void PrimaryLogPG::execute_ctx(OpContext *ctx)
     });
   ctx->register_on_finish(
     [ctx, this]() {
-      delete ctx;
-      if (aggregate_enabled) {
-        m_aggregate_buffer->delete_request();
+      if (aggregate_enabled && ctx->op->is_requeued_op()) {
+        m_aggregate_buffer->clear();
       }
+      delete ctx;
     });
 
   // issue replica writes

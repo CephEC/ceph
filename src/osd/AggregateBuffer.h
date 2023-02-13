@@ -93,14 +93,14 @@ public:
    * @brief 把waiting_for_reply
    * 
   */
-  
+
   void send_reply(MOSDOpReply* reply, bool ignore_out_data);
 
   /**
-   * @brief 把存储的OpRequest和Reply释放掉
+   * @brief 一轮聚合完成，清空内部数据
    * 
    */
-  void delete_request();
+  void clear();
   /**
    * @brief 将已编码的元数据信息解码更新到volume_meta_cache中
    * 
@@ -163,7 +163,7 @@ private:
 public:
   std::list<OpRequestRef> waiting_for_aggregate;
   std::list<OpRequestRef> waiting_for_reply;
-
+  OpRequestRef volume_op;
 private:
   CephContext* cct;
   PrimaryLogPG *pg;
