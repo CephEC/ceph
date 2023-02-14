@@ -2006,15 +2006,14 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
   if (!m_aggregate_buffer->is_initialized() && aggregate_enabled) {
     aggregate_enabled = true;
     // uint64_t cap = cct->_conf->osd_aggregate_buffer_capacity;
-    uint64_t cap = 1;
-    uint64_t chunk_size = cct->_conf->osd_aggregate_buffer_chunk_size;
+    uint64_t cap = get_pgbackend()->get_ec_data_chunk_count();
+    uint64_t chunk_size = get_pgbackend()->get_ec_stripe_chunk_size();
     double time_out = cct->_conf->osd_aggregate_buffer_flush_timeout;
-    dout(5) << __func__ << "init aggregate buffer, cap = " << cap 
+    dout(5) << __func__ << " init aggregate buffer, cap = " << cap
 	    << " chunk_size = " << chunk_size
 	    << " flush_time_out = " << time_out << dendl;
     
     m_aggregate_buffer->init(cap, chunk_size, time_out);
-    
   }
   
   // 对message中的信息解码
@@ -2261,7 +2260,11 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
 	dout(4) << "op continue." << dendl;
       }
 
-    } 
+    }
+      int r = m_aggregate_buffer->read(m);
+      if (r < 0) {
+        osd->reply_op_error(op, -ENOENT);
+      }
      // TODO: read
     
   }
@@ -6838,22 +6841,27 @@ int PrimaryLogPG::do_osd_ops(OpContext *ctx, vector<OSDOp>& ops)
 	if (pool.info.has_flag(pg_pool_t::FLAG_WRITE_FADVISE_DONTNEED))
 	  op.flags = op.flags | CEPH_OSD_OP_FLAG_FADVISE_DONTNEED;
 
+  /* 为了支持对Volume的部分写，将当前逻辑暂时注释
 	if (pool.info.requires_aligned_append() &&
 	    (op.extent.offset % pool.info.required_alignment() != 0)) {
 	  result = -EOPNOTSUPP;
 	  break;
 	}
+  */
 
 	if (!obs.exists) {
 	  if (pool.info.requires_aligned_append() && op.extent.offset) {
 	    result = -EOPNOTSUPP;
 	    break;
 	  }
-	} else if (op.extent.offset != oi.size &&
+	}
+  /* 为了支持对Volume的部分写，将当前逻辑暂时注释
+  else if (op.extent.offset != oi.size &&
 		   pool.info.requires_aligned_append()) {
 	  result = -EOPNOTSUPP;
 	  break;
 	}
+  */
 
         if (seq && (seq > op.extent.truncate_seq) &&
             (op.extent.offset + op.extent.length > oi.size)) {

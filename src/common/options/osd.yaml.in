@@ -1306,7 +1306,7 @@ options:
   desc: Volume flush timeout in seconds
   type: float
   level: advanced
-  default: 5
+  default: 1
   with_legacy: true
 
  

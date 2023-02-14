@@ -40,7 +40,19 @@ void AggregateBuffer::init(uint64_t _volume_cap, uint64_t _chunk_size, double _t
   volume_buffer.init(_volume_cap, _chunk_size);
   flush_time_out = _time_out;
   flush_timer.init(); 
+}
 
+void AggregateBuffer::bind(const hobject_t &first_oid) {
+  if (volume_not_full.empty()) {
+    volume_buffer.get_volume_info().set_volume_id(first_oid);
+    volume_buffer.get_volume_info().reset_chunk_bitmap();
+  } else {
+    volume_buffer.set_volume_info(volume_not_full.front());
+    volume_not_full.pop_front();
+  }
+  is_bind = true;
+  dout(4) << __func__ << " spg_t = " << volume_buffer.get_spg() <<
+    " volume_buffer bind to volume,volume_oid = " << volume_buffer.get_volume_info().get_oid() << dendl;
 }
 
 bool AggregateBuffer::may_aggregate(MOSDOp* m)
@@ -77,7 +89,7 @@ int AggregateBuffer::write(OpRequestRef op, MOSDOp* m)
 {
   if (!may_aggregate(m))
     return NOT_TARGET;
-	
+
   // volume满，未处于flushing状态，则等待flush（一般不会为真）
   if (volume_buffer.full() && !is_flushing) {
      if (!is_flushing) {
@@ -92,12 +104,14 @@ int AggregateBuffer::write(OpRequestRef op, MOSDOp* m)
      }
   }
 
+  if (!is_bind_volume()) bind(m->get_hobj().get_head());
   // ceph_assert(volume_buffer == nullptr);
 
   if (volume_buffer.add_chunk(op, m) < 0) {
     return AGGREGATE_FAILED;
   }
-
+  dout(4) << __func__ << " spg_t = " << volume_buffer.get_spg() << " write request(oid = " << m->get_hobj().get_head() << " aggregate into volume," <<
+   "volume_oid = " << volume_buffer.get_volume_info().get_oid() << dendl;
   // if (flush_callback) 
     // flush_timer->cancel_event(flush_callback);
   // flush_callback = new FlushContext(this);
@@ -136,6 +150,7 @@ int AggregateBuffer::flush()
   flush_lock.unlock();
   volume_buffer.clear();
   is_flushing = false;
+  dout(4) << " aggregate finish, try to write volume, op = " << *m << dendl;
   return AGGREGATE_PENDING_REPLY;
   } else {
     dout(4) << " timeout, but volume is empty. " << dendl;
@@ -149,11 +164,11 @@ void AggregateBuffer::update_meta_cache(std::vector<OSDOp> *ops) {
     if (osd_op.op.op == CEPH_OSD_OP_SETXATTR) {
       bufferlist bl;
       std::string aname;
-      if (aname != "_volume_meta") {
-        continue;
-      }
       auto bp = osd_op.indata.cbegin();
       bp.copy(osd_op.op.xattr.name_len, aname);
+      if (aname != "volume_meta") {
+        continue;
+      }
       bp.copy(osd_op.op.xattr.value_len, bl);
       // TODO(zhengfuyu): 容量先写死为4了，后面再看需不需要改成配置参数
       auto meta_ptr = std::make_shared<volume_t>(4, pg->get_pgid());
@@ -163,6 +178,8 @@ void AggregateBuffer::update_meta_cache(std::vector<OSDOp> *ops) {
       if (!meta_ptr->full()) {
         // 未满的volume添加到volume_not_full
         volume_not_full.push_back(meta_ptr);
+        dout(4) << __func__ << " spg_t = " << volume_buffer.get_spg() << " add volume(oid = " <<
+          meta_ptr->get_oid() << ") into volume_not_full" << dendl;
       }
     }
   }
@@ -187,6 +204,7 @@ void AggregateBuffer::clear() {
     volume_op.reset();
   }
   volume_buffer.clear();
+  is_bind = false;
 }
 
 /************ timer *************/
@@ -194,7 +212,9 @@ void AggregateBuffer::cancel_flush_timeout()
 {
   if(flush_callback) {
     dout(4) << " cancel flush timer. " << dendl;
+    timer_lock.lock();
     flush_timer.cancel_event(flush_callback);
+    timer_lock.unlock();
     flush_callback = NULL;
   } else {
     dout(4) << " flush callback is null " << dendl;
@@ -207,15 +227,17 @@ void AggregateBuffer::reset_flush_timeout()
   cancel_flush_timeout();
   dout(4) << "reset flush timer" << dendl;
   flush_callback =  new C_FlushContext{this, [this](int) {
-          dout(4) << " time out, start to flush. " << dendl; 
+    dout(4) << " time out, start to flush. " << dendl; 
     flush();	  
   }};  
-  std::lock_guard l(timer_lock);    
-    if(flush_timer.add_event_after(flush_time_out, flush_callback)) {
-    dout(4) << " reset_flush_timeout " << flush_callback
-      << " after " << flush_time_out << " seconds " << dendl;
-  } else {
-    flush_callback = nullptr;
+  {
+    std::lock_guard l(timer_lock);    
+      if(flush_timer.add_event_after(flush_time_out, flush_callback)) {
+      dout(4) << " reset_flush_timeout " << flush_callback
+        << " after " << flush_time_out << " seconds " << dendl;
+    } else {
+      flush_callback = nullptr;
+    }
   }
 }
 
@@ -236,12 +258,15 @@ int AggregateBuffer::read(MOSDOp* m) {
   }
   auto volume_meta_ptr = volume_meta_cache[m->get_hobj()];
   auto chunk_meta = volume_meta_ptr->get_chunk(m->get_hobj());
-  m->set_hobj(volume_meta_ptr->get_oid());
   for (auto &osd_op : m->ops) {
     if (osd_op.op.op == CEPH_OSD_OP_READ ||
         osd_op.op.op == CEPH_OSD_OP_SPARSE_READ ||
         osd_op.op.op == CEPH_OSD_OP_SYNC_READ) {
       // TODO(zhengfuyu): 目前默认所有对rados的读请求都是全量读取对象
+      dout(4) << __func__ << " translate read_request(oid = " << m->get_hobj().get_head() << ") to read_volume(oid = "
+        << volume_meta_ptr->get_oid() << " off =  " << osd_op.op.extent.offset
+        << " len = " << osd_op.op.extent.length << ")" << dendl;
+      m->set_hobj(volume_meta_ptr->get_oid());
       osd_op.op.extent.offset = uint8_t(chunk_meta.get_chunk_id()) * chunk_meta.get_chunk_size();
       osd_op.op.extent.length = chunk_meta.get_chunk_size();
     }

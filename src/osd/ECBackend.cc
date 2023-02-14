@@ -1915,6 +1915,7 @@ bool ECBackend::try_state_to_reads()
     return false;
 
   Op *op = &(waiting_state.front());
+
   if (op->requires_rmw() && pipeline_state.cache_invalid()) {
     ceph_assert(get_parent()->get_pool().allows_ecoverwrites());
     dout(20) << __func__ << ": blocking " << *op

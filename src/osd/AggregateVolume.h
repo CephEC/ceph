@@ -35,8 +35,10 @@ public:
 
   spg_t get_spg() const { return volume_info.get_spg(); }
   uint32_t get_cap() const { return volume_info.get_cap(); }
-  volume_t get_volume_info() const { return volume_info; }
-
+  volume_t& get_volume_info() { return volume_info; }
+  void set_volume_info(std::shared_ptr<volume_t> info) {
+    volume_info = *info;
+  }
   object_info_t find_object(hobject_t soid);
 
   void init(uint64_t _cap, uint64_t _chunk_size);
@@ -84,7 +86,7 @@ public:
     V& sops = s->ops;
     // s中ops全部挂到d的ops后面
     dops.insert(dops.end(), sops.begin(), sops.end());
-}
+  }
 
   void dump_op();
   // chunk
@@ -92,7 +94,6 @@ public:
 private:
   uint64_t chunk_size;
 
-  std::vector<bool> bitmap;
   // chunk的顺序要与volume_info中chunk_set中chunk的顺序一致
   std::vector<Chunk*> chunks;
   // TODO: EC块缓存

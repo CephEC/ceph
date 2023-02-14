@@ -52,6 +52,14 @@ public:
   bool is_initialized() { return initialized; }
 
   /**
+   * @brief volume_buffer需要与一个volume_info绑定
+   * 如果volume_not_full非空，那么从中取出一个未满的volume绑定到volume_buffer
+   * 如果volume_not_full为空，那么创建一个新的volume绑定到volume_buffer(新volume的oid直接取当前写入的RGW对象的Oid)
+   */
+  void bind(const hobject_t &first_oid);
+  bool is_bind_volume() { return is_bind; }
+
+  /**
    * @brief 判断是否为写入请求
    *
    */
@@ -169,6 +177,7 @@ private:
   PrimaryLogPG *pg;
 
   bool initialized = false;
+  bool is_bind = false;
 
   // 属于PG的VolumeMeta
   // std::vector<volume_t> volume_meta_cache;

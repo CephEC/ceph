@@ -8,21 +8,16 @@
 Volume::Volume(uint32_t _cap, uint32_t _chunk_size, const spg_t& _pg_id)
   : volume_info(_cap, _pg_id),
     vol_op(nullptr)
-{
- 
- } 
+{} 
 
 Volume::~Volume()
 {
-    for (auto c: chunks)
-        delete c;
+  for (auto c: chunks)
+      delete c;
 }
 
 void Volume::clear()
 {
-  for (auto i: bitmap) {
-    i = false;
-  }
   for (auto i: chunks) {
     i->clear();
   }  
@@ -33,8 +28,6 @@ void Volume::clear()
 void Volume::init(uint64_t _cap, uint64_t _chunk_size)
 {
   volume_info.set_cap(_cap);
-  bitmap.resize(_cap);
-  bitmap.assign(_cap, false);
 
   // 预分配Chunk
   for (uint8_t i = 0; i < _cap; i++) {
@@ -45,25 +38,15 @@ void Volume::init(uint64_t _cap, uint64_t _chunk_size)
   // TODO: 预分配EC Chunk，这里需要获取ec pool的配置，m的值
 }
 
-uint32_t Volume::_find_free_chunk()
-{
-  uint32_t free_index = 0;
-  while (free_index < volume_info.get_cap() && bitmap[free_index]) 
-    free_index++;
-  return free_index;
-}
-
 
 int Volume::add_chunk(OpRequestRef op, MOSDOp* m) 
 {
   // TODO：查找oid是否存在（覆盖写情况）
 
-  uint32_t free_chunk_index = _find_free_chunk();
+  uint32_t free_chunk_index = volume_info.find_free_chunk();
   if (free_chunk_index >= volume_info.get_cap()) {
     return -1;
   }
-  
-  bitmap[free_chunk_index] = true;
   // new Chunk
   Chunk* new_chunk = chunks[free_chunk_index];
   // init chunk & return its metadata
@@ -91,11 +74,8 @@ OSDOp Volume::_generate_write_meta_op() {
 
 MOSDOp* Volume::_prepare_volume_op(MOSDOp *m)
 {
-  // 这里直接用了其中一个写入的obj的名字
-  volume_info.set_volume_id(m->get_hobj());  
-
   auto volume_m = new MOSDOp(m->get_client_inc(), m->get_tid(),
-		      m->get_hobj(), volume_info.get_spg(),
+		      volume_info.get_oid(), volume_info.get_spg(),
 		      m->get_map_epoch(),
 		      m->get_flags() | CEPH_OSD_FLAG_AGGREGATE, m->get_features());
   // oloc? ops?
@@ -103,7 +83,6 @@ MOSDOp* Volume::_prepare_volume_op(MOSDOp *m)
   volume_m->set_snap_seq(m->get_snap_seq());
   volume_m->set_snaps(m->get_snaps());
 
-  volume_m->ops = m->ops; // vector<OSDOp>
   volume_m->set_mtime(m->get_mtime());
   volume_m->set_retry_attempt(m->get_retry_attempt());
 
@@ -139,7 +118,7 @@ MOSDOp* Volume::generate_op()
   std::vector<Chunk*>::iterator c = chunks.begin();
   while (c != chunks.end()) {
     if ((*c)->is_valid()) {
-      newest_m = (*c)->get_nonconst_message();
+      newest_m = static_cast<MOSDOp*>((*c)->get_req()->get_nonconst_req());
       c++;
       break;
     }
@@ -150,12 +129,12 @@ MOSDOp* Volume::generate_op()
   
   if (newest_m) {
     volume_m = _prepare_volume_op(newest_m);
-
+    c = chunks.begin();
     // 拼装
     while (c != chunks.end()) {
       if ((*c)->is_valid()) {
-        MOSDOp* temp_m = (*c)->get_nonconst_message();
-        _append_data<std::vector<OSDOp>>(newest_m, temp_m);
+        auto &ops = (*c)->get_ops();
+        (volume_m->ops).insert((volume_m->ops).end(), ops.begin(), ops.end());
       }
       c++;
     }

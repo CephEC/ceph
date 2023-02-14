@@ -1732,7 +1732,8 @@ public:
   uint64_t required_alignment() const { return stripe_width; }
 
   bool allows_ecoverwrites() const {
-    return has_flag(FLAG_EC_OVERWRITES);
+    return true;
+    // return has_flag(FLAG_EC_OVERWRITES);
   }
 
   bool can_shift_osds() const {
@@ -6702,7 +6703,7 @@ public:
   typedef uint8_t state_t;
 
   // 暂时定为固定大小，通过配置文件来调整，缺的填0
-  static const int CHUNK_SIZE = 128;
+  static const int CHUNK_SIZE = 4096;
   static const int32_t NO_OSD = 0x7fffffff;
   // 全0
   static constexpr state_t EMPTY = 0;
@@ -6739,6 +6740,7 @@ public:
   bool get_type() const { return is_erasure; }
 
   void set_seq(uint8_t seq) { chunk_id = chunk_id_t(seq); }
+  uint8_t get_seq() const { return uint8_t(chunk_id); }
   void set_empty() { chunk_state = EMPTY; }
   void set_oid(hobject_t& _oid) { soid = _oid; }
 
@@ -6832,12 +6834,26 @@ WRITE_CLASS_ENCODER(chunk_t)
 
 class volume_t {
 public:
-  volume_t(uint32_t _cap, const spg_t& _pg_id): size(0), cap(_cap), pg_id(_pg_id) {}
-  volume_t(): volume_id(hobject_t()), size(0), cap(4), pg_id(spg_t()) {}
-  
+  volume_t(uint32_t _cap, const spg_t& _pg_id): size(0), cap(_cap), pg_id(_pg_id) {
+    chunk_is_full.resize(cap);
+    chunk_is_full.assign(cap, false);
+  }
+  volume_t(): volume_id(hobject_t()), size(0), cap(4), pg_id(spg_t()) {
+    chunk_is_full.resize(cap);
+    chunk_is_full.assign(cap, false);
+  }
+  volume_t(const hobject_t& oid, uint32_t _cap, const spg_t& _pg_id): 
+    volume_id(oid), size(0), cap(_cap), pg_id(_pg_id) {
+    chunk_is_full.resize(cap);
+    chunk_is_full.assign(cap, false);
+  }
   void set_volume_id(const hobject_t& oid) { volume_id = oid; }
   void set_cap(uint64_t _cap) { cap = _cap; }
 
+  void reset_chunk_bitmap() {
+    chunk_is_full.resize(cap);
+    chunk_is_full.assign(cap, false);
+  }
   bool full() const { return size == cap; }
   bool empty() const {return size == 0; }
   uint32_t get_size() const { return size; }
@@ -6861,24 +6877,39 @@ public:
     return out;
   }
 
+  uint32_t find_free_chunk() {
+    for (uint32_t i = 0; i < cap; i++) {
+      if (!chunk_is_full[i]) {
+        return i;
+      }
+    }
+    return cap;
+  }
+
   // chunk加入volume（元数据）
   void add_chunk(const hobject_t& soid, const chunk_t& chunk) 
   {
     chunks[soid] = chunk;
+    chunk_is_full[chunk.get_seq()] = true;
     size++;
   }
   // 从volume中移除chunk（元数据）
   void remove_chunk(hobject_t& soid) 
   {
     auto o = chunks.find(soid);
-    if(o != chunks.end())
+    if(o != chunks.end()) {
+      chunk_is_full[(*o).second.get_seq()] = false;
       chunks.erase(o); 
+    }
     size--;
   }
   // 清空volume map, cap和pgid由pool配置决定，osd运行期间不改变
   void clear()
   {
     chunks.clear();
+    for (auto i: chunk_is_full) {
+      i = false;
+    }
     size = 0;
   }
 
@@ -6890,6 +6921,7 @@ public:
     encode(size, bl);
     encode(volume_id, bl);
     encode(chunks, bl);
+    encode(chunk_is_full, bl);
     ENCODE_FINISH(bl);
   }
   void decode(ceph::buffer::list::const_iterator &bl) {
@@ -6899,12 +6931,16 @@ public:
     decode(size, bl);
     decode(volume_id, bl);
     decode(chunks, bl);
+    decode(chunk_is_full, bl);
     DECODE_FINISH(bl);
   }
   volume_t& operator=(const volume_t& rhs) {
     this->chunks.clear();
-    for(auto chunk: rhs.chunks) {
+    for (auto chunk : rhs.chunks) {
       this->chunks[chunk.first] = chunk.second;
+    }
+    for (uint32_t i = 0; i < cap; i++) {
+      this->chunk_is_full[i] = rhs.chunk_is_full[i];
     }
     this->volume_id = rhs.volume_id;
     this->size = rhs.size;
@@ -6923,6 +6959,11 @@ public:
         return false;
       }
       if (it->second != kv.second) {
+        return false;
+      }
+    }
+    for (uint32_t i = 0; i < cap; i++) {
+      if (this->chunk_is_full[i] != rhs.chunk_is_full[i]) {
         return false;
       }
     }
@@ -6945,6 +6986,7 @@ public:
 private:
   // 通过oid索引，其顺序作为chunk id保存在chunk_t中，在chunk创建时赋值
   std::unordered_map<hobject_t, chunk_t> chunks;
+  std::vector<bool> chunk_is_full;
   hobject_t volume_id;
 
   // volume现有的chunk数
