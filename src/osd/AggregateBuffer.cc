@@ -45,7 +45,6 @@ void AggregateBuffer::init(uint64_t _volume_cap, uint64_t _chunk_size, double _t
 void AggregateBuffer::bind(const hobject_t &first_oid) {
   if (volume_not_full.empty()) {
     volume_buffer.get_volume_info().set_volume_id(first_oid);
-    volume_buffer.get_volume_info().reset_chunk_bitmap();
   } else {
     volume_buffer.set_volume_info(volume_not_full.front());
     volume_not_full.pop_front();
@@ -148,7 +147,6 @@ int AggregateBuffer::flush()
   pg->requeue_op(volume_op);
 
   flush_lock.unlock();
-  volume_buffer.clear();
   is_flushing = false;
   dout(4) << " aggregate finish, try to write volume, op = " << *m << dendl;
   return AGGREGATE_PENDING_REPLY;

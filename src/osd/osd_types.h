@@ -6701,9 +6701,6 @@ WRITE_CMP_OPERATORS_1(chunk_id_t, id)
 class chunk_t {
 public:
   typedef uint8_t state_t;
-
-  // 暂时定为固定大小，通过配置文件来调整，缺的填0
-  static const int CHUNK_SIZE = 4096;
   static const int32_t NO_OSD = 0x7fffffff;
   // 全0
   static constexpr state_t EMPTY = 0;
@@ -6713,24 +6710,21 @@ public:
   static constexpr state_t INVALID = 2;
 
   chunk_t() : chunk_id(chunk_id_t()), chunk_state(EMPTY),
-              chunk_fill_offset(0), chunk_size(CHUNK_SIZE), 
+              chunk_fill_offset(0), chunk_size(0), 
 	            pg_id(spg_t()), soid(hobject_t()), is_erasure(false) {}
   
-  chunk_t(uint8_t _id, const spg_t& _pg_id, uint64_t _size = CHUNK_SIZE, bool _is_erasure = false) : 
+  chunk_t(uint8_t _id, const spg_t& _pg_id, uint64_t _chunk_size, bool _is_erasure = false) : 
               chunk_id(_id), chunk_state(EMPTY),
-              chunk_fill_offset(0), chunk_size(CHUNK_SIZE), 
+              chunk_fill_offset(0), chunk_size(_chunk_size), 
 	            pg_id(_pg_id), soid(hobject_t()), is_erasure(false) {}
 
 
-  void set_from_op(uint8_t _chunk_id, uint64_t _offset, const hobject_t& _soid,  
-                    bool _is_erasure = false, int64_t _chunk_size = CHUNK_SIZE)  
+  void set_from_op(uint8_t _chunk_id, uint64_t _offset, const hobject_t& _soid)  
   {
     chunk_id = chunk_id_t(_chunk_id);
     chunk_fill_offset = _offset;
-    chunk_size = _chunk_size;
     soid = _soid;
     chunk_state = VALID;
-    is_erasure = _is_erasure;
   }
 
   chunk_id_t get_chunk_id() const { return chunk_id; }

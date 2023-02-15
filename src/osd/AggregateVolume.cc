@@ -28,7 +28,7 @@ void Volume::clear()
 void Volume::init(uint64_t _cap, uint64_t _chunk_size)
 {
   volume_info.set_cap(_cap);
-
+  volume_info.reset_chunk_bitmap();
   // 预分配Chunk
   for (uint8_t i = 0; i < _cap; i++) {
     Chunk* c = new Chunk(i, get_spg(), _chunk_size, this);
@@ -109,54 +109,32 @@ MOSDOp* Volume::_prepare_volume_op(MOSDOp *m)
 
 // 倾向于用最后一个op的信息隐藏前面的op，保留了最新的OSDMap？
 // 生成一个新op吧，不然很混乱
-// 部分写的逻辑还需要完善，因为需要读过来再写回去
 MOSDOp* Volume::generate_op()
 {
   // TODO: 生成新op然后将数据部分接在op的后面，并且要修改op的部分flag
   MOSDOp* newest_m = nullptr;
-  // 逆序
-  std::vector<Chunk*>::iterator c = chunks.begin();
-  while (c != chunks.end()) {
-    if ((*c)->is_valid()) {
-      newest_m = static_cast<MOSDOp*>((*c)->get_req()->get_nonconst_req());
-      c++;
-      break;
-    }
-    c++;
-  }
-
   MOSDOp* volume_m = nullptr;
-  
-  if (newest_m) {
-    volume_m = _prepare_volume_op(newest_m);
-    c = chunks.begin();
-    // 拼装
-    while (c != chunks.end()) {
-      if ((*c)->is_valid()) {
-        auto &ops = (*c)->get_ops();
-        (volume_m->ops).insert((volume_m->ops).end(), ops.begin(), ops.end());
-      }
-      c++;
+  for (auto iter = chunks.begin(); iter != chunks.end(); iter++) {
+    if (!(*iter)->is_valid()) continue;
+    if(!newest_m) {
+      // 使用第一个有效chunk中的Op来初始化Volume Op
+      newest_m = static_cast<MOSDOp*>((*iter)->get_req()->get_nonconst_req());
+      volume_m = _prepare_volume_op(newest_m);
     }
-
-    volume_m->set_connection(ConnectionRef());
-    
-    // 将volume_t元数据编码封装为一个写扩展属性的OSDOp
-    // 这个OSDOp放置在MOSDOp中OSDOp数组的最末端，便于在on_commit回调中找到它
-    OSDOp write_meta_op = _generate_write_meta_op();
-    (volume_m->ops).push_back(write_meta_op);
-
-    // 如果不encode，转化为Message会被截断
-    // encode的开销？
-    volume_m->encode_payload(volume_m->get_features());
-    // volume_m->set_final_decode_needed(true);
-    // volume_m->set_partial_decode_needed(true);
+    auto &ops = (*iter)->get_ops();
+    (volume_m->ops).insert((volume_m->ops).end(), ops.begin(), ops.end());
   }
-  
-  
+  volume_m->set_connection(ConnectionRef());
+    
+  // 将volume_t元数据编码封装为一个写扩展属性的OSDOp
+  // 这个OSDOp放置在MOSDOp中OSDOp数组的最末端，便于在on_commit回调中找到它
+  OSDOp write_meta_op = _generate_write_meta_op();
+  (volume_m->ops).push_back(write_meta_op);
 
-  // 生成OpRequest
-  // OpRequestRef volume_op = op_tracker.create_request<OpRequest, Message*>(m);
-  
+  // 如果不encode，转化为Message会被截断
+  // encode的开销？
+  volume_m->encode_payload(volume_m->get_features());
+  // volume_m->set_final_decode_needed(true);
+  // volume_m->set_partial_decode_needed(true);
   return volume_m;
 }
