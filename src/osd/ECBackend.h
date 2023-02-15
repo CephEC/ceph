@@ -216,6 +216,18 @@ private:
     }
   }
 
+  void get_want_to_read_shards_cephEC(
+    std::set<int>& logical_data_chunk_set,
+    std::set<int> *want_to_read) {
+    const std::vector<int> &chunk_mapping = ec_impl->get_chunk_mapping();
+    for(std::set<int>::iterator iter=logical_data_chunk_set.begin();
+        iter != logical_data_chunk_set.end();
+        iter++){
+      int chunk = (int)chunk_mapping.size() > *iter ? chunk_mapping[*iter] : *iter;
+      want_to_read->insert(chunk);
+    }
+  }
+
   /**
    * Recovery
    *
@@ -680,6 +692,10 @@ public:
   }
   void _failed_push(const hobject_t &hoid,
     std::pair<RecoveryMessages *, ECBackend::read_result_t &> &in);
+
+  bool is_cephEC() const {
+    return true;
+  }
 };
 ostream &operator<<(ostream &lhs, const ECBackend::pipeline_state_t &rhs);
 

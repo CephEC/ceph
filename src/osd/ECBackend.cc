@@ -1224,7 +1224,7 @@ void ECBackend::handle_sub_read_reply(
       rop.to_read.find(i->first)->second.to_read.begin();
       // rop.to_read.find(i->first)->second得到read_request_t (在objects_read_and_reconstruct中构建的)
       // req_iter实际上就是一个{以stripe对齐的off, length, flag}的元组链表
-      // 表示我想要读取的stripe数据
+      // 表示我想要读取的stripe数据 (如果是cephEC，那么其中的off和len不是以stripe对齐的)
     list<
       boost::tuple<
 	uint64_t, uint64_t, map<pg_shard_t, bufferlist> > >::iterator riter =
@@ -1236,9 +1236,13 @@ void ECBackend::handle_sub_read_reply(
     // j => (chunk_offset, bufferlist)  第二个属性中保存了读入的数据
       ceph_assert(req_iter != rop.to_read.find(i->first)->second.to_read.end());
       ceph_assert(riter != rop.complete[i->first].returned.end());
-      pair<uint64_t, uint64_t> adjusted =
-	sinfo.aligned_offset_len_to_chunk(
-	  make_pair(req_iter->get<0>(), req_iter->get<1>()));
+      pair<uint64_t, uint64_t> adjusted;
+      if (is_cephEC()) {
+        adjusted = make_pair(0, sinfo.get_chunk_size());
+      } else {
+        adjusted = sinfo.aligned_offset_len_to_chunk(
+          make_pair(req_iter->get<0>(), req_iter->get<1>()));
+      }
       ceph_assert(adjusted.first == j->first);
       riter->get<2>()[from] = std::move(j->second); 
       // 将从from分片（或者说从OSD）上读到的数据填入riter指向的bufferlist中
@@ -1349,6 +1353,7 @@ void ECBackend::handle_sub_read_reply(
              is_complete == rop.complete.size()) {
     dout(20) << __func__ << " Complete: " << rop << dendl;
     rop.trace.event("ec read complete");
+    // 进入下一步
     complete_read_op(rop, m);
   } else {
     dout(10) << __func__ << " readop not complete: " << rop << dendl;
@@ -1683,7 +1688,7 @@ int ECBackend::get_min_avail_to_read_shards(
       for (auto &&i: have) {
         need[i] = subchunks_list;
       }
-  } 
+  }
 
   if (!to_read)
     return 0;
@@ -1793,7 +1798,8 @@ void ECBackend::do_read_op(ReadOp &op)
 	need_attrs = false;
       }
       // message[分片id].subchunk[对象id] = j.second
-      // j.second 默认好像是pair<0, 1>, 没看出subchunk有什么意义？
+      // j.second 默认好像是pair<0, 1>
+      // 通过subchunks的key确定在该分片上有哪些对象需要被读取
       messages[j->first].subchunks[i->first] = j->second;
       op.obj_to_source[i->first].insert(j->first);
       op.source_to_obj[j->first].insert(i->first);
@@ -1802,9 +1808,16 @@ void ECBackend::do_read_op(ReadOp &op)
 	   i->second.to_read.begin();
 	 j != i->second.to_read.end();
 	 ++j) {
-      // 把stripe的id和length,转换为分片内的chunk offset和length
-      pair<uint64_t, uint64_t> chunk_off_len =
-	sinfo.aligned_offset_len_to_chunk(make_pair(j->get<0>(), j->get<1>()));
+      pair<uint64_t, uint64_t> chunk_off_len;
+      if (is_cephEC()) {
+        // cephEC中，Volume对象只对应一条EC条带，所以每个OSD上也只会保存该对象的单个数据块（或者编码块）
+        // 不需要调用aligned_offset_len_to_chunk计算具体需要读取OSD上的哪些chunk（毕竟只有1个chunk）
+        // 所以chunk_off_len = <0, chunk_size>
+        chunk_off_len = make_pair(0, sinfo.get_chunk_size());
+      } else {
+        // 把stripe的id和length,转换为分片内的chunk offset和length
+        chunk_off_len = sinfo.aligned_offset_len_to_chunk(make_pair(j->get<0>(), j->get<1>()));
+      }
       for (auto k = i->second.need.begin();
 	   k != i->second.need.end();
 	   ++k) {
@@ -2261,18 +2274,22 @@ void ECBackend::objects_read_async(
 
   uint32_t flags = 0;
   extent_set es;
-  if 
   for (list<pair<boost::tuple<uint64_t, uint64_t, uint32_t>,
 	 pair<bufferlist*, Context*> > >::const_iterator i =
 	 to_read.begin();
        i != to_read.end();
        ++i) {
-    pair<uint64_t, uint64_t> tmp =
-      sinfo.offset_len_to_stripe_bounds(
-	make_pair(i->first.get<0>(), i->first.get<1>()));
-    // 这里将对象的offset和length对齐到stripe_width
-    // reads oid -> {起始offset所在的条带起始地址，本次需要读取的条带数，flag}
-    es.union_insert(tmp.first, tmp.second);
+    if (is_cephEC()) {
+      // 这里的offset和length不需要对齐到stripe，因为cephEC中的读操作不以条带为单位
+      es.union_insert(i->first.get<0>(), i->first.get<1>());
+    } else {
+      pair<uint64_t, uint64_t> tmp =
+        sinfo.offset_len_to_stripe_bounds(
+    make_pair(i->first.get<0>(), i->first.get<1>()));
+      // 这里将对象的offset和length对齐到stripe_width
+      // reads oid -> {起始offset所在的条带起始地址，本次需要读取的条带数，flag}
+      es.union_insert(tmp.first, tmp.second);
+    }
     flags |= i->first.get<2>();
   }
 
@@ -2288,7 +2305,7 @@ void ECBackend::objects_read_async(
 	  flags));
     }
   }
-
+  // TODO
   struct cb {
     ECBackend *ec;
     hobject_t hoid;
@@ -2394,41 +2411,48 @@ struct CallClientContexts :
       goto out;
     ceph_assert(res.returned.size() == to_read.size());
     ceph_assert(res.errors.empty());
-    for (auto &&read: to_read) {
-      // to_read应该在objects_read_and_reconstruct中就对stripe对齐了才传入CallClientContexts？
-      pair<uint64_t, uint64_t> adjusted =
-	ec->sinfo.offset_len_to_stripe_bounds(
-	  make_pair(read.get<0>(), read.get<1>()));
-      ceph_assert(res.returned.front().get<0>() == adjusted.first &&
-	     res.returned.front().get<1>() == adjusted.second);
-      map<int, bufferlist> to_decode;
-      bufferlist bl;
-      for (map<pg_shard_t, bufferlist>::iterator j =
-	     res.returned.front().get<2>().begin();
-	   j != res.returned.front().get<2>().end();
-	   ++j) {
-      // 把读到的数据搬到to_decode结构中
-	to_decode[j->first.shard] = std::move(j->second);
+    // TODO(zhengfuyu) 类型不匹配，可能出现溢出错误
+    if (res.returned.front().get<2>().size() == ec->get_ec_data_chunk_count()) {
+      for (auto &&read: to_read) {
+          // k个数据块+编码块，需要解码数据
+          pair<uint64_t, uint64_t> adjusted =
+            ec->sinfo.offset_len_to_stripe_bounds(make_pair(read.get<0>(), read.get<1>()));
+          // 找到该read需要读取数据所在的条带
+          //（本次有多个read，共同读取了多个条带，但是在处理单个read时，可能不需要将所有已读取的条带一次性解码）
+          ceph_assert(res.returned.front().get<0>() == adjusted.first &&
+          res.returned.front().get<1>() == adjusted.second);
+          map<int, bufferlist> to_decode;
+          bufferlist bl;
+          for (map<pg_shard_t, bufferlist>::iterator j =
+              res.returned.front().get<2>().begin();
+              j != res.returned.front().get<2>().end();
+              ++j) {
+            // 把读到的数据搬到to_decode结构中
+            to_decode[j->first.shard] = std::move(j->second);
+          }
+          // 调用EC插件的decode函数解码数据
+          int r = ECUtil::decode(ec->sinfo, ec->ec_impl, to_decode, &bl);
+          if (r < 0) {
+            res.r = r;
+            goto out;
+          }
+          bufferlist trimmed;
+          trimmed.substr_of(bl,
+            read.get<0>() - adjusted.first,
+            std::min(read.get<1>(),
+            bl.length() - (read.get<0>() - adjusted.first)));
+          result.insert(read.get<0>(), trimmed.length(), std::move(trimmed));
+          res.returned.pop_front();
       }
-      // 调用EC插件的decode函数解码数据
-      int r = ECUtil::decode(
-	ec->sinfo,
-	ec->ec_impl,
-	to_decode,
-	&bl);
-      if (r < 0) {
-        res.r = r;
-        goto out;
-      }
-      bufferlist trimmed;
-      trimmed.substr_of(
-	bl,
-	read.get<0>() - adjusted.first,
-	std::min(read.get<1>(),
-	    bl.length() - (read.get<0>() - adjusted.first)));
-      result.insert(
-	read.get<0>(), trimmed.length(), std::move(trimmed));
-      res.returned.pop_front();
+    } else {
+        // cephEC的正常读取链路
+        for (auto &read_range : res.returned) {
+          auto target_data_chunk = read_range.get<2>();
+          result.insert(read_range.get<0>(),  // off
+                        read_range.get<1>(),  // len
+                        read_range.get<2>().begin()->second); // bufferlist
+        }
+        res.returned.clear();
     }
 out:
     status->complete_object(hoid, res.r, std::move(result));
@@ -2452,22 +2476,36 @@ void ECBackend::objects_read_and_reconstruct(
 
   map<hobject_t, set<int>> obj_want_to_read;
   set<int> want_to_read;
-  // 正常情况下就是得到一个含k个编号的数组
-  //（在个别情况下不同分片内的数据可能重排序，所以分片的编号也会变化）
-  // 看get_chunk_mapping的注释，解释的很清晰
-  get_want_to_read_shards(&want_to_read);
-  
+
   map<hobject_t, read_request_t> for_read_op;
   for (auto &&to_read: reads) {
     map<pg_shard_t, vector<pair<int, int>>> shards;
-    // 判断want_to_read中的数据分片是否都能正常读取
-    // 如果存在数据分片无法正常读取，则需要额外读取编码分片来恢复数据
+    // cephEC正常情况下，to_read中每个offset和length都是chunk对齐的
+    if (is_cephEC()) {
+      set<int> logical_data_chunk_set;
+      for (auto &read_range : to_read.second) {
+        ceph_assert(read_range.get<0>() % sinfo.get_chunk_size() == 0);
+        ceph_assert(read_range.get<1>() == sinfo.get_chunk_size());
+        int logical_data_chunk_id = read_range.get<0>() / sinfo.get_chunk_size();
+        if (logical_data_chunk_set.count(logical_data_chunk_id) == 0) {
+          logical_data_chunk_set.insert(logical_data_chunk_id);
+        }
+        get_want_to_read_shards_cephEC(logical_data_chunk_set, &want_to_read);
+      }
+    } else {
+      // 正常情况下就是得到一个含k个编号的数组
+      //（在个别情况下不同分片内的数据可能重排序，所以分片的编号也会变化）
+      // 看get_chunk_mapping的注释，解释的很清晰
+      get_want_to_read_shards(&want_to_read);
+    }
     int r = get_min_avail_to_read_shards(
       to_read.first,
       want_to_read,
       false,
       fast_read,
       &shards);
+    // 判断all_data_shard中的数据分片是否都能正常读取
+    // 如果存在数据分片无法正常读取，则需要额外读取编码分片来恢复数据
     ceph_assert(r == 0);
 
     CallClientContexts *c = new CallClientContexts(
@@ -2480,6 +2518,7 @@ void ECBackend::objects_read_and_reconstruct(
 	to_read.first,  // 对象id
 	read_request_t(
 	  to_read.second,  // 本次需要读取的{起始stripe的offset，length，flag}
+    //  如果是cephEC配置，则offset和length不会按stripe对齐
 	  shards,     // 实际读取的分片编号
 	  false,
 	  c)));
