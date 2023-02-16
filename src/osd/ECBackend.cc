@@ -2483,15 +2483,21 @@ void ECBackend::objects_read_and_reconstruct(
     // cephEC正常情况下，to_read中每个offset和length都是chunk对齐的
     if (is_cephEC()) {
       set<int> logical_data_chunk_set;
+      // 即使是在cephEC的配置下，volume覆盖写也会调用objects_read_and_reconstruct
+      // 注意代码的兼容性
       for (auto &read_range : to_read.second) {
         ceph_assert(read_range.get<0>() % sinfo.get_chunk_size() == 0);
-        ceph_assert(read_range.get<1>() == sinfo.get_chunk_size());
-        int logical_data_chunk_id = read_range.get<0>() / sinfo.get_chunk_size();
-        if (logical_data_chunk_set.count(logical_data_chunk_id) == 0) {
-          logical_data_chunk_set.insert(logical_data_chunk_id);
+        ceph_assert(read_range.get<1>() % sinfo.get_chunk_size() == 0);
+        uint32_t read_chunks_num = read_range.get<1>() / sinfo.get_chunk_size();
+        uint32_t first_chunk_id = read_range.get<0>() / sinfo.get_chunk_size();
+        for (uint32_t i = 0; i < read_chunks_num; i++) {
+          uint32_t logical_data_chunk_id = first_chunk_id + i;
+          if (logical_data_chunk_set.count(logical_data_chunk_id) == 0) {
+            logical_data_chunk_set.insert(logical_data_chunk_id);
+          }
         }
-        get_want_to_read_shards_cephEC(logical_data_chunk_set, &want_to_read);
       }
+      get_want_to_read_shards_cephEC(logical_data_chunk_set, &want_to_read);
     } else {
       // 正常情况下就是得到一个含k个编号的数组
       //（在个别情况下不同分片内的数据可能重排序，所以分片的编号也会变化）

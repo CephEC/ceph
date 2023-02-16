@@ -262,8 +262,8 @@ int AggregateBuffer::read(MOSDOp* m) {
         osd_op.op.op == CEPH_OSD_OP_SYNC_READ) {
       // TODO(zhengfuyu): 目前默认所有对rados的读请求都是全量读取对象
       dout(4) << __func__ << " translate read_request(oid = " << m->get_hobj().get_head() << ") to read_volume(oid = "
-        << volume_meta_ptr->get_oid() << " off =  " << osd_op.op.extent.offset
-        << " len = " << osd_op.op.extent.length << ")" << dendl;
+        << volume_meta_ptr->get_oid() << " off =  " << uint8_t(chunk_meta.get_chunk_id()) * chunk_meta.get_chunk_size()
+        << " len = " << chunk_meta.get_chunk_size() << ")" << dendl;
       m->set_hobj(volume_meta_ptr->get_oid());
       osd_op.op.extent.offset = uint8_t(chunk_meta.get_chunk_id()) * chunk_meta.get_chunk_size();
       osd_op.op.extent.length = chunk_meta.get_chunk_size();
