@@ -84,10 +84,38 @@ bool AggregateBuffer::may_aggregate_read(MOSDOp* m)
   return ret;
 }
 
+// TODO(zhengfuyu): 需要考虑write和setxattr放在一起的情况
+bool AggregateBuffer::object_overwrite(MOSDOp* m) {
+  auto it = volume_meta_cache.find(m->get_hobj());
+  if (it == volume_meta_cache.end()) {
+    // 对象不存在
+    return false;
+  }
+  // 对象存在，本次是覆盖写操作
+  auto volume_meta_ptr = volume_meta_cache[m->get_hobj()];
+  auto chunk_meta = volume_meta_ptr->get_chunk(m->get_hobj());
+  for (auto &osd_op : m->ops) {
+    if (osd_op.op.op == CEPH_OSD_OP_WRITEFULL) {
+      dout(4) << __func__ << " translate write_request(oid = " << m->get_hobj().get_head() << ") to write_volume(oid = "
+        << volume_meta_ptr->get_oid() << " off =  " << uint8_t(chunk_meta.get_chunk_id()) * chunk_meta.get_chunk_size()
+        << " len = " << chunk_meta.get_chunk_size() << ")" << dendl;
+      m->set_hobj(volume_meta_ptr->get_oid());
+      osd_op.op.op = CEPH_OSD_OP_WRITE;
+      osd_op.op.extent.offset = uint8_t(chunk_meta.get_chunk_id()) * chunk_meta.get_chunk_size();
+      osd_op.op.extent.length = chunk_meta.get_chunk_size();
+    }
+  }
+  return true;
+}
+
 int AggregateBuffer::write(OpRequestRef op, MOSDOp* m)
 {
   if (!may_aggregate(m))
     return NOT_TARGET;
+
+  if (object_overwrite(m)) {
+    return AGGREGATE_OVERWRITE;
+  }
 
   // volume满，未处于flushing状态，则等待flush（一般不会为真）
   if (volume_buffer.full() && !is_flushing) {
@@ -158,6 +186,7 @@ int AggregateBuffer::flush()
 }
 
 void AggregateBuffer::update_meta_cache(std::vector<OSDOp> *ops) {
+  dout(4) << __func__ << "try to update meta cache ops = " << *ops << dendl;
   for (auto &osd_op : *ops) {
     if (osd_op.op.op == CEPH_OSD_OP_SETXATTR) {
       bufferlist bl;

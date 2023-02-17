@@ -2247,27 +2247,31 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
 
   // 这一块检索对象丢失，和对象修复以及scrub的逻辑可以整合到聚合中来?
   // 如果发现要写入的volume丢失数据或是正在修复中，那么就选择另外一个volume写入
+
+  // TODO(zhengfuyu): 这一块代码有点乱，后续可以根据OSDOp的Op code来更加准确地调用AggregateBuffer的相关接口
   if (aggregate_enabled && !(m->has_flag(CEPH_OSD_FLAG_AGGREGATE))) {
     if (m->has_flag(CEPH_OSD_FLAG_WRITE)) {
       dout(4) << "write op " << op << " in buffer." << dendl;
       int r = m_aggregate_buffer->write(op, m);
-      if (r == AGGREGATE_PENDING_REPLY) {
-	dout(4) << "aggregate pending to reply " << dendl;
-	return;
-      } else if (r != NOT_TARGET){
-	dout(4) << "aggregate failed." << dendl;
-	return;
-      } else {
-	dout(4) << "op continue." << dendl;
+      switch (r) {
+      case AGGREGATE_PENDING_REPLY:
+        dout(4) << "aggregate pending to reply " << dendl;
+	      return;
+      case NOT_TARGET:
+      case AGGREGATE_OVERWRITE:
+        dout(4) << "op continue." << dendl;
+        break;
+      default:
+        dout(4) << "aggregate failed." << dendl;
+        osd->reply_op_error(op, -EINVAL); // TODO(zhengfuyu):先随便找个错误码应付下
+        return;
       }
-
     }
-      int r = m_aggregate_buffer->read(m);
-      if (r < 0) {
-        osd->reply_op_error(op, -ENOENT);
-      }
+    int r = m_aggregate_buffer->read(m);
+    if (r < 0) {
+      osd->reply_op_error(op, -ENOENT);
+    }
      // TODO: read
-    
   }
 
 
@@ -4461,11 +4465,12 @@ void PrimaryLogPG::execute_ctx(OpContext *ctx)
     reply->add_flags(CEPH_OSD_FLAG_ACK | CEPH_OSD_FLAG_ONDISK);
     dout(10) << " sending reply on " << *m << " " << reply << dendl;
    
-  if (aggregate_enabled) {
+  if (aggregate_enabled && ctx->op && ctx->op->is_write_volume_op()) {
     // 更新内存中的volume_meta_cache和volume_not_full
     m_aggregate_buffer->update_meta_cache(ctx->ops);
     m_aggregate_buffer->send_reply(reply, ignore_out_data);
   } else {
+    // 覆盖写还是走常规的回复流程
     dout(10) << " sending reply to " << m->get_connection()->get_peer_addr() << dendl; 
     osd->send_message_osd_client(reply, m->get_connection());
   }

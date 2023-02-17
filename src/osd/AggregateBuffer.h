@@ -25,6 +25,7 @@
 #define AGGREGATE_SUCCESS 1
 #define AGGREGATE_PENDING_OP 2
 #define AGGREGATE_PENDING_REPLY 4
+#define AGGREGATE_OVERWRITE 8
 
 class Volume;
 class PrimaryLogPG;
@@ -74,6 +75,10 @@ public:
    */
   bool may_aggregate_read(MOSDOp* m);
 
+  /**
+   * @brief 判断是否是对象的覆盖写请求，如果是则不需要聚合，直接转译后下发do_op继续执行
+  */
+  bool object_overwrite(MOSDOp* m);
   /**
    * @brief 对象写入buffer，在add_chunk中执行对象元数据的创建操作
    *
