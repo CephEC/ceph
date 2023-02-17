@@ -1500,6 +1500,8 @@ public:
     ThreadPool::TPHandle &handle) override;
   void load_volume_attrs() override;
   void do_op(OpRequestRef& op);
+  void reply_op_error(OpRequestRef op, int err, eversion_t v = eversion_t(), version_t uv = 0,
+				std::vector<pg_log_op_return_item_t> op_returns = {});
   void record_write_error(OpRequestRef op, const hobject_t &soid,
 			  MOSDOpReply *orig_reply, int r,
 			  OpContext *ctx_for_op_returns=nullptr);

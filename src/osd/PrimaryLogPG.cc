@@ -350,7 +350,7 @@ public:
     } else {
       if (r != -ECANCELED) { // on cancel just toss it out; client resends
 	if (ctx->op)
-	  ctx->pg->osd->reply_op_error(ctx->op, r);
+    ctx->pg->reply_op_error(ctx->op, r);
       } else if (results->should_requeue) {
 	if (ctx->op)
 	  ctx->pg->requeue_op(ctx->op);
@@ -835,7 +835,7 @@ bool PrimaryLogPG::check_laggy(OpRequestRef& op)
 	     << " > readable_until " << ru << dendl;
 
     if (!is_primary()) {
-      osd->reply_op_error(op, -EAGAIN);
+      reply_op_error(op, -EAGAIN);
       return false;
     }
 
@@ -1906,7 +1906,7 @@ void PrimaryLogPG::do_request(
       // verify client features
       if ((pool.info.has_tiers() || pool.info.is_tier()) &&
 	  !op->has_feature(CEPH_FEATURE_OSD_CACHEPOOL)) {
-	osd->reply_op_error(op, -EOPNOTSUPP);
+	reply_op_error(op, -EOPNOTSUPP);
 	return;
       }
       do_op(op);
@@ -1933,7 +1933,7 @@ void PrimaryLogPG::do_request(
   case MSG_OSD_SCRUB_RESERVE:
     {
       if (!m_scrubber) {
-        osd->reply_op_error(op, -EAGAIN);
+        reply_op_error(op, -EAGAIN);
         return;
       }
       auto m = op->get_req<MOSDScrubReserve>();
@@ -1985,6 +1985,19 @@ void PrimaryLogPG::load_volume_attrs()
     auto p = bp.cbegin();
     decode(*meta_ptr, p);
     m_aggregate_buffer->insert_to_meta_cache(meta_ptr);
+  }
+}
+
+/** reply_op_error
+ *  对于已聚合的对象，需要对内部已聚合对象发送reply error
+*/
+void PrimaryLogPG::reply_op_error(OpRequestRef op, int err, eversion_t v, version_t uv,
+	std::vector<pg_log_op_return_item_t> op_returns) {
+  if (op->is_write_volume_op()) {
+    for (auto aggregated_op : m_aggregate_buffer->waiting_for_reply)
+      osd->reply_op_error(aggregated_op, err, v, uv, op_returns);
+  } else {
+    osd->reply_op_error(op, err, v, uv, op_returns);
   }
 }
 
@@ -2076,14 +2089,14 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
   if (m->has_flag(CEPH_OSD_FLAG_PARALLELEXEC)) {
     // not implemented.
     dout(20) << __func__ << ": PARALLELEXEC not implemented " << *m << dendl;
-    osd->reply_op_error(op, -EINVAL);
+    reply_op_error(op, -EINVAL);
     return;
   }
 
   {
     int r = op->maybe_init_op_info(*get_osdmap());
     if (r) {
-      osd->reply_op_error(op, r);
+      reply_op_error(op, r);
       return;
     }
   }
@@ -2114,7 +2127,7 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
 
   // 查看用户权限（cephFS相关）
   if (!op->is_requeued_op() && !op_has_sufficient_caps(op)) {
-    osd->reply_op_error(op, -EPERM);
+    reply_op_error(op, -EPERM);
     return;
   }
 
@@ -2128,40 +2141,40 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
     dout(4) << "do_op name is longer than "
 	    << cct->_conf->osd_max_object_name_len
 	    << " bytes" << dendl;
-    osd->reply_op_error(op, -ENAMETOOLONG);
+    reply_op_error(op, -ENAMETOOLONG);
     return;
   }
   if (m->get_hobj().get_key().size() > cct->_conf->osd_max_object_name_len) {
     dout(4) << "do_op locator is longer than "
 	    << cct->_conf->osd_max_object_name_len
 	    << " bytes" << dendl;
-    osd->reply_op_error(op, -ENAMETOOLONG);
+    reply_op_error(op, -ENAMETOOLONG);
     return;
   }
   if (m->get_hobj().nspace.size() > cct->_conf->osd_max_object_namespace_len) {
     dout(4) << "do_op namespace is longer than "
 	    << cct->_conf->osd_max_object_namespace_len
 	    << " bytes" << dendl;
-    osd->reply_op_error(op, -ENAMETOOLONG);
+    reply_op_error(op, -ENAMETOOLONG);
     return;
   }
   if (m->get_hobj().oid.name.empty()) {
     dout(4) << "do_op empty oid name is not allowed" << dendl;
-    osd->reply_op_error(op, -EINVAL);
+    reply_op_error(op, -EINVAL);
     return;
   }
 
   if (int r = osd->store->validate_hobject_key(head)) {
     dout(4) << "do_op object " << head << " invalid for backing store: "
 	    << r << dendl;
-    osd->reply_op_error(op, r);
+    reply_op_error(op, r);
     return;
   }
 
   // blocklisted?
   if (get_osdmap()->is_blocklisted(m->get_source_addr())) {
     dout(10) << "do_op " << m->get_source_addr() << " is blocklisted" << dendl;
-    osd->reply_op_error(op, -EBLOCKLISTED);
+    reply_op_error(op, -EBLOCKLISTED);
     return;
   }
 
@@ -2204,7 +2217,7 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
       dout(10) << __func__ << " discarding op due to pool EIO flag" << dendl;
     } else {
       dout(10) << __func__ << " replying EIO due to pool EIO flag" << dendl;
-      osd->reply_op_error(op, -EIO);
+      reply_op_error(op, -EIO);
     }
     return;
   }
@@ -2213,7 +2226,7 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
     // invalid?
     if (m->get_snapid() != CEPH_NOSNAP) {
       dout(20) << __func__ << ": write to clone not valid " << *m << dendl;
-      osd->reply_op_error(op, -EINVAL);
+      reply_op_error(op, -EINVAL);
       return;
     }
 
@@ -2227,7 +2240,7 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
       derr << "do_op msg data len " << m->get_data_len()
            << " > osd_max_write_size " << (cct->_conf->osd_max_write_size << 20)
            << " on " << *m << dendl;
-      osd->reply_op_error(op, -OSD_WRITETOOBIG);
+      reply_op_error(op, -OSD_WRITETOOBIG);
       return;
     }
   }
@@ -2263,15 +2276,13 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
         break;
       default:
         dout(4) << "aggregate failed." << dendl;
-        osd->reply_op_error(op, -EINVAL); // TODO(zhengfuyu):先随便找个错误码应付下
+        reply_op_error(op, -EINVAL); // TODO(zhengfuyu):先随便找个错误码应付下
         return;
       }
     }
-    int r = m_aggregate_buffer->read(m);
-    if (r < 0) {
-      osd->reply_op_error(op, -ENOENT);
-    }
-     // TODO: read
+    // ceph内部存在一些非聚合的对象，在volume_meta_cache无法找到它们的映射关系
+    // 当volume_meta_cache中不存在对象映射时，不要直接返回对象不存在，而是将请求原封不动继续下发
+    m_aggregate_buffer->read(m);
   }
 
 
@@ -2295,7 +2306,7 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
   // missing object?
   if (is_unreadable_object(head)) {
     if (!is_primary()) {
-      osd->reply_op_error(op, -EAGAIN);
+      reply_op_error(op, -EAGAIN);
       return;
     }
     // 应该是需要等待object恢复再执行后续动作?
@@ -2378,7 +2389,7 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
       dout(3) << __func__ << " dup " << m->get_reqid()
 	      << " version " << version << dendl;
       if (already_complete(version)) {
-	osd->reply_op_error(op, return_code, version, user_version, op_returns);
+	reply_op_error(op, return_code, version, user_version, op_returns);
       } else {
 	dout(10) << " waiting for " << version << " to commit" << dendl;
         // always queue ondisk waiters, so that we can requeue if needed
@@ -2406,13 +2417,13 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
     if (osd_op.op.op == CEPH_OSD_OP_LIST_SNAPS) {
       if (m->get_snapid() != CEPH_SNAPDIR) {
 	dout(10) << "LIST_SNAPS with incorrect context" << dendl;
-	osd->reply_op_error(op, -EINVAL);
+	reply_op_error(op, -EINVAL);
 	return;
       }
     } else {
       if (m->get_snapid() == CEPH_SNAPDIR) {
 	dout(10) << "non-LIST_SNAPS on snapdir" << dendl;
-	osd->reply_op_error(op, -EINVAL);
+	reply_op_error(op, -EINVAL);
 	return;
       }
     }
@@ -2432,7 +2443,7 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
       dout(20) << __func__
                << ": unstable write on replica, bouncing to primary "
 	       << *m << dendl;
-      osd->reply_op_error(op, -EAGAIN);
+      reply_op_error(op, -EAGAIN);
       return;
     }
     dout(20) << __func__ << ": serving replica read on oid " << oid
@@ -2543,7 +2554,7 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
 	get_osdmap()->require_osd_release >= ceph_release_t::kraken) {
       record_write_error(op, oid, nullptr, r);
     } else {
-      osd->reply_op_error(op, r);
+      reply_op_error(op, r);
     }
     return;
   }
@@ -2600,7 +2611,7 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
       record_write_error(op, oid, nullptr, r,
 			 ctx->op->allows_returnvec() ? ctx : nullptr);
     } else {
-      osd->reply_op_error(op, r);
+      reply_op_error(op, r);
     }
     close_op_ctx(ctx);
     return;
@@ -2858,7 +2869,7 @@ PrimaryLogPG::cache_result_t PrimaryLogPG::maybe_handle_cache_detail(
   }
   if (!is_primary()) {
     dout(20) << __func__ << " cache miss; ask the primary" << dendl;
-    osd->reply_op_error(op, -EAGAIN);
+    reply_op_error(op, -EAGAIN);
     return cache_result_t::REPLIED_WITH_EAGAIN;
   }
 
@@ -3490,7 +3501,7 @@ public:
        // or requeue as requested
       if (r != -ECANCELED) {
         if (ctx->op)
-          ctx->pg->osd->reply_op_error(ctx->op, r);
+          ctx->pg->reply_op_error(ctx->op, r);
       } else if (requeue) {
         if (ctx->op)
           ctx->pg->requeue_op(ctx->op);
@@ -4154,7 +4165,7 @@ public:
     } else {
       if (r != -ECANCELED) { 
 	if (ctx->op)
-	  ctx->pg->osd->reply_op_error(ctx->op, r);
+	  ctx->pg->reply_op_error(ctx->op, r);
       } else if (results_data->should_requeue) {
 	if (ctx->op)
 	  ctx->pg->requeue_op(ctx->op);
@@ -4527,7 +4538,7 @@ void PrimaryLogPG::close_op_ctx(OpContext *ctx) {
 void PrimaryLogPG::reply_ctx(OpContext *ctx, int r)
 {
   if (ctx->op)
-    osd->reply_op_error(ctx->op, r);
+    reply_op_error(ctx->op, r);
   close_op_ctx(ctx);
 }
 
@@ -10355,7 +10366,7 @@ void PrimaryLogPG::finish_promote(int r, CopyResults *results,
       waiting_for_blocked_object.find(soid);
     if (blocked_iter != waiting_for_blocked_object.end()) {
       while (!blocked_iter->second.empty()) {
-	osd->reply_op_error(blocked_iter->second.front(), r);
+	reply_op_error(blocked_iter->second.front(), r);
 	blocked_iter->second.pop_front();
       }
       waiting_for_blocked_object.erase(blocked_iter);
@@ -10488,7 +10499,7 @@ void PrimaryLogPG::finish_promote_manifest(int r, CopyResults *results,
       waiting_for_blocked_object.find(soid);
     if (blocked_iter != waiting_for_blocked_object.end()) {
       while (!blocked_iter->second.empty()) {
-	osd->reply_op_error(blocked_iter->second.front(), r);
+	reply_op_error(blocked_iter->second.front(), r);
 	blocked_iter->second.pop_front();
       }
       waiting_for_blocked_object.erase(blocked_iter);
@@ -10852,7 +10863,7 @@ int PrimaryLogPG::finish_set_dedup(hobject_t oid, int r, ceph_tid_t tid, uint64_
   ObjectContextRef obc = get_object_context(oid, false);
   if (!obc) {
     if (mop->op)
-      osd->reply_op_error(mop->op, -EINVAL);
+      reply_op_error(mop->op, -EINVAL);
     return -EINVAL;
   }
   ceph_assert(obc->is_blocked());
@@ -10862,7 +10873,7 @@ int PrimaryLogPG::finish_set_dedup(hobject_t oid, int r, ceph_tid_t tid, uint64_
     // check if the previous op returns fail
     ceph_assert(mop->num_chunks == mop->results.size());
     manifest_ops.erase(oid);
-    osd->reply_op_error(mop->op, mop->results[0]);
+    reply_op_error(mop->op, mop->results[0]);
     return -EIO;
   }
 
@@ -10927,7 +10938,7 @@ int PrimaryLogPG::finish_set_dedup(hobject_t oid, int r, ceph_tid_t tid, uint64_
     simple_opc_submit(std::move(ctx));
   }
   if (mop->op)
-    osd->reply_op_error(mop->op, r);
+    reply_op_error(mop->op, r);
 
   manifest_ops.erase(oid);
   return 0;
@@ -11054,9 +11065,9 @@ int PrimaryLogPG::start_flush(
     // are blocking and the existing flush is nonblocking.
     dout(20) << __func__ << " canceling previous flush; it will fail" << dendl;
     if (fop->op)
-      osd->reply_op_error(fop->op, -EBUSY);
+      reply_op_error(fop->op, -EBUSY);
     while (!fop->dup_ops.empty()) {
-      osd->reply_op_error(fop->dup_ops.front(), -EBUSY);
+      reply_op_error(fop->dup_ops.front(), -EBUSY);
       fop->dup_ops.pop_front();
     }
     vector<ceph_tid_t> tids;
@@ -11202,7 +11213,7 @@ void PrimaryLogPG::finish_flush(hobject_t oid, ceph_tid_t tid, int r)
 
   if (r < 0 && !(r == -ENOENT && fop->removal)) {
     if (fop->op)
-      osd->reply_op_error(fop->op, -EBUSY);
+      reply_op_error(fop->op, -EBUSY);
     if (fop->blocking) {
       obc->stop_block();
       kick_object_context_blocked(obc);
@@ -11222,7 +11233,7 @@ void PrimaryLogPG::finish_flush(hobject_t oid, ceph_tid_t tid, int r)
 
   r = try_flush_mark_clean(fop);
   if (r == -EBUSY && fop->op) {
-    osd->reply_op_error(fop->op, r);
+    reply_op_error(fop->op, r);
   }
 }
 
@@ -11544,7 +11555,7 @@ void PrimaryLogPG::eval_repop(RepGather *repop)
         if (return_code >= 0) {
           return_code = std::get<2>(i);
         }
-        osd->reply_op_error(std::get<0>(i), return_code, repop->v,
+        reply_op_error(std::get<0>(i), return_code, repop->v,
                             std::get<1>(i), std::get<3>(i));
       }
       waiting_for_ondisk.erase(it);
