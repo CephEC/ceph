@@ -61,10 +61,10 @@ public:
   bool is_bind_volume() { return is_bind; }
 
   /**
-   * @brief 判断是否为写入请求
+   * @brief 判断是否需要聚合该请求
    *
    */
-  bool may_aggregate(MOSDOp* m);
+  bool need_aggregate_op(MOSDOp* m);
 
   /**
    * @brief 判断是否为读请求
@@ -73,12 +73,8 @@ public:
    * @return true 
    * @return false 
    */
-  bool may_aggregate_read(MOSDOp* m);
+  bool need_translate_op(MOSDOp* m);
 
-  /**
-   * @brief 判断是否是对象的覆盖写请求，如果是则不需要聚合，直接转译后下发do_op继续执行
-  */
-  bool object_overwrite(MOSDOp* m);
   /**
    * @brief 对象写入buffer，在add_chunk中执行对象元数据的创建操作
    *
@@ -88,19 +84,12 @@ public:
    int write(OpRequestRef op, MOSDOp* m);
    
   /**
-   * @brief 读rados对象，需要经过元数据转译成对 volume对象的读(通过指针直接修改MOSDOp内容)
+   * @brief 访问rados对象，需要经过元数据转译成对 volume对象的访问(通过指针直接修改MOSDOp内容)
    *
    * @param m
    * @return int
    */
-   int read(MOSDOp* m);
-
-  //  /**
-  //   * @brief 调用osd的enqueue函数重排队op
-  //   * 
-  //  */
-  // void requeue_op(OpRequestRef op);
-
+   int op_translate(MOSDOp* m);
 
   /**
    * @brief 把waiting_for_reply

@@ -54,7 +54,7 @@ void AggregateBuffer::bind(const hobject_t &first_oid) {
     " volume_buffer bind to volume,volume_oid = " << volume_buffer.get_volume_info().get_oid() << dendl;
 }
 
-bool AggregateBuffer::may_aggregate(MOSDOp* m)
+bool AggregateBuffer::need_aggregate_op(MOSDOp* m)
 {
   bool ret = false;
   std::vector<OSDOp>::const_iterator iter;
@@ -68,7 +68,7 @@ bool AggregateBuffer::may_aggregate(MOSDOp* m)
   return ret;
 }
 
-bool AggregateBuffer::may_aggregate_read(MOSDOp* m)
+bool AggregateBuffer::need_translate_op(MOSDOp* m)
 {
   bool ret = false;
   std::vector<OSDOp>::const_iterator iter;
@@ -77,6 +77,7 @@ bool AggregateBuffer::may_aggregate_read(MOSDOp* m)
     if (iter->op.op == CEPH_OSD_OP_READ ||
         iter->op.op == CEPH_OSD_OP_SPARSE_READ ||
         iter->op.op == CEPH_OSD_OP_SYNC_READ) {
+        // iter->op.op == CEPH_OSD_OP_CALL) {
       ret = true;
       break;
     }
@@ -84,36 +85,10 @@ bool AggregateBuffer::may_aggregate_read(MOSDOp* m)
   return ret;
 }
 
-// TODO(zhengfuyu): 需要考虑write和setxattr放在一起的情况
-bool AggregateBuffer::object_overwrite(MOSDOp* m) {
-  auto it = volume_meta_cache.find(m->get_hobj());
-  if (it == volume_meta_cache.end()) {
-    // 对象不存在
-    return false;
-  }
-  // 对象存在，本次是覆盖写操作
-  auto volume_meta_ptr = volume_meta_cache[m->get_hobj()];
-  auto chunk_meta = volume_meta_ptr->get_chunk(m->get_hobj());
-  for (auto &osd_op : m->ops) {
-    if (osd_op.op.op == CEPH_OSD_OP_WRITEFULL) {
-      dout(4) << __func__ << " translate write_request(oid = " << m->get_hobj().get_head() << ") to write_volume(oid = "
-        << volume_meta_ptr->get_oid() << " off =  " << uint8_t(chunk_meta.get_chunk_id()) * chunk_meta.get_chunk_size()
-        << " len = " << chunk_meta.get_chunk_size() << ")" << dendl;
-      m->set_hobj(volume_meta_ptr->get_oid());
-      osd_op.op.op = CEPH_OSD_OP_WRITE;
-      osd_op.op.extent.offset = uint8_t(chunk_meta.get_chunk_id()) * chunk_meta.get_chunk_size();
-      osd_op.op.extent.length = chunk_meta.get_chunk_size();
-    }
-  }
-  return true;
-}
-
 int AggregateBuffer::write(OpRequestRef op, MOSDOp* m)
 {
-  if (!may_aggregate(m))
-    return NOT_TARGET;
-
-  if (object_overwrite(m)) {
+  if (op_translate(m) == 0) {
+    // RGW对象覆盖写，不需要聚合
     return AGGREGATE_OVERWRITE;
   }
 
@@ -158,26 +133,26 @@ int AggregateBuffer::write(OpRequestRef op, MOSDOp* m)
 int AggregateBuffer::flush()
 {
   if (!volume_buffer.empty()) {
-  flush_lock.lock();
-  // when start to flush, lock
-  is_flushing = true;
-  volume_t vol_info = volume_buffer.get_volume_info();
+    flush_lock.lock();
+    // when start to flush, lock
+    is_flushing = true;
+    volume_t vol_info = volume_buffer.get_volume_info();
 
-  // TODO: judge if cache ec chunk
+    // TODO: judge if cache ec chunk
 
-  // TODO: generate new op for volume and requeue it
-  MOSDOp* m = volume_buffer.generate_op();
-  // OpRequestRef op = pg->osd->op_tracker.create_request<OpRequest, Message*>(m);
-  volume_op = pg->osd->osd->create_request(m);
-  volume_op->set_requeued();
-  volume_op->set_write_volume();
+    // TODO: generate new op for volume and requeue it
+    MOSDOp* m = volume_buffer.generate_op();
+    // OpRequestRef op = pg->osd->op_tracker.create_request<OpRequest, Message*>(m);
+    volume_op = pg->osd->osd->create_request(m);
+    volume_op->set_requeued();
+    volume_op->set_write_volume();
 
-  pg->requeue_op(volume_op);
+    pg->requeue_op(volume_op);
 
-  flush_lock.unlock();
-  is_flushing = false;
-  dout(4) << " aggregate finish, try to write volume, op = " << *m << dendl;
-  return AGGREGATE_PENDING_REPLY;
+    flush_lock.unlock();
+    is_flushing = false;
+    dout(4) << " aggregate finish, try to write volume, op = " << *m << dendl;
+    return AGGREGATE_PENDING_REPLY;
   } else {
     dout(4) << " timeout, but volume is empty. " << dendl;
     flush_callback = NULL;
@@ -197,8 +172,9 @@ void AggregateBuffer::update_meta_cache(std::vector<OSDOp> *ops) {
         continue;
       }
       bp.copy(osd_op.op.xattr.value_len, bl);
-      // TODO(zhengfuyu): 容量先写死为4了，后面再看需不需要改成配置参数
-      auto meta_ptr = std::make_shared<volume_t>(4, pg->get_pgid());
+      auto meta_ptr = std::make_shared<volume_t>(
+        pg->get_pgbackend()->get_ec_data_chunk_count(),
+        pg->get_pgid());
       auto p = bl.cbegin();
       decode(*meta_ptr, p);
       insert_to_meta_cache(meta_ptr);
@@ -237,7 +213,7 @@ void AggregateBuffer::clear() {
 /************ timer *************/
 void AggregateBuffer::cancel_flush_timeout()
 {
-  if(flush_callback) {
+  if (flush_callback) {
     dout(4) << " cancel flush timer. " << dendl;
     timer_lock.lock();
     flush_timer.cancel_event(flush_callback);
@@ -275,28 +251,34 @@ void AggregateBuffer::insert_to_meta_cache(std::shared_ptr<volume_t> meta_ptr) {
   }
 }
 
-int AggregateBuffer::read(MOSDOp* m) {
-  if (!may_aggregate_read(m))
-    return NOT_TARGET;
+
+
+int AggregateBuffer::op_translate(MOSDOp* m) {
   auto it = volume_meta_cache.find(m->get_hobj());
   if (it == volume_meta_cache.end()) {
     // rados对象不存在
-    return -1;
+    return -ENOENT;
   }
   auto volume_meta_ptr = volume_meta_cache[m->get_hobj()];
   auto chunk_meta = volume_meta_ptr->get_chunk(m->get_hobj());
   for (auto &osd_op : m->ops) {
-    if (osd_op.op.op == CEPH_OSD_OP_READ ||
-        osd_op.op.op == CEPH_OSD_OP_SPARSE_READ ||
-        osd_op.op.op == CEPH_OSD_OP_SYNC_READ) {
-      // TODO(zhengfuyu): 目前默认所有对rados的读请求都是全量读取对象
-      dout(4) << __func__ << " translate read_request(oid = " << m->get_hobj().get_head() << ") to read_volume(oid = "
-        << volume_meta_ptr->get_oid() << " off =  " << uint8_t(chunk_meta.get_chunk_id()) * chunk_meta.get_chunk_size()
-        << " len = " << chunk_meta.get_chunk_size() << ")" << dendl;
-      m->set_hobj(volume_meta_ptr->get_oid());
-      osd_op.op.extent.offset = uint8_t(chunk_meta.get_chunk_id()) * chunk_meta.get_chunk_size();
-      osd_op.op.extent.length = chunk_meta.get_chunk_size();
+    if (osd_op.op.op == CEPH_OSD_OP_WRITEFULL) {
+      // 为RGW对象覆盖写提供请求转译
+      osd_op.op.op = CEPH_OSD_OP_WRITE;
     }
+    /*
+    if (osd_op.op.op == CEPH_OSD_OP_CALL) {
+      // 为EC pool中的Cls请求提供转译
+      osd_op.op.op = CEPH_OSD_OP_EC_CALL;
+    }
+    */
+    // 将待访问RGW对象的oid,off,len替换为volume对象的oid,off,len
+    dout(4) << __func__ << " translate access_request(m= " << *m << ") to access_volume(oid = "
+      << volume_meta_ptr->get_oid() << " off =  " << uint8_t(chunk_meta.get_chunk_id()) * chunk_meta.get_chunk_size()
+      << " len = " << chunk_meta.get_chunk_size() << ")" << dendl;
+    osd_op.op.extent.offset = uint8_t(chunk_meta.get_chunk_id()) * chunk_meta.get_chunk_size();
+    osd_op.op.extent.length = chunk_meta.get_chunk_size();
   }
+  m->set_hobj(volume_meta_ptr->get_oid());
   return 0;
 }

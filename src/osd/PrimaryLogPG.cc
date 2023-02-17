@@ -2018,8 +2018,6 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
 
   // lazy initialize
   if (!m_aggregate_buffer->is_initialized() && aggregate_enabled) {
-    aggregate_enabled = true;
-    // uint64_t cap = cct->_conf->osd_aggregate_buffer_capacity;
     uint64_t cap = get_pgbackend()->get_ec_data_chunk_count();
     uint64_t chunk_size = get_pgbackend()->get_ec_stripe_chunk_size();
     double time_out = cct->_conf->osd_aggregate_buffer_flush_timeout;
@@ -2262,15 +2260,14 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
   // 如果发现要写入的volume丢失数据或是正在修复中，那么就选择另外一个volume写入
 
   // TODO(zhengfuyu): 这一块代码有点乱，后续可以根据OSDOp的Op code来更加准确地调用AggregateBuffer的相关接口
-  if (aggregate_enabled && !(m->has_flag(CEPH_OSD_FLAG_AGGREGATE))) {
-    if (m->has_flag(CEPH_OSD_FLAG_WRITE)) {
+  if (aggregate_enabled && !op->is_write_volume_op()) {
+    if (m_aggregate_buffer->need_aggregate_op(m)) {
       dout(4) << "write op " << op << " in buffer." << dendl;
       int r = m_aggregate_buffer->write(op, m);
       switch (r) {
       case AGGREGATE_PENDING_REPLY:
         dout(4) << "aggregate pending to reply " << dendl;
 	      return;
-      case NOT_TARGET:
       case AGGREGATE_OVERWRITE:
         dout(4) << "op continue." << dendl;
         break;
@@ -2279,28 +2276,13 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
         reply_op_error(op, -EINVAL); // TODO(zhengfuyu):先随便找个错误码应付下
         return;
       }
+    } else if (m_aggregate_buffer->need_translate_op(m)) {
+      // 读请求和Cls请求都会进入转译
+      // ceph内部存在一些非聚合的对象，在volume_meta_cache无法找到它们的映射关系
+      // 当volume_meta_cache中不存在对象映射时，不要直接返回对象不存在，而是将请求原封不动继续下发
+      m_aggregate_buffer->op_translate(m);
     }
-    // ceph内部存在一些非聚合的对象，在volume_meta_cache无法找到它们的映射关系
-    // 当volume_meta_cache中不存在对象映射时，不要直接返回对象不存在，而是将请求原封不动继续下发
-    m_aggregate_buffer->read(m);
   }
-
-
-  // if (aggregate_enabled && !(m->has_flag(CEPH_OSD_FLAG_AGGREGATE))) {
-    // if (op->may_write()) {
-      // int r = m_aggregate_buffer->write(op, m);
-      // if (r == AGGREGATE_PENDING_REPLY) {
-	// dout(4) << "aggregate pending to reply " << dendl;
-	// return;
-      // } else if (r != NOT_TARGET){
-	// return;
-      // }
-
-    // } else if (op->may_read()) {
-      // // todo: read
-    // }
-  // }
-
   // // ceph会把丢失的object整合成一个map,这里就是检索map判断本次操作的对象是否丢失了
   // cephEC中可能需要改动对 已丢失对象 的管理方式，还需要细看ceph当前是如何感知对象丢失，以及恢复对象的流程
   // missing object?
@@ -6244,6 +6226,7 @@ int PrimaryLogPG::do_osd_ops(OpContext *ctx, vector<OSDOp>& ops)
 	break;
       }
       // fall through
+    // case CEPH_OSD_OP_EC_CALL:
     case CEPH_OSD_OP_READ:
       ++ctx->num_read;
       tracepoint(osd, do_osd_op_pre_read, soid.oid.name.c_str(),
@@ -6372,7 +6355,6 @@ int PrimaryLogPG::do_osd_ops(OpContext *ctx, vector<OSDOp>& ops)
 	*_dout << dendl;
       }
       break;
-
     case CEPH_OSD_OP_STAT:
       // note: stat does not require RD
       {
