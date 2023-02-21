@@ -54,7 +54,7 @@ TYPE_FEATUREFUL(obj_list_watch_response_t)
 TYPE(clone_info)
 TYPE(obj_list_snap_response_t)
 TYPE(pool_pg_num_history_t)
-
+TYPE(ClsParmContext)
 //TYPE(chunk_id_t)
 TYPE(chunk_t)
 // TYPE(volume_t)
@@ -68,6 +68,8 @@ TYPE_NOCOPY(ECSubWrite)
 TYPE(ECSubWriteReply)
 TYPE_FEATUREFUL(ECSubRead)
 TYPE(ECSubReadReply)
+TYPE_FEATUREFUL(ECSubCall)
+TYPE(ECSubCallReply)
 
 #include "osd/HitSet.h"
 TYPE_NONDETERMINISTIC(ExplicitHashHitSet)

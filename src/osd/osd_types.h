@@ -6992,4 +6992,65 @@ private:
 };
 WRITE_CLASS_ENCODER(volume_t)
 
+struct ClsParmContext {
+public:
+  uint8_t class_len;
+  uint8_t method_len;
+  uint8_t argc;
+  uint32_t indata_len;
+  ceph::buffer::list parm_data;
+  
+  ClsParmContext() = default;
+
+  ClsParmContext(uint8_t _class_len, uint8_t _method_len,
+    uint8_t _argc, uint32_t _indata_len, ceph::buffer::list _parm_data)
+    : class_len(_class_len), method_len(_method_len), argc(_argc), indata_len(_indata_len)
+  {
+    parm_data = std::move(_parm_data);
+  }
+
+  ClsParmContext& operator=(const ClsParmContext& rhs) {
+    class_len = rhs.class_len;
+    method_len = rhs.method_len;
+    argc = rhs.argc;
+    indata_len = rhs.indata_len;
+    parm_data = std::move(rhs.parm_data);
+    return *this;
+  }
+
+  void encode(ceph::buffer::list &bl) const {
+    using ceph::encode;
+    ENCODE_START(1, 1, bl);
+    encode(class_len, bl);
+    encode(method_len, bl);
+    encode(argc, bl);
+    encode(indata_len, bl);
+    encode(parm_data, bl);
+    ENCODE_FINISH(bl);
+  }
+
+  void decode(ceph::buffer::list::const_iterator &bl) {
+    using ceph::decode;
+    DECODE_START(1, bl);
+    decode(class_len, bl);
+    decode(method_len, bl);
+    decode(argc, bl);
+    decode(indata_len, bl);
+    decode(parm_data, bl);
+    DECODE_FINISH(bl);
+  }
+
+  friend std::ostream& operator<<(std::ostream& lhs, const ClsParmContext& rhs) {
+    return lhs
+      << "ClsParmContext(class_len=" << rhs.class_len
+      << ", method_len=" << rhs.method_len
+      << ", argc=" << rhs.argc
+      << ", indata_len=" << rhs.indata_len << ")";
+  }
+
+  void dump(ceph::Formatter *f) const {}
+  static void generate_test_instances(std::list<ClsParmContext*>& o) {}
+};
+WRITE_CLASS_ENCODER(ClsParmContext)
+
 #endif

@@ -143,6 +143,9 @@
 
 #define MSG_OSD_PG_READY_TO_MERGE 122
 
+#define MSG_OSD_EC_CALL 124
+#define MSG_OSD_EC_CALL_REPLY 125
+
 #define MSG_OSD_PG_LEASE        133
 #define MSG_OSD_PG_LEASE_ACK    134
 

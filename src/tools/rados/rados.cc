@@ -101,6 +101,7 @@ void usage(ostream& out)
 "   rmsnap <snap-name>               remove snap <snap-name>\n"
 "\n"
 "OBJECT COMMANDS\n"
+"   call <obj-name> [--class_name] [--method_name] [--call_args] [--out_file]\n"
 "   get <obj-name> <outfile>         fetch object\n"
 "   put <obj-name> <infile> [--offset offset]\n"
 "                                    write object with start offset (default:0)\n"
@@ -1871,6 +1872,10 @@ static int rados_tool_common(const std::map < std::string, std::string > &opts,
 {
   int ret;
   bool create_pool = false;
+  const char *class_name = NULL;
+  const char *method_name = NULL;
+  unsigned call_args = 0;
+  const char *out_file = NULL;
   const char *pool_name = NULL;
   const char *target_pool_name = NULL;
   string oloc, target_oloc, nspace, target_nspace;
@@ -1924,6 +1929,24 @@ static int rados_tool_common(const std::map < std::string, std::string > &opts,
   i = opts.find("create");
   if (i != opts.end()) {
     create_pool = true;
+  }
+  i = opts.find("class_name");
+  if (i != opts.end()) {
+    class_name = i->second.c_str();
+  }
+  i = opts.find("out_file");
+  if (i != opts.end()) {
+    out_file = i->second.c_str();
+  }
+  i = opts.find("method_name");
+  if (i != opts.end()) {
+    method_name = i->second.c_str();
+  }
+  i = opts.find("call_args");
+  if (i != opts.end()) {
+    if (rados_sistrtoll(i, &call_args)) {
+      return -EINVAL;
+    }
   }
   i = opts.find("pool");
   if (i != opts.end()) {
@@ -2731,6 +2754,34 @@ static int rados_tool_common(const std::map < std::string, std::string > &opts,
     }
     else
       ret = 0;
+  } else if (strcmp(nargs[0], "call") == 0) {
+    if (!pool_name || nargs.size() < (obj_name ? 1 : 2)) {
+      usage(cerr);
+      return 1;
+    }
+    if (!obj_name) {
+      obj_name = nargs[1];
+    }
+    bufferlist out, in;
+    encode(call_args, in);
+    ret = io_ctx.exec(*obj_name, class_name, method_name, in, out);
+    if (ret < 0) {
+      cerr << "error cls call " << pool_name << "/" << class_name << "/" << method_name << ": " << cpp_strerror(ret) << std::endl;
+      return 1;
+    }
+    cout << "cls process end, out.length = " << out.length();
+    int fd = TEMP_FAILURE_RETRY(::open(out_file, O_WRONLY|O_CREAT|O_TRUNC|O_BINARY, 0644));
+    if (fd < 0) {
+      int err = errno;
+      cerr << "failed to open file: " << cpp_strerror(err) << std::endl;
+      return -err;
+    }
+    ret = out.write_fd(fd);
+    if (ret < 0) {
+      cerr << "error writing to file: " << cpp_strerror(ret) << std::endl;
+    }
+    if (fd != 1)
+      VOID_TEMP_FAILURE_RETRY(::close(fd));
   }
   else if (strcmp(nargs[0], "getxattr") == 0) {
     if (!pool_name || nargs.size() < (obj_name ? 2 : 3)) {
@@ -4208,6 +4259,14 @@ int main(int argc, const char **argv)
       opts["pgid"] = val;
     } else if (ceph_argparse_witharg(args, i, &val, "--input-file", (char*)NULL)) {
       opts["input_file"] = val;
+    } else if (ceph_argparse_witharg(args, i, &val, "--class_name", (char*)NULL)) {
+      opts["class_name"] = val;
+    } else if (ceph_argparse_witharg(args, i, &val, "--method_name", (char*)NULL)) {
+      opts["method_name"] = val;
+    } else if (ceph_argparse_witharg(args, i, &val, "--call_args", (char*)NULL)) {
+      opts["call_args"] = val;
+    } else if (ceph_argparse_witharg(args, i, &val, "--out_file", (char*)NULL)) {
+      opts["out_file"] = val;
     } else {
       if (val[0] == '-')
         usage_exit();

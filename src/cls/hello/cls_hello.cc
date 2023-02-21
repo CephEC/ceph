@@ -59,9 +59,10 @@ static int say_hello(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
   // see if the input data from the client matches what this method
   // expects to receive.  your class can fill this buffer with what it
   // wants.
+  /*
   if (in->length() > 100)
     return -EINVAL;
-
+*/
   // we generate our reply
   out->append("Hello, ");
   if (in->length() == 0)
@@ -70,6 +71,27 @@ static int say_hello(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
     out->append(*in);
   out->append("!");
 
+  // this return value will be returned back to the librados caller
+  return 0;
+}
+
+// 切除对象在in.truncate_size之前的数据
+static int truncate(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
+{
+  // see if the input data from the client matches what this method
+  // expects to receive.  your class can fill this buffer with what it
+  // wants.
+  ClsParmContext *pctx = (ClsParmContext *)hctx;
+  unsigned truncate_size = 0;
+  try {
+    auto in_iter = (pctx->parm_data).cbegin();
+    decode(truncate_size, in_iter);
+  } catch (ceph::buffer::error& err) {
+    CLS_LOG(1, "ERROR: truncate: failed to decode entry: %s", err.what());
+    return -EINVAL;
+  }
+  auto bp = in->cbegin();
+	bp.copy(truncate_size, *out);
   // this return value will be returned back to the librados caller
   return 0;
 }
@@ -306,7 +328,7 @@ PGLSFilter *hello_filter()
 /**
  * initialize class
  *
- * We do two things here: we register the new class, and then register
+ * We do two things here: we register theh_say_hello new class, and then register
  * all of the class's methods.
  */
 CLS_INIT(hello)
@@ -317,6 +339,7 @@ CLS_INIT(hello)
 
   cls_handle_t h_class;
   cls_method_handle_t h_say_hello;
+  cls_method_handle_t h_truncate;
   cls_method_handle_t h_record_hello;
   cls_method_handle_t h_replay;
   cls_method_handle_t h_write_return_data;
@@ -340,6 +363,9 @@ CLS_INIT(hello)
   cls_register_cxx_method(h_class, "say_hello",
 			  CLS_METHOD_RD,
 			  say_hello, &h_say_hello);
+  cls_register_cxx_method(h_class, "truncate",
+			  CLS_METHOD_RD,
+			  truncate, &h_truncate);
   cls_register_cxx_method(h_class, "record_hello",
 			  CLS_METHOD_WR | CLS_METHOD_PROMOTE,
 			  record_hello, &h_record_hello);

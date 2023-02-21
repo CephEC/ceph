@@ -214,6 +214,8 @@
 #include "messages/MOSDECSubOpWriteReply.h"
 #include "messages/MOSDECSubOpRead.h"
 #include "messages/MOSDECSubOpReadReply.h"
+#include "messages/MOSDECSubOpCall.h"
+#include "messages/MOSDECSubOpCallReply.h"
 
 #include "messages/MOSDPGUpdateLogMissing.h"
 #include "messages/MOSDPGUpdateLogMissingReply.h"
@@ -640,6 +642,12 @@ Message *decode_message(CephContext *cct,
     break;
   case MSG_OSD_EC_READ_REPLY:
     m = make_message<MOSDECSubOpReadReply>();
+    break;
+  case MSG_OSD_EC_CALL:
+    m = make_message<MOSDECSubOpCall>();
+    break;
+  case MSG_OSD_EC_CALL_REPLY:
+    m = make_message<MOSDECSubOpCallReply>();
     break;
    // auth
   case CEPH_MSG_AUTH:

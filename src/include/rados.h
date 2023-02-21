@@ -358,6 +358,7 @@ extern const char *ceph_osd_state_name(int s);
 	/** exec **/							    \
 	/* note: the RD bit here is wrong; see special-case below in helper */ \
 	f(CALL,		__CEPH_OSD_OP(RD, EXEC, 1),	"call")		    \
+	f(EC_CALL,	__CEPH_OSD_OP(RD, EXEC, 2),	"ec_call")  \
 									    \
 	/** pg **/							    \
 	f(PGLS,		__CEPH_OSD_OP(RD, PG, 1),	"pgls")		    \

@@ -102,6 +102,31 @@ struct ECSubWriteReply {
 };
 WRITE_CLASS_ENCODER(ECSubWriteReply)
 
+struct ECSubCall {
+  pg_shard_t from;
+  ceph_tid_t tid;
+  std::map<hobject_t, boost::tuple<uint64_t, uint64_t, uint32_t >> to_read;
+  std::map<hobject_t, std::vector<std::pair<int, int>>> subchunks;
+  std::map<hobject_t, ClsParmContext> cls_parm_ctx;
+  void encode(ceph::buffer::list &bl, uint64_t features) const;
+  void decode(ceph::buffer::list::const_iterator &bl);
+  void dump(ceph::Formatter *f) const {}
+  static void generate_test_instances(std::list<ECSubCall*>& o) {}
+};
+WRITE_CLASS_ENCODER_FEATURES(ECSubCall)
+
+struct ECSubCallReply {
+  pg_shard_t from;
+  ceph_tid_t tid;
+  std::map<hobject_t, ceph::buffer::list> cls_result;
+  std::map<hobject_t, int> errors;
+  void encode(ceph::buffer::list &bl) const;
+  void decode(ceph::buffer::list::const_iterator &bl);
+  void dump(ceph::Formatter *f) const {}
+  static void generate_test_instances(std::list<ECSubCallReply*>& o) {}
+};
+WRITE_CLASS_ENCODER(ECSubCallReply)
+
 struct ECSubRead {
   pg_shard_t from;
   ceph_tid_t tid;
@@ -136,5 +161,8 @@ std::ostream &operator<<(
   std::ostream &lhs, const ECSubRead &rhs);
 std::ostream &operator<<(
   std::ostream &lhs, const ECSubReadReply &rhs);
-
+std::ostream &operator<<(
+  std::ostream &lhs, const ECSubCall &rhs);
+std::ostream &operator<<(
+  std::ostream &lhs, const ECSubCallReply &rhs);
 #endif

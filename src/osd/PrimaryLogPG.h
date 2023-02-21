@@ -721,9 +721,13 @@ public:
     std::list<std::pair<boost::tuple<uint64_t, uint64_t, unsigned>,
 	      std::pair<ceph::buffer::list*, Context*> > > pending_async_reads;
     int inflightreads;
+    std::list<std::pair<boost::tuple<uint64_t, uint64_t, uint32_t>,
+                        std::pair<ClsParmContext*, OSDOp*> > > pending_async_calls;
     friend struct OnReadComplete;
+    friend struct OnCallComplete;
     void start_async_reads(PrimaryLogPG *pg);
     void finish_read(PrimaryLogPG *pg);
+    void finish_call(PrimaryLogPG *pg);
     bool async_reads_complete() {
       return inflightreads == 0;
     }
@@ -1481,7 +1485,6 @@ public:
 	       spg_t p);
   ~PrimaryLogPG() override;
 
-
   void do_command(
     const std::string_view& prefix,
     const cmdmap_t& cmdmap,
@@ -1495,6 +1498,11 @@ public:
   unsigned get_pg_shard() const {
     return info.pgid.hash_to_shard(osd->get_num_shards());
   }
+
+  AggregateBuffer* get_aggregate_buffer() {
+    return m_aggregate_buffer.get();
+  }
+
   void do_request(
     OpRequestRef& op,
     ThreadPool::TPHandle &handle) override;

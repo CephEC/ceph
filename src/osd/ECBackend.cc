@@ -22,7 +22,11 @@
 #include "messages/MOSDECSubOpWriteReply.h"
 #include "messages/MOSDECSubOpRead.h"
 #include "messages/MOSDECSubOpReadReply.h"
+#include "messages/MOSDECSubOpCall.h"
+#include "messages/MOSDECSubOpCallReply.h"
+
 #include "ECMsgTypes.h"
+#include "osd/ClassHandler.h"
 
 #include "PrimaryLogPG.h"
 #include "osd_tracer.h"
@@ -114,6 +118,19 @@ ostream &operator<<(ostream &lhs, const ECBackend::read_request_t &rhs)
 	     << ")";
 }
 
+ostream &operator<<(ostream &lhs, const ECBackend::op_call_request_t &rhs)
+{
+  return lhs << "op_call_request_t(to_read=[" << rhs.to_read << "]"
+	     << ", need=" << rhs.need
+	     << ")";
+}
+
+ostream &operator<<(ostream &lhs, const ECBackend::op_call_result_t &rhs)
+{
+  return lhs << "op_call_result_t(return=[" << rhs.returned << "]"
+	     << ")";
+}
+
 ostream &operator<<(ostream &lhs, const ECBackend::read_result_t &rhs)
 {
   lhs << "read_result_t(r=" << rhs.r
@@ -141,6 +158,21 @@ ostream &operator<<(ostream &lhs, const ECBackend::ReadOp &rhs)
 	     << ", in_progress=" << rhs.in_progress << ")";
 }
 
+ostream &operator<<(ostream &lhs, const ECBackend::AsyncCallOp &rhs) {
+  lhs << "AsyncCallOp(tid=" << rhs.tid;
+  if (rhs.op && rhs.op->get_req()) {
+    lhs << ", op=";
+    rhs.op->get_req()->print(lhs);
+  }
+  return lhs << ", async_call_ops=" << rhs.async_call_ops
+	     << ", complete=" << rhs.complete
+	     << ", priority=" << rhs.priority
+	     << ", obj_to_source=" << rhs.obj_to_source
+	     << ", source_to_obj=" << rhs.source_to_obj
+	     << ", in_progress=" << rhs.in_progress << ")";
+}
+
+
 void ECBackend::ReadOp::dump(Formatter *f) const
 {
   f->dump_unsigned("tid", tid);
@@ -148,6 +180,20 @@ void ECBackend::ReadOp::dump(Formatter *f) const
     f->dump_stream("op") << *(op->get_req());
   }
   f->dump_stream("to_read") << to_read;
+  f->dump_stream("complete") << complete;
+  f->dump_int("priority", priority);
+  f->dump_stream("obj_to_source") << obj_to_source;
+  f->dump_stream("source_to_obj") << source_to_obj;
+  f->dump_stream("in_progress") << in_progress;
+}
+
+void ECBackend::AsyncCallOp::dump(Formatter *f) const
+{
+  f->dump_unsigned("tid", tid);
+  if (op && op->get_req()) {
+    f->dump_stream("op") << *(op->get_req());
+  }
+  f->dump_stream("async_call_ops") << async_call_ops;
   f->dump_stream("complete") << complete;
   f->dump_int("priority", priority);
   f->dump_stream("obj_to_source") << obj_to_source;
@@ -815,6 +861,85 @@ bool ECBackend::can_handle_while_inactive(
   return false;
 }
 
+void ECBackend::handle_sub_call(
+  pg_shard_t from,
+  ECSubCall op,
+  ECSubCallReply *reply,
+  const ZTracer::Trace &trace
+  ) {
+  trace.event("handle sub call");
+  shard_id_t shard = get_parent()->whoami_shard().shard;
+  for(auto i = op.to_read.begin();
+      i != op.to_read.end();
+      ++i) {
+    int r = 0;
+    auto read_range = i->second;
+    bufferlist bl;
+    string cname, mname;
+    bufferlist indata;
+    ClassHandler::ClassData *cls = nullptr;
+    ClassHandler::ClassMethod *method = nullptr;
+    auto bp = op.cls_parm_ctx[i->first].parm_data.cbegin();
+
+    ceph_assert(op.subchunks.find(i->first)->second.size() == 1);
+    ceph_assert(op.subchunks.find(i->first)->second.front().second == 
+                ec_impl->get_sub_chunk_count());
+    dout(25) << __func__ << " case1: reading the complete chunk/shard." << dendl;
+    // 去存储引擎上读数据
+    r = store->read(ch,
+                    ghobject_t(i->first, ghobject_t::NO_GEN, shard),
+                    read_range.get<0>(),
+                    read_range.get<1>(),
+                    bl,
+                    read_range.get<2>()); // Allow EIO return
+    if (r < 0) {
+      get_parent()->clog_error() << "Error " << std::to_string(r)
+              << " reading object "
+              << i->first;
+      dout(5) << __func__ << ": Error " << r
+        << " reading " << i->first << dendl;
+      goto error;
+    } else {
+      dout(20) << __func__ << " read request=" << read_range << " r=" << r << " len=" << bl.length() << dendl;
+      // reply->cls_result[i->first].push_back(make_pair(j->get<0>(), bl));
+    }
+    // TODO(zhengfuyu): 读数据是否需要做hash校验?
+    try {
+      bp.copy(op.cls_parm_ctx[i->first].class_len, cname);
+      bp.copy(op.cls_parm_ctx[i->first].method_len, mname);
+      bp.copy(op.cls_parm_ctx[i->first].indata_len, indata);
+    } catch (ceph::buffer::error& e) {
+      dout(10) << "call unable to decode class + method + indata" << dendl;
+      r = -EINVAL;
+      goto error;
+    }
+    r = ClassHandler::get_instance().open_class(cname, &cls);
+    ceph_assert(r == 0 && cls);   // init_op_flags() already verified this works.
+
+    method = cls->get_method(mname);
+    ceph_assert(method);
+
+    // 为了契合cls exec接口的函数声明,对数据做一下移动
+    op.cls_parm_ctx[i->first].parm_data = std::move(indata);
+
+    dout(10) << "call method " << cname << "." << mname << dendl;
+
+    r = method->exec((cls_method_context_t)&(op.cls_parm_ctx[i->first]),
+                      bl,
+                      reply->cls_result[i->first]);
+
+    dout(10) << "method called response length=" << reply->cls_result[i->first].length() << dendl;
+    continue;
+  error:
+      // Do NOT check osd_read_eio_on_bad_digest here.  We need to report
+      // the state of our chunk in case other chunks could substitute.
+      reply->cls_result.erase(i->first);
+      reply->errors[i->first] = r;
+  }
+  reply->from = get_parent()->whoami_shard();
+  reply->tid = op.tid;
+}
+
 bool ECBackend::_handle_message(
   OpRequestRef _op)
 {
@@ -858,6 +983,24 @@ bool ECBackend::_handle_message(
     RecoveryMessages rm;
     handle_sub_read_reply(op->op.from, op->op, &rm, _op->pg_trace);
     dispatch_recovery_messages(rm, priority);
+    return true;
+  }
+  case MSG_OSD_EC_CALL: {                                                                                                                                                           
+    auto op = _op->get_req<MOSDECSubOpCall>();
+    MOSDECSubOpCallReply *reply = new MOSDECSubOpCallReply;
+    reply->pgid = get_parent()->primary_spg_t();
+    reply->map_epoch = get_osdmap_epoch();
+    reply->min_epoch = get_parent()->get_interval_start_epoch();
+    handle_sub_call(op->op.from, op->op, &(reply->op), _op->pg_trace);
+    reply->trace = _op->pg_trace;
+    get_parent()->send_message_osd_cluster(
+      reply, _op->get_req()->get_connection());
+    return true;
+  }
+  case MSG_OSD_EC_CALL_REPLY: {
+    MOSDECSubOpCallReply *op = static_cast<MOSDECSubOpCallReply*>(
+      _op->get_nonconst_req());
+    handle_sub_call_reply(op->op.from, op->op, _op->pg_trace);
     return true;
   }
   case MSG_OSD_PG_PUSH: {
@@ -1194,6 +1337,66 @@ void ECBackend::handle_sub_write_reply(
   }
   check_ops();
 }
+
+void ECBackend::handle_sub_call_reply(
+  pg_shard_t from,
+  ECSubCallReply &op,
+  const ZTracer::Trace &trace)
+{
+  trace.event("ec sub call reply");
+  dout(10) << __func__ << ": reply " << op << dendl;
+  map<ceph_tid_t, AsyncCallOp>::iterator iter = tid_to_async_call_map.find(op.tid);
+  if (iter == tid_to_async_call_map.end()) {
+    //canceled
+    dout(20) << __func__ << ": dropped " << op << dendl;
+    return;
+  }
+  AsyncCallOp &cop = iter->second;
+  for (auto i = op.errors.begin();
+       i != op.errors.end();
+       ++i) {
+    dout(20) << __func__ << " shard=" << from << " error=" << i->second << dendl;
+    cop.complete[i->first].error = i->second;
+  }
+  for (auto result : op.cls_result) {
+    cop.complete[result.first].returned = std::move(result.second);
+  }
+
+  // 从这些map中将async call请求去除，表示已收到回复
+  map<pg_shard_t, set<ceph_tid_t> >::iterator siter =
+					shard_to_async_call_map.find(from);
+  ceph_assert(siter != shard_to_read_map.end());
+  ceph_assert(siter->second.count(op.tid));
+  siter->second.erase(op.tid);
+
+  ceph_assert(cop.in_progress.count(from));
+  cop.in_progress.erase(from);
+  ceph_assert(cop.in_progress.empty());
+  complete_call_op(cop);
+}
+
+void ECBackend::complete_call_op(AsyncCallOp &cop) {
+  map<hobject_t, op_call_request_t>::iterator reqiter =
+    cop.async_call_ops.begin();
+  map<hobject_t, op_call_result_t>::iterator resiter =
+    cop.complete.begin();
+  ceph_assert(cop.async_call_ops.size() == cop.complete.size());
+  for (; reqiter != cop.async_call_ops.end(); ++reqiter, ++resiter) {
+    if (reqiter->second.cb) {
+      pair<hobject_t, ceph::buffer::list > arg(reqiter->first, resiter->second.returned);
+      reqiter->second.cb.release()->complete(std::move(arg));
+    }
+  }
+  // if the read op is over. clean all the data of this tid.
+  for (set<pg_shard_t>::iterator iter = cop.in_progress.begin();
+    iter != cop.in_progress.end();
+    iter++) {
+    shard_to_async_call_map[*iter].erase(cop.tid);
+  }
+  cop.in_progress.clear();
+  tid_to_async_call_map.erase(cop.tid);
+}
+
 
 void ECBackend::handle_sub_read_reply(
   pg_shard_t from,
@@ -2390,6 +2593,172 @@ void ECBackend::objects_read_async(
 	   hoid,
 	   to_read,
 	   on_complete)));
+}
+
+void ECBackend::object_call_async(
+  const hobject_t &hoid,
+  const pair<boost::tuple<uint64_t, uint64_t, uint32_t>,
+             pair<ClsParmContext*, OSDOp*> > &call_ctx,
+  Context *on_complete) 
+{
+  map<hobject_t, op_call_request_t> async_call_ops;
+  map<hobject_t, set<int>> obj_want_to_read;
+  set<int> want_to_read;
+  map<pg_shard_t, vector<pair<int, int>>> shards;
+  set<int> logical_data_chunk_set;
+
+  // 只会下发单个对象的Cls算子,正常来说只涉及单个volume对象的单个chunk
+  auto &read_range = call_ctx.first;
+  ceph_assert(read_range.get<0>() % sinfo.get_chunk_size() == 0);
+  ceph_assert(read_range.get<1>() % sinfo.get_chunk_size() == 0);
+  uint32_t read_chunks_num = read_range.get<1>() / sinfo.get_chunk_size();
+  uint32_t first_chunk_id = read_range.get<0>() / sinfo.get_chunk_size();
+  for (uint32_t i = 0; i < read_chunks_num; i++) {
+    uint32_t logical_data_chunk_id = first_chunk_id + i;
+    if (logical_data_chunk_set.count(logical_data_chunk_id) == 0) {
+      logical_data_chunk_set.insert(logical_data_chunk_id);
+    }
+  }
+  get_want_to_read_shards_cephEC(logical_data_chunk_set, &want_to_read);
+  int r = get_min_avail_to_read_shards(
+    hoid,
+    want_to_read,
+    false,
+    false,
+    &shards);
+  ceph_assert(r == 0);
+  ceph_assert(shards.size() == 1);
+
+  struct cb {
+    ECBackend *ec;
+    hobject_t hoid;
+    const pair<boost::tuple<uint64_t, uint64_t, uint32_t>,
+               pair<ClsParmContext*, OSDOp*> > call_ctx;
+    unique_ptr<Context> on_complete;
+    cb(const cb&) = delete;
+    cb(cb &&) = default;
+
+    cb(ECBackend *ec,
+       const hobject_t &hoid,
+       const pair<boost::tuple<uint64_t, uint64_t, uint32_t>,
+                  pair<ClsParmContext*, OSDOp*> > &call_ctx,
+       Context *on_complete)
+      : ec(ec),
+	      hoid(hoid),
+	      call_ctx(call_ctx),
+	      on_complete(on_complete) {}
+        
+    void operator()(pair<hobject_t, ceph::buffer::list> &&results) {
+      auto &outdata = results.second;
+      auto osd_op = call_ctx.second.second;
+      (osd_op->op).extent.length = outdata.length();
+      (osd_op->outdata).claim_append(outdata);
+      if (on_complete) {
+	      on_complete.release()->complete(0);
+      }
+    }
+    ~cb() {}
+  };
+
+  async_call_ops.insert(
+    make_pair(hoid,  // 对象id
+	            op_call_request_t(call_ctx.first,  // 本次需要读取的{offset，length，flag}
+	                              shards,     // 实际读取的分片编号
+	                              make_gen_lambda_context<std::pair<hobject_t,
+                                                        ceph::buffer::list > &&, cb>(cb(this,
+                                                                                        hoid,
+                                                                                        call_ctx,
+                                                                                        on_complete)),
+                                call_ctx.second.first)));// cls参数
+  obj_want_to_read.insert(make_pair(hoid, want_to_read));
+  start_async_call(
+    CEPH_MSG_PRIO_DEFAULT,
+    obj_want_to_read,
+    async_call_ops,
+    OpRequestRef());
+  return;
+}
+
+void ECBackend::start_async_call(
+  int priority,
+  map<hobject_t, set<int>> &async_call_objects,
+  map<hobject_t, op_call_request_t> &async_call_ops,
+  OpRequestRef _op)
+{
+  ceph_tid_t tid = get_parent()->get_tid();
+  ceph_assert(!tid_to_async_call_map.count(tid));
+  auto &op = tid_to_async_call_map.emplace(
+    tid,
+    AsyncCallOp(
+      priority,
+      tid,
+      _op,
+      std::move(async_call_objects),
+      std::move(async_call_ops))).first->second;
+  dout(10) << __func__ << ": starting " << op << dendl;
+  do_async_call(op);
+}
+
+void ECBackend::do_async_call(AsyncCallOp &op) {
+  int priority = op.priority;
+  ceph_tid_t tid = op.tid;
+  dout(10) << __func__ << ": starting read " << op << dendl;
+
+  map<pg_shard_t, ECSubCall> messages;
+  for (map<hobject_t, op_call_request_t>::iterator i = op.async_call_ops.begin();
+       i != op.async_call_ops.end();
+       ++i) {
+    pair<uint64_t, uint64_t> chunk_off_len;
+    chunk_off_len = make_pair(0, sinfo.get_chunk_size());
+
+    for (auto j = i->second.need.begin();
+        j != i->second.need.end();
+        ++j) {
+      // message[分片id].subchunk[对象id] = j->second
+      // j.second 默认好像是pair<0, 1>
+      // 通过subchunks的key确定在该分片上有哪些对象需要被读取
+      messages[j->first].subchunks[i->first] = j->second;
+      op.obj_to_source[i->first].insert(j->first);
+      op.source_to_obj[j->first].insert(i->first);
+      messages[j->first].cls_parm_ctx[i->first] = *(i->second.cls_parm_ctx);
+      messages[j->first].to_read[i->first] = boost::make_tuple(chunk_off_len.first,
+                                                               chunk_off_len.second,
+                                                               (i->second.to_read).get<2>());
+    }
+  }
+  // m = vector{<发送者的osd编号, Message>}
+  std::vector<std::pair<int, Message*>> m;
+  m.reserve(messages.size());
+  for (map<pg_shard_t, ECSubCall>::iterator i = messages.begin();
+       i != messages.end();
+       ++i) {
+    // 构造MOSDECSubOpCall请求
+    op.in_progress.insert(i->first);
+    shard_to_async_call_map[i->first].insert(op.tid);
+    i->second.tid = tid;
+    MOSDECSubOpCall *msg = new MOSDECSubOpCall;
+    msg->set_priority(priority);
+    msg->pgid = spg_t(
+      get_parent()->whoami_spg_t().pgid,
+      i->first.shard);
+    msg->map_epoch = get_osdmap_epoch();
+    msg->min_epoch = get_parent()->get_interval_start_epoch();
+    // 把刚才构建的ECSubCall塞进去
+    msg->op = i->second;
+    msg->op.from = get_parent()->whoami_shard();
+    msg->op.tid = tid;
+    if (op.trace) {
+      // initialize a child span for this shard
+      msg->trace.init("ec sub call", nullptr, &op.trace);
+      msg->trace.keyval("shard", i->first.shard.id);
+    }
+    m.push_back(std::make_pair(i->first.osd, msg));
+  }
+  if (!m.empty()) {
+    // 调用OSD的send_message_osd_cluster接口发送消息给从OSD
+    get_parent()->send_message_osd_cluster(m, get_osdmap_epoch());
+  }
+  dout(10) << __func__ << ": started " << op << dendl;
 }
 
 struct CallClientContexts :

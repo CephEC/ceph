@@ -130,6 +130,8 @@ class MOSDBeacon;
 class MOSDBoot;
 class MOSDECSubOpRead;
 class MOSDECSubOpReadReply;
+class MOSDECSubOpCall;
+class MOSDECSubOpCallReply;
 class MOSDECSubOpWrite;
 class MOSDECSubOpWriteReply;
 class MOSDFailure;

@@ -30,6 +30,8 @@ struct ECSubWrite;
 struct ECSubWriteReply;
 struct ECSubRead;
 struct ECSubReadReply;
+struct ECSubCall;
+struct ECSubCallReply;
 
 struct RecoveryMessages;
 class ECBackend : public PGBackend {
@@ -74,6 +76,19 @@ public:
     ECSubReadReply *reply,
     const ZTracer::Trace &trace
     );
+  void handle_sub_call(
+    pg_shard_t from,
+    ECSubCall op,
+    ECSubCallReply *reply,
+    const ZTracer::Trace &trace
+    );
+
+  void handle_sub_call_reply(
+    pg_shard_t from,
+    ECSubCallReply &op,
+    const ZTracer::Trace &trace
+    );
+
   void handle_sub_write_reply(
     pg_shard_t from,
     const ECSubWriteReply &op,
@@ -174,6 +189,13 @@ public:
 		    std::pair<ceph::buffer::list*, Context*> > > &to_read,
     Context *on_complete,
     bool fast_read = false) override;
+
+
+  void object_call_async(
+    const hobject_t &hoid,
+    const std::pair<boost::tuple<uint64_t, uint64_t, uint32_t>,
+                    std::pair<ClsParmContext*, OSDOp*> > &call_ctx,
+    Context *on_complete) override;
 
   template <typename Func>
   void objects_read_async_no_cache(
@@ -373,6 +395,66 @@ public:
   };
   friend ostream &operator<<(ostream &lhs, const read_request_t &rhs);
 
+  struct op_call_request_t {
+    const boost::tuple<uint64_t, uint64_t, uint32_t> to_read;
+    std::map<pg_shard_t, std::vector<std::pair<int, int>>> need;
+    GenContextURef<std::pair<hobject_t, ceph::buffer::list > &&> cb;
+
+    ClsParmContext * cls_parm_ctx;
+    op_call_request_t() {}
+    op_call_request_t(
+      const boost::tuple<uint64_t, uint64_t, uint32_t> &to_read,
+      const std::map<pg_shard_t, std::vector<std::pair<int, int>>> &need,
+      GenContextURef<std::pair<hobject_t, ceph::buffer::list > &&> &&cb,
+      ClsParmContext * cls_parm_ctx) 
+      : to_read(to_read), need(need), cb(std::move(cb)), cls_parm_ctx(cls_parm_ctx)
+      {}
+  };
+  friend ostream &operator<<(ostream &lhs, const op_call_request_t &rhs);
+
+
+  struct op_call_result_t {
+    int r;
+    int error;
+    ceph::buffer::list returned;
+    op_call_result_t() : r(0) {}
+  };
+  friend ostream &operator<<(ostream &lhs, const op_call_result_t &rhs);
+
+  struct AsyncCallOp {
+    int priority;
+    ceph_tid_t tid;
+    OpRequestRef op;
+    ZTracer::Trace trace;
+    std::map<hobject_t, std::set<int>> async_call_objects;
+    std::map<hobject_t, op_call_request_t> async_call_ops;
+    std::map<hobject_t, op_call_result_t> complete;
+    std::map<hobject_t, std::set<pg_shard_t>> obj_to_source;
+    std::map<pg_shard_t, std::set<hobject_t> > source_to_obj;
+      
+    void dump(ceph::Formatter *f) const;
+
+    std::set<pg_shard_t> in_progress;
+  
+    AsyncCallOp(
+    int priority,
+    ceph_tid_t tid,
+    OpRequestRef op,
+    std::map<hobject_t, std::set<int>> &&_async_call_objects,
+    std::map<hobject_t, op_call_request_t> &&_async_call_ops)
+      : priority(priority), tid(tid), op(op), async_call_objects(std::move(_async_call_objects)),
+	      async_call_ops(std::move(_async_call_ops)) {
+          for (auto &&hpair: _async_call_ops) {
+            complete[hpair.first] = op_call_result_t();
+          }
+        }
+    AsyncCallOp() = delete;
+    AsyncCallOp(const AsyncCallOp &) = default;
+    AsyncCallOp(AsyncCallOp &&) = default;
+  };
+  friend ostream &operator<<(ostream &lhs, const AsyncCallOp &rhs);
+
+
   struct ReadOp {
     int priority;
     ceph_tid_t tid;
@@ -429,15 +511,26 @@ public:
     const OSDMapRef& osdmap,
     ReadOp &op);
   void complete_read_op(ReadOp &rop, RecoveryMessages *m);
+  void complete_call_op(AsyncCallOp &cop);
   friend ostream &operator<<(ostream &lhs, const ReadOp &rhs);
   std::map<ceph_tid_t, ReadOp> tid_to_read_map;
+  std::map<ceph_tid_t, AsyncCallOp> tid_to_async_call_map;
   std::map<pg_shard_t, std::set<ceph_tid_t> > shard_to_read_map;
+  std::map<pg_shard_t, std::set<ceph_tid_t> > shard_to_async_call_map;
   void start_read_op(
     int priority,
     std::map<hobject_t, std::set<int>> &want_to_read,
     std::map<hobject_t, read_request_t> &to_read,
     OpRequestRef op,
     bool do_redundant_reads, bool for_recovery);
+
+  void start_async_call(
+    int priority,
+    std::map<hobject_t, std::set<int>> &want_to_read,
+    std::map<hobject_t, op_call_request_t> &async_call_ops,
+    OpRequestRef _op);
+
+  void do_async_call(AsyncCallOp &op);
 
   void do_read_op(ReadOp &rop);
   int send_all_remaining_reads(

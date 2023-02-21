@@ -1984,6 +1984,8 @@ private:
     case MSG_OSD_EC_WRITE_REPLY:
     case MSG_OSD_EC_READ:
     case MSG_OSD_EC_READ_REPLY:
+    case MSG_OSD_EC_CALL:
+    case MSG_OSD_EC_CALL_REPLY:
     case MSG_OSD_SCRUB_RESERVE:
     case MSG_OSD_REP_SCRUB:
     case MSG_OSD_REP_SCRUBMAP:

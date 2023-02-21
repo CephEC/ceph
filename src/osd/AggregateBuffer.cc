@@ -76,8 +76,8 @@ bool AggregateBuffer::need_translate_op(MOSDOp* m)
   for (iter = m->ops.begin(); iter != m->ops.end(); ++iter) {
     if (iter->op.op == CEPH_OSD_OP_READ ||
         iter->op.op == CEPH_OSD_OP_SPARSE_READ ||
-        iter->op.op == CEPH_OSD_OP_SYNC_READ) {
-        // iter->op.op == CEPH_OSD_OP_CALL) {
+        iter->op.op == CEPH_OSD_OP_SYNC_READ ||
+        iter->op.op == CEPH_OSD_OP_CALL) {
       ret = true;
       break;
     }
@@ -198,7 +198,6 @@ void AggregateBuffer::send_reply(MOSDOpReply* reply, bool ignore_out_data)
     op->mark_commit_sent(); 
   }
 }
-
 void AggregateBuffer::clear() {
   while (!waiting_for_reply.empty()) {
     waiting_for_reply.pop_front();
@@ -266,12 +265,17 @@ int AggregateBuffer::op_translate(MOSDOp* m) {
       // 为RGW对象覆盖写提供请求转译
       osd_op.op.op = CEPH_OSD_OP_WRITE;
     }
-    /*
     if (osd_op.op.op == CEPH_OSD_OP_CALL) {
       // 为EC pool中的Cls请求提供转译
       osd_op.op.op = CEPH_OSD_OP_EC_CALL;
+      ClsParmContext *cls_parm_ctx = 
+        new ClsParmContext(osd_op.op.cls.class_len,
+                           osd_op.op.cls.method_len,
+                           osd_op.op.cls.argc,
+                           osd_op.op.cls.indata_len,
+                           osd_op.indata);
+      cls_ctx_map[volume_meta_ptr->get_oid()] = cls_parm_ctx;
     }
-    */
     // 将待访问RGW对象的oid,off,len替换为volume对象的oid,off,len
     dout(4) << __func__ << " translate access_request(m= " << *m << ") to access_volume(oid = "
       << volume_meta_ptr->get_oid() << " off =  " << uint8_t(chunk_meta.get_chunk_id()) * chunk_meta.get_chunk_size()

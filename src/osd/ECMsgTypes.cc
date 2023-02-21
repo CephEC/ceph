@@ -171,6 +171,70 @@ void ECSubWriteReply::generate_test_instances(list<ECSubWriteReply*>& o)
   o.back()->applied = true;
 }
 
+void ECSubCall::encode(bufferlist &bl, uint64_t features) const {
+  using ceph::encode;
+  if ((features & CEPH_FEATURE_OSD_FADVISE_FLAGS) == 0) {
+    ENCODE_START(2, 1, bl);
+    encode(from, bl);
+    encode(tid, bl);
+    map<hobject_t, list<pair<uint64_t, uint64_t> >> tmp;
+    for (auto m = to_read.cbegin(); m != to_read.cend(); ++m) {
+      tmp[m->first].push_back(std::make_pair(m->second.get<0>(), m->second.get<1>()));
+    }
+    encode(tmp, bl);
+    encode(subchunks, bl);
+    encode(cls_parm_ctx, bl);
+    ENCODE_FINISH(bl);
+    return;
+  }
+
+  ENCODE_START(3, 2, bl);
+  encode(from, bl);
+  encode(tid, bl);
+  encode(to_read, bl);
+  encode(subchunks, bl);
+  encode(cls_parm_ctx, bl);
+  ENCODE_FINISH(bl);
+}
+
+void ECSubCall::decode(bufferlist::const_iterator &bl) {
+  using ceph::decode;
+  DECODE_START(3, bl);
+  decode(from, bl);
+  decode(tid, bl);
+  if (struct_v == 1) {
+    map<hobject_t, list<pair<uint64_t, uint64_t> >>tmp;
+    decode(tmp, bl);
+    for (auto m = tmp.cbegin(); m != tmp.cend(); ++m) {
+      list<boost::tuple<uint64_t, uint64_t, uint32_t> > tlist;
+      for (auto l = m->second.cbegin(); l != m->second.cend(); ++l) {
+        to_read[m->first] = boost::make_tuple(l->first, l->second, 0);
+      }
+    }
+  } else {
+    decode(to_read, bl);
+  }
+  if (struct_v > 2 && struct_v > struct_compat) {
+    decode(subchunks, bl);
+  } else {
+    for (auto &i : to_read) {
+      subchunks[i.first].push_back(make_pair(0, 1));
+    }
+  }
+  decode(cls_parm_ctx, bl);
+  DECODE_FINISH(bl);
+}
+
+std::ostream &operator<<(
+  std::ostream &lhs, const ECSubCall &rhs)
+{
+  return lhs
+    << "ECSubCall(tid=" << rhs.tid
+    << ", to_read=" << rhs.to_read
+    << ", subchunks=" << rhs.subchunks
+    << ", cls_parm_ctx=" << rhs.cls_parm_ctx << ")";
+}
+
 void ECSubRead::encode(bufferlist &bl, uint64_t features) const
 {
   if ((features & CEPH_FEATURE_OSD_FADVISE_FLAGS) == 0) {
@@ -288,6 +352,37 @@ void ECSubRead::generate_test_instances(list<ECSubRead*>& o)
   o.back()->to_read[hoid2].push_back(boost::make_tuple(400, 600, 0));
   o.back()->to_read[hoid2].push_back(boost::make_tuple(2000, 600, 0));
   o.back()->attrs_to_read.insert(hoid2);
+}
+
+void ECSubCallReply::encode(bufferlist &bl) const
+{
+  using ceph::encode;
+  ENCODE_START(1, 1, bl);
+  encode(from, bl);
+  encode(tid, bl);
+  encode(cls_result, bl);
+  encode(errors, bl);
+  ENCODE_FINISH(bl);
+}
+
+void ECSubCallReply::decode(bufferlist::const_iterator &bl)
+{
+  using ceph::decode;
+  DECODE_START(1, bl);
+  decode(from, bl);
+  decode(tid, bl);
+  decode(cls_result, bl);
+  decode(errors, bl);
+  DECODE_FINISH(bl);
+}
+
+std::ostream &operator<<(
+  std::ostream &lhs, const ECSubCallReply &rhs)
+{
+  return lhs
+    << "ECSubReadReply(tid=" << rhs.tid
+    << ", cls_result=" << rhs.cls_result
+    << ")";
 }
 
 void ECSubReadReply::encode(bufferlist &bl) const

@@ -576,6 +576,12 @@ typedef std::shared_ptr<const OSDMap> OSDMapRef;
      return -EOPNOTSUPP;
    }
 
+  virtual void object_call_async(
+    const hobject_t &hoid,
+    const std::pair<boost::tuple<uint64_t, uint64_t, uint32_t>,
+                    std::pair<ClsParmContext*, OSDOp*> > &call_ctx,
+    Context *on_complete) {}
+
    virtual void objects_read_async(
      const hobject_t &hoid,
      const std::list<std::pair<boost::tuple<uint64_t, uint64_t, uint32_t>,

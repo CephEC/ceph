@@ -44,6 +44,9 @@ public:
 
   ~AggregateBuffer() {
     flush_timer.shutdown(); 
+    for (auto &cls_ctx : cls_ctx_map) {
+      delete cls_ctx.second;
+    }
   }
 
   /**
@@ -59,6 +62,18 @@ public:
    */
   void bind(const hobject_t &first_oid);
   bool is_bind_volume() { return is_bind; }
+
+  void finish_cls(const hobject_t& soid) {
+    if (cls_ctx_map.find(soid) == cls_ctx_map.end())
+      return;
+    cls_ctx_map.erase(soid);
+  }
+
+  ClsParmContext* get_cls_ctx(const hobject_t& soid) {
+    if (cls_ctx_map.find(soid) == cls_ctx_map.end())
+      return nullptr;
+    return cls_ctx_map[soid];
+  }
 
   /**
    * @brief 判断是否需要聚合该请求
@@ -180,6 +195,7 @@ private:
   // 保存非空闲volume的meta
   std::list<std::shared_ptr<volume_t>> volume_not_full;
 
+  std::map<hobject_t, ClsParmContext*> cls_ctx_map;
   // TODO: 缓存EC块
   // std::map<volume_t, bufferlist> ec_buffer;
 };

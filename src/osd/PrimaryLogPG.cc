@@ -245,6 +245,23 @@ struct OnReadComplete : public Context {
   ~OnReadComplete() override {}
 };
 
+struct OnCallComplete : public Context {
+  PrimaryLogPG *pg;
+  PrimaryLogPG::OpContext *opcontext;
+  OnCallComplete(
+    PrimaryLogPG *pg,
+    PrimaryLogPG::OpContext *ctx) : pg(pg), opcontext(ctx) {}
+  void finish(int r) override {
+    pg->get_aggregate_buffer()->finish_cls(opcontext->obc->obs.oi.soid);
+    opcontext->finish_call(pg);
+  }
+  ~OnCallComplete() override {}
+};
+
+void PrimaryLogPG::OpContext::finish_call(PrimaryLogPG *pg) {
+  pg->execute_ctx(this);
+}
+
 class PrimaryLogPG::C_OSD_AppliedRecoveredObject : public Context {
   PrimaryLogPGRef pg;
   ObjectContextRef obc;
@@ -4352,6 +4369,17 @@ void PrimaryLogPG::execute_ctx(OpContext *ctx)
     return;
   }
 
+  bool pending_async_calls = !ctx->pending_async_calls.empty();
+  // 异常情况下是否需要对pending_async_calls做特殊处理?
+  if (pending_async_calls) {
+    // come back later.
+    pgbackend->object_call_async(obc->obs.oi.soid,
+                                 ctx->pending_async_calls.front(),
+                                 new OnCallComplete(this, ctx));
+    ctx->pending_async_calls.pop_front();
+    return;
+  }
+
   if (result == -EAGAIN) {
     // clean up after the ctx
     close_op_ctx(ctx);
@@ -6219,14 +6247,30 @@ int PrimaryLogPG::do_osd_ops(OpContext *ctx, vector<OSDOp>& ops)
 	result = op_finisher->execute();
       }
       break;
-
+    case CEPH_OSD_OP_EC_CALL:
+    {
+      if (op_finisher == nullptr) {
+        ceph_assert(op.extent.length != 0);
+        // TODO(zhengfuyu): ctx->num_read num_write的相关处理?
+        ctx->pending_async_calls.push_back(
+          make_pair(boost::make_tuple(op.extent.offset, op.extent.length, op.flags),
+                    make_pair(m_aggregate_buffer->get_cls_ctx(soid),
+                              &osd_op)));
+        dout(10) << " async_op_call noted for " << soid << dendl;
+        ctx->op_finishers[ctx->current_osd_subop_num].reset(
+          new ReadFinisher(osd_op));
+      } else {
+        dout(10) << " async_op_call finish, result.length = " << osd_op.outdata.length() << dendl;
+	      result = op_finisher->execute();
+      }
+      break;
+    }
     case CEPH_OSD_OP_SYNC_READ:
       if (pool.info.is_erasure()) {
 	result = -EOPNOTSUPP;
 	break;
       }
       // fall through
-    // case CEPH_OSD_OP_EC_CALL:
     case CEPH_OSD_OP_READ:
       ++ctx->num_read;
       tracepoint(osd, do_osd_op_pre_read, soid.oid.name.c_str(),
@@ -9248,6 +9292,7 @@ void PrimaryLogPG::apply_stats(
 
 void PrimaryLogPG::complete_read_ctx(int result, OpContext *ctx)
 {
+  dout(10) << __func__ << " reply = " << *(ctx->reply) << dendl;
   auto m = ctx->op->get_req<MOSDOp>();
   ceph_assert(ctx->async_reads_complete());
 
