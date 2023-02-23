@@ -1288,7 +1288,7 @@ options:
   desc: 
   type: bool
   level: advanced
-  default: false 
+  default: true 
   with_legacy: true
 - name: osd_aggregate_buffer_capacity
   desc: The number of chunks that the buffer/volume can manage

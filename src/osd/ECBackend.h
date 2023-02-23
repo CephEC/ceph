@@ -736,7 +736,8 @@ public:
   SharedPtrRegistry<hobject_t, ECUtil::HashInfo> unstable_hashinfo_registry;
   ECUtil::HashInfoRef get_hash_info(const hobject_t &hoid, bool create = false,
 				    const std::map<std::string, ceph::buffer::ptr, std::less<>> *attr = NULL);
-
+  
+  bool aggregate_enabled = false;
 public:
   ECBackend(
     PGBackend::Listener *pg,
@@ -745,8 +746,11 @@ public:
     ObjectStore *store,
     CephContext *cct,
     ceph::ErasureCodeInterfaceRef ec_impl,
-    uint64_t stripe_width);
+    uint64_t stripe_width,
+    bool _aggregate_enabled = false);
 
+  bool is_aggregate_enabled() { return aggregate_enabled; }
+  
   /// Returns to_read replicas sufficient to reconstruct want
   int get_min_avail_to_read_shards(
     const hobject_t &hoid,     ///< [in] object

@@ -581,7 +581,8 @@ PGBackend *PGBackend::build_pg_backend(
   coll_t coll,
   ObjectStore::CollectionHandle &ch,
   ObjectStore *store,
-  CephContext *cct)
+  CephContext *cct,
+  bool aggregate_enabled)
 {
   ErasureCodeProfile ec_profile = profile;
   switch (pool.type) {
@@ -605,7 +606,8 @@ PGBackend *PGBackend::build_pg_backend(
       store,
       cct,
       ec_impl,
-      pool.stripe_width);
+      pool.stripe_width,
+      aggregate_enabled);
   }
   default:
     ceph_abort();

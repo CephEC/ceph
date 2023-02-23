@@ -25,7 +25,7 @@
 #define AGGREGATE_SUCCESS 1
 #define AGGREGATE_PENDING_OP 2
 #define AGGREGATE_PENDING_REPLY 4
-#define AGGREGATE_OVERWRITE 8
+#define AGGREGATE_CONTINUE 8
 
 class Volume;
 class PrimaryLogPG;
@@ -74,6 +74,11 @@ public:
       return nullptr;
     return cls_ctx_map[soid];
   }
+
+  /**
+   * 从volume_meta_cache,volume_not_full中删除指定volume对象相关的元数据
+  */
+  void remove_volume_meta(const hobject_t& soid);
 
   /**
    * @brief 判断是否需要聚合该请求
@@ -128,7 +133,7 @@ public:
    * @brief volume对象写盘完成后，将其元信息更新到内存的缓存中
    * 
   */
-  void update_meta_cache(std::vector<OSDOp> *ops);
+  void update_meta_cache(const hobject_t& soid, std::vector<OSDOp> *ops);
 
    /**
    * @brief 预留函数，用于根据请求到来的历史信息预测此时的IO模式，判断是否提前计算EC并缓存

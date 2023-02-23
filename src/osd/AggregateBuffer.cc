@@ -77,7 +77,8 @@ bool AggregateBuffer::need_translate_op(MOSDOp* m)
     if (iter->op.op == CEPH_OSD_OP_READ ||
         iter->op.op == CEPH_OSD_OP_SPARSE_READ ||
         iter->op.op == CEPH_OSD_OP_SYNC_READ ||
-        iter->op.op == CEPH_OSD_OP_CALL) {
+        iter->op.op == CEPH_OSD_OP_CALL ||
+        iter->op.op == CEPH_OSD_OP_DELETE) {
       ret = true;
       break;
     }
@@ -89,7 +90,7 @@ int AggregateBuffer::write(OpRequestRef op, MOSDOp* m)
 {
   if (op_translate(m) == 0) {
     // RGW对象覆盖写，不需要聚合
-    return AGGREGATE_OVERWRITE;
+    return AGGREGATE_CONTINUE;
   }
 
   // volume满，未处于flushing状态，则等待flush（一般不会为真）
@@ -160,10 +161,28 @@ int AggregateBuffer::flush()
   }
 }
 
-void AggregateBuffer::update_meta_cache(std::vector<OSDOp> *ops) {
+void AggregateBuffer::remove_volume_meta(const hobject_t& soid) {
+  for (auto it = volume_meta_cache.begin();
+       it != volume_meta_cache.end();
+       it++) {
+    if (it->second->get_oid() == soid) {
+      dout(4) << __func__ << " remove mapping: from " << it->first 
+       << " to " << it->second->get_oid() << dendl;
+      volume_meta_cache.erase(it);
+    }
+  }
+  volume_not_full.remove_if([&](std::shared_ptr<volume_t> meta) {
+    return meta->get_oid() == soid;
+  });
+}
+
+void AggregateBuffer::update_meta_cache(const hobject_t& soid, std::vector<OSDOp> *ops) {
   dout(4) << __func__ << "try to update meta cache ops = " << *ops << dendl;
   for (auto &osd_op : *ops) {
-    if (osd_op.op.op == CEPH_OSD_OP_SETXATTR) {
+    if (osd_op.op.op == CEPH_OSD_OP_DELETE) {
+      // 删除与该volume对象相关的元数据
+      remove_volume_meta(soid);
+    } else if (osd_op.op.op == CEPH_OSD_OP_SETXATTR) {
       bufferlist bl;
       std::string aname;
       auto bp = osd_op.indata.cbegin();
@@ -171,6 +190,8 @@ void AggregateBuffer::update_meta_cache(std::vector<OSDOp> *ops) {
       if (aname != "volume_meta") {
         continue;
       }
+      // 如果volume_meta之前存在volume_meta_cache中，先清除它们，再写入
+      remove_volume_meta(soid);
       bp.copy(osd_op.op.xattr.value_len, bl);
       auto meta_ptr = std::make_shared<volume_t>(
         pg->get_pgbackend()->get_ec_data_chunk_count(),
@@ -253,36 +274,58 @@ void AggregateBuffer::insert_to_meta_cache(std::shared_ptr<volume_t> meta_ptr) {
 
 
 int AggregateBuffer::op_translate(MOSDOp* m) {
+  auto rgw_oid = m->get_hobj();
   auto it = volume_meta_cache.find(m->get_hobj());
   if (it == volume_meta_cache.end()) {
     // rados对象不存在
+    dout(4) << __func__ << "object(oid = " << rgw_oid << ") not exists" << dendl;
     return -ENOENT;
   }
-  auto volume_meta_ptr = volume_meta_cache[m->get_hobj()];
-  auto chunk_meta = volume_meta_ptr->get_chunk(m->get_hobj());
+  // 这里采用深拷贝,内存中的volume_meta等待删除（或是写入）完成的回调请求来更新
+  auto volume_meta = *(volume_meta_cache[rgw_oid]);
+  auto chunk_meta = volume_meta.get_chunk(rgw_oid);
+  // 将操作的对象oid由RGW对象oid替换为volume对象oid
+  m->set_hobj(volume_meta.get_oid());
   for (auto &osd_op : m->ops) {
-    if (osd_op.op.op == CEPH_OSD_OP_WRITEFULL) {
-      // 为RGW对象覆盖写提供请求转译
-      osd_op.op.op = CEPH_OSD_OP_WRITE;
+    if (osd_op.op.op == CEPH_OSD_OP_DELETE) {
+      ceph_assert(m->ops.size() == 1);
+      if (!volume_meta.is_only_valid_object(rgw_oid)) {
+        // volume中还有其他有效对象,仅更新元数据
+        volume_meta.remove_chunk(rgw_oid);
+        osd_op = volume_meta.generate_write_meta_op();
+        dout(4) << __func__ << " want delete object(oid = "
+          << rgw_oid << "), but just update volume_meta." << dendl;
+      } else {
+        dout(4) << __func__ << "want delete object(oid = " << rgw_oid 
+          << "), but delete volume(oid = " << volume_meta.get_oid() << ")" << dendl;
+      }
+      // 删除整个volume对象和volume_t元数据(osd_op不用改，只需要把删除对象的oid替换成volume oid即可)
+      // 回调时从内存中将该volume的信息清除
+      continue;
     }
-    if (osd_op.op.op == CEPH_OSD_OP_CALL) {
-      // 为EC pool中的Cls请求提供转译
-      osd_op.op.op = CEPH_OSD_OP_EC_CALL;
-      ClsParmContext *cls_parm_ctx = 
-        new ClsParmContext(osd_op.op.cls.class_len,
-                           osd_op.op.cls.method_len,
-                           osd_op.op.cls.argc,
-                           osd_op.op.cls.indata_len,
-                           osd_op.indata);
-      cls_ctx_map[volume_meta_ptr->get_oid()] = cls_parm_ctx;
+    {
+      if (osd_op.op.op == CEPH_OSD_OP_WRITEFULL) {
+        // 为RGW对象覆盖写提供请求转译
+        osd_op.op.op = CEPH_OSD_OP_WRITE;
+      }
+      if (osd_op.op.op == CEPH_OSD_OP_CALL) {
+        // 为EC pool中的Cls请求提供转译
+        osd_op.op.op = CEPH_OSD_OP_EC_CALL;
+        ClsParmContext *cls_parm_ctx = 
+          new ClsParmContext(osd_op.op.cls.class_len,
+                            osd_op.op.cls.method_len,
+                            osd_op.op.cls.argc,
+                            osd_op.op.cls.indata_len,
+                            osd_op.indata);
+        cls_ctx_map[volume_meta.get_oid()] = cls_parm_ctx;
+      }
+      // 将待访问RGW对象的oid,off,len替换为volume对象的oid,off,len
+      dout(4) << __func__ << " translate access object(oid = " << rgw_oid << ") to access_volume(oid = "
+        << volume_meta.get_oid() << " off =  " << uint8_t(chunk_meta.get_chunk_id()) * chunk_meta.get_chunk_size()
+        << " len = " << chunk_meta.get_chunk_size() << ")" << dendl;
+      osd_op.op.extent.offset = uint8_t(chunk_meta.get_chunk_id()) * chunk_meta.get_chunk_size();
+      osd_op.op.extent.length = chunk_meta.get_chunk_size();
     }
-    // 将待访问RGW对象的oid,off,len替换为volume对象的oid,off,len
-    dout(4) << __func__ << " translate access_request(m= " << *m << ") to access_volume(oid = "
-      << volume_meta_ptr->get_oid() << " off =  " << uint8_t(chunk_meta.get_chunk_id()) * chunk_meta.get_chunk_size()
-      << " len = " << chunk_meta.get_chunk_size() << ")" << dendl;
-    osd_op.op.extent.offset = uint8_t(chunk_meta.get_chunk_id()) * chunk_meta.get_chunk_size();
-    osd_op.op.extent.length = chunk_meta.get_chunk_size();
   }
-  m->set_hobj(volume_meta_ptr->get_oid());
   return 0;
 }

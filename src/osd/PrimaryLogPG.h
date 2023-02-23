@@ -1503,6 +1503,8 @@ public:
     return m_aggregate_buffer.get();
   }
 
+  bool is_aggregate_enabled() { return aggregate_enabled; }
+
   void do_request(
     OpRequestRef& op,
     ThreadPool::TPHandle &handle) override;
@@ -1956,7 +1958,7 @@ private:
   */
   typedef std::shared_ptr<AggregateBuffer> AggregateBufferRef;
   AggregateBufferRef m_aggregate_buffer;
-  bool aggregate_enabled = false;
+  bool aggregate_enabled = true;
   bool aggregate_initialized = false;
    
 };

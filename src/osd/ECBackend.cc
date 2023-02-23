@@ -262,12 +262,14 @@ ECBackend::ECBackend(
   ObjectStore *store,
   CephContext *cct,
   ErasureCodeInterfaceRef ec_impl,
-  uint64_t stripe_width)
+  uint64_t stripe_width,
+  bool _aggregate_enabled)
   : PGBackend(cct, pg, store, coll, ch),
     ec_impl(ec_impl),
     sinfo(ec_impl->get_data_chunk_count(), stripe_width) {
   ceph_assert((ec_impl->get_data_chunk_count() *
 	  ec_impl->get_chunk_size(stripe_width)) == stripe_width);
+    aggregate_enabled = _aggregate_enabled;
 }
 
 PGBackend::RecoveryHandle *ECBackend::open_recovery_op()
@@ -928,7 +930,8 @@ void ECBackend::handle_sub_call(
                       bl,
                       reply->cls_result[i->first]);
 
-    dout(10) << "method called response length=" << reply->cls_result[i->first].length() << dendl;
+    dout(10) << "method called response length=" << reply->cls_result[i->first].length() 
+    << " r = " << r << dendl;
     continue;
   error:
       // Do NOT check osd_read_eio_on_bad_digest here.  We need to report

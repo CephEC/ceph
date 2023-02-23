@@ -6862,6 +6862,34 @@ public:
   // 获取指定soid所在chunk（元数据）
   chunk_t& get_chunk(const hobject_t& soid) { return chunks[soid]; }
   
+  // 外层已经确认过_oid存在这个volume内
+  bool is_only_valid_object(const hobject_t& _oid) {
+    for (auto &chunk_meta : chunks) {
+      if (chunk_meta.second.is_valid() &&
+          chunk_meta.second.get_oid() != _oid ) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  /**
+   * @brief 生成volume元数据的Op（SETXATTR）
+   *
+   */
+  OSDOp generate_write_meta_op() {
+    OSDOp op{CEPH_OSD_OP_SETXATTR};
+    std::string name("volume_meta");
+    bufferlist bl;
+    encode(bl);
+    op.op.xattr.name_len = name.size();
+    op.op.xattr.value_len = bl.length();
+    op.indata.append(name.c_str(), op.op.xattr.name_len);
+    op.indata.append(bl);
+    return op;
+  }
+
+
   std::vector<const hobject_t*> get_all_soid() {
     std::vector<const hobject_t*> out;
     out.reserve(cap);
@@ -6888,7 +6916,7 @@ public:
     size++;
   }
   // 从volume中移除chunk（元数据）
-  void remove_chunk(hobject_t& soid) 
+  void remove_chunk(const hobject_t& soid) 
   {
     auto o = chunks.find(soid);
     if(o != chunks.end()) {

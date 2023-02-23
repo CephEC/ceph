@@ -1763,7 +1763,8 @@ PrimaryLogPG::PrimaryLogPG(OSDService *o, OSDMapRef curmap,
   PG(o, curmap, _pool, p),
   pgbackend(
     PGBackend::build_pg_backend(
-      _pool.info, ec_profile, this, coll_t(p), ch, o->store, cct)),
+      _pool.info, ec_profile, this, coll_t(p), ch, o->store, cct,
+      (o-cct->_conf->osd_aggregate_buffer_enabled && _pool.info.type == pg_pool_t::TYPE_ERASURE))),
   object_contexts(o->cct, o->cct->_conf->osd_pg_object_context_cache_count),
   new_backfill(false),
   temp_seq(0),
@@ -1776,6 +1777,8 @@ PrimaryLogPG::PrimaryLogPG(OSDService *o, OSDMapRef curmap,
 
   m_aggregate_buffer = std::make_shared<AggregateBuffer>(o->cct, p, this);
   m_scrubber = make_unique<PrimaryLogScrub>(this);
+  aggregate_enabled = 
+    (o-cct->_conf->osd_aggregate_buffer_enabled && _pool.info.type == pg_pool_t::TYPE_ERASURE);
 }
 
 PrimaryLogPG::~PrimaryLogPG()
@@ -1997,8 +2000,8 @@ void PrimaryLogPG::load_volume_attrs()
   std::vector<bufferlist> volume_meta;
   get_pgbackend()->load_volume_attrs(volume_meta);
   for (auto &bp : volume_meta) {
-    // TODO(zhengfuyu): 容量先写死为4了，后面再看需不需要改成配置参数
-    auto meta_ptr = std::make_shared<volume_t>(4, get_pgid());
+    auto meta_ptr = std::make_shared<volume_t>(get_pgbackend()->get_ec_data_chunk_count(),
+                                               get_pgid());
     auto p = bp.cbegin();
     decode(*meta_ptr, p);
     m_aggregate_buffer->insert_to_meta_cache(meta_ptr);
@@ -2010,7 +2013,7 @@ void PrimaryLogPG::load_volume_attrs()
 */
 void PrimaryLogPG::reply_op_error(OpRequestRef op, int err, eversion_t v, version_t uv,
 	std::vector<pg_log_op_return_item_t> op_returns) {
-  if (op->is_write_volume_op()) {
+  if (is_aggregate_enabled() && op->is_write_volume_op()) {
     for (auto aggregated_op : m_aggregate_buffer->waiting_for_reply)
       osd->reply_op_error(aggregated_op, err, v, uv, op_returns);
   } else {
@@ -2029,12 +2032,8 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
   // change anything that will break other reads on m (operator<<).
   MOSDOp *m = static_cast<MOSDOp*>(op->get_nonconst_req());
   ceph_assert(m->get_type() == CEPH_MSG_OSD_OP);
-  
-  // aggregate_enabled = cct->_conf->osd_aggregate_buffer_enabled;
-  aggregate_enabled = true;
-
   // lazy initialize
-  if (!m_aggregate_buffer->is_initialized() && aggregate_enabled) {
+  if (!m_aggregate_buffer->is_initialized() && is_aggregate_enabled()) {
     uint64_t cap = get_pgbackend()->get_ec_data_chunk_count();
     uint64_t chunk_size = get_pgbackend()->get_ec_stripe_chunk_size();
     double time_out = cct->_conf->osd_aggregate_buffer_flush_timeout;
@@ -2277,15 +2276,15 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
   // 如果发现要写入的volume丢失数据或是正在修复中，那么就选择另外一个volume写入
 
   // TODO(zhengfuyu): 这一块代码有点乱，后续可以根据OSDOp的Op code来更加准确地调用AggregateBuffer的相关接口
-  if (aggregate_enabled && !op->is_write_volume_op()) {
+  if (is_aggregate_enabled() && !op->is_write_volume_op() && op->get_reqid().name.is_client()) {
     if (m_aggregate_buffer->need_aggregate_op(m)) {
       dout(4) << "write op " << op << " in buffer." << dendl;
       int r = m_aggregate_buffer->write(op, m);
       switch (r) {
       case AGGREGATE_PENDING_REPLY:
         dout(4) << "aggregate pending to reply " << dendl;
-	      return;
-      case AGGREGATE_OVERWRITE:
+        return;
+      case AGGREGATE_CONTINUE:
         dout(4) << "op continue." << dendl;
         break;
       default:
@@ -2297,7 +2296,10 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
       // 读请求和Cls请求都会进入转译
       // ceph内部存在一些非聚合的对象，在volume_meta_cache无法找到它们的映射关系
       // 当volume_meta_cache中不存在对象映射时，不要直接返回对象不存在，而是将请求原封不动继续下发
-      m_aggregate_buffer->op_translate(m);
+      int r = m_aggregate_buffer->op_translate(m);
+      if (r < 0) {
+        reply_op_error(op, r);
+      }
     }
   }
   // // ceph会把丢失的object整合成一个map,这里就是检索map判断本次操作的对象是否丢失了
@@ -2797,8 +2799,12 @@ void PrimaryLogPG::record_write_error(OpRequestRef op, const hobject_t &soid,
       ldpp_dout(pg, 20) << "finished " << __func__ << " r=" << r << dendl;
       auto m = op->get_req<MOSDOp>();
       MOSDOpReply *reply = orig_reply.detach();
-      ldpp_dout(pg, 10) << " sending commit on " << *m << " " << reply << dendl;
-      pg->osd->send_message_osd_client(reply, m->get_connection());
+      if (pg->is_aggregate_enabled() && op->is_write_volume_op()) {
+        pg->get_aggregate_buffer()->send_reply(reply, true);
+      } else {
+        ldpp_dout(pg, 10) << " sending commit on " << *m << " " << reply << dendl;
+        pg->osd->send_message_osd_client(reply, m->get_connection());
+      }
     }
   };
 
@@ -4485,10 +4491,13 @@ void PrimaryLogPG::execute_ctx(OpContext *ctx)
     ctx->reply = nullptr;
     reply->add_flags(CEPH_OSD_FLAG_ACK | CEPH_OSD_FLAG_ONDISK);
     dout(10) << " sending reply on " << *m << " " << reply << dendl;
-   
-  if (aggregate_enabled && ctx->op && ctx->op->is_write_volume_op()) {
+  
+  if (is_aggregate_enabled()) {
+    // 写入和删除完成后都需要更新元数据
     // 更新内存中的volume_meta_cache和volume_not_full
-    m_aggregate_buffer->update_meta_cache(ctx->ops);
+    m_aggregate_buffer->update_meta_cache(ctx->obc->obs.oi.soid, ctx->ops);
+  }
+  if (is_aggregate_enabled() && ctx->op && ctx->op->is_write_volume_op()) {
     m_aggregate_buffer->send_reply(reply, ignore_out_data);
   } else {
     // 覆盖写还是走常规的回复流程
@@ -4501,7 +4510,7 @@ void PrimaryLogPG::execute_ctx(OpContext *ctx)
     });
   ctx->register_on_success(
     [ctx, this]() {
-      if (aggregate_enabled 
+      if (is_aggregate_enabled() 
 		      && ctx->op
 		      && ctx->op->is_write_volume_op()) {
         // 流程中还有很多类似的地方需要处理
@@ -4517,7 +4526,7 @@ void PrimaryLogPG::execute_ctx(OpContext *ctx)
     });
   ctx->register_on_finish(
     [ctx, this]() {
-      if (aggregate_enabled && ctx->op->is_write_volume_op()) {
+      if (is_aggregate_enabled() && ctx->op->is_write_volume_op()) {
         m_aggregate_buffer->clear();
       }
       delete ctx;
