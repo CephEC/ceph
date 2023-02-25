@@ -152,8 +152,7 @@ public:
    * check_recovery_sources.
    */
   void objects_read_and_reconstruct(
-    const std::map<hobject_t, std::list<boost::tuple<uint64_t, uint64_t, uint32_t> >
-    > &reads,
+    std::map<hobject_t, std::list<boost::tuple<uint64_t, uint64_t, uint32_t> >> &reads,
     bool fast_read,
     GenContextURef<std::map<hobject_t,std::pair<int, extent_map> > &&> &&func);
 
@@ -790,9 +789,6 @@ public:
   void _failed_push(const hobject_t &hoid,
     std::pair<RecoveryMessages *, ECBackend::read_result_t &> &in);
 
-  bool is_cephEC() const {
-    return true;
-  }
 };
 ostream &operator<<(ostream &lhs, const ECBackend::pipeline_state_t &rhs);
 

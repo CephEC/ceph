@@ -1443,7 +1443,7 @@ void ECBackend::handle_sub_read_reply(
       ceph_assert(req_iter != rop.to_read.find(i->first)->second.to_read.end());
       ceph_assert(riter != rop.complete[i->first].returned.end());
       pair<uint64_t, uint64_t> adjusted;
-      if (is_cephEC()) {
+      if (is_aggregate_enabled()) {
         adjusted = make_pair(0, sinfo.get_chunk_size());
       } else {
         adjusted = sinfo.aligned_offset_len_to_chunk(
@@ -2015,7 +2015,7 @@ void ECBackend::do_read_op(ReadOp &op)
 	 j != i->second.to_read.end();
 	 ++j) {
       pair<uint64_t, uint64_t> chunk_off_len;
-      if (is_cephEC()) {
+      if (is_aggregate_enabled()) {
         // cephEC中，Volume对象只对应一条EC条带，所以每个OSD上也只会保存该对象的单个数据块（或者编码块）
         // 不需要调用aligned_offset_len_to_chunk计算具体需要读取OSD上的哪些chunk（毕竟只有1个chunk）
         // 所以chunk_off_len = <0, chunk_size>
@@ -2485,7 +2485,7 @@ void ECBackend::objects_read_async(
 	 to_read.begin();
        i != to_read.end();
        ++i) {
-    if (is_cephEC()) {
+    if (is_aggregate_enabled()) {
       // 这里的offset和length不需要对齐到stripe，因为cephEC中的读操作不以条带为单位
       es.union_insert(i->first.get<0>(), i->first.get<1>());
     } else {
@@ -2833,9 +2833,8 @@ out:
 };
 
 void ECBackend::objects_read_and_reconstruct(
-  const map<hobject_t,
-    std::list<boost::tuple<uint64_t, uint64_t, uint32_t> >
-  > &reads,
+  map<hobject_t,
+    std::list<boost::tuple<uint64_t, uint64_t, uint32_t> >> &reads,
   bool fast_read,
   GenContextURef<map<hobject_t,pair<int, extent_map> > &&> &&func)
 {
@@ -2853,7 +2852,7 @@ void ECBackend::objects_read_and_reconstruct(
   for (auto &&to_read: reads) {
     map<pg_shard_t, vector<pair<int, int>>> shards;
     // cephEC正常情况下，to_read中每个offset和length都是chunk对齐的
-    if (is_cephEC()) {
+    if (is_aggregate_enabled()) {
       set<int> logical_data_chunk_set;
       // 即使是在cephEC的配置下，volume覆盖写也会调用objects_read_and_reconstruct
       // 注意代码的兼容性
@@ -2885,6 +2884,38 @@ void ECBackend::objects_read_and_reconstruct(
     // 判断all_data_shard中的数据分片是否都能正常读取
     // 如果存在数据分片无法正常读取，则需要额外读取编码分片来恢复数据
     ceph_assert(r == 0);
+
+    if (is_aggregate_enabled() && shards.size() == get_ec_data_chunk_count()) {
+      // 正常情况下只需要读取一个chunk
+      // 所以reads中只记录了要读取的单个chunk的off和len,没有将off和len向stripe对齐
+      // 但是如果chunk不可达（集群降级），那么就需要读取整个条带
+      // 此时就需要把reads中记录的off和len对齐到stripe
+      for (auto i = reads.begin(); i != reads.end(); ++i) {
+        // i-> (soid, list< pair<off, len, flag> >)
+        extent_set es;
+        uint32_t flags = 0;
+        for (auto j = i->second.begin(); j != i->second.end(); ++j) {
+          // j-> pair<off, len, flag>
+          // 将对象的offset和length对齐到stripe_width
+          // reads oid -> {起始offset所在的条带起始地址，本次需要读取的条带数，flag}
+          pair<uint64_t, uint64_t> tmp =
+            sinfo.offset_len_to_stripe_bounds(make_pair((*j).get<0>(),
+                                                        (*j).get<1>()));
+          es.union_insert(tmp.first, tmp.second);
+          flags |= (*j).get<2>();
+        }
+        if (!es.empty()) {
+          auto &offsets = i->second;
+          offsets.clear();
+          for (auto j = es.begin(); j != es.end(); ++j) {
+            offsets.push_back(
+              boost::make_tuple(j.get_start(),
+                                j.get_len(),
+                                flags));
+          }
+        }
+      }
+    }
 
     CallClientContexts *c = new CallClientContexts(
       to_read.first,

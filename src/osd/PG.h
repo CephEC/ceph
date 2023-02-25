@@ -319,9 +319,6 @@ public:
   bool is_primary() const {
     return recovery_state.is_primary();
   }
-  bool is_cephEC() const {
-    return true;
-  }
   bool pg_has_reset_since(epoch_t e) {
     ceph_assert(is_locked());
     return recovery_state.pg_has_reset_since(e);
