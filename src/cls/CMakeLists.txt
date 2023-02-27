@@ -34,6 +34,18 @@ install(TARGETS cls_numops DESTINATION ${cls_dir})
 set(cls_numops_client_srcs numops/cls_numops_client.cc)
 add_library(cls_numops_client STATIC ${cls_numops_client_srcs})
 
+# cls_parquet_scan
+set(cls_parquet_scan_srcs parquet_scan/cls_parquet_scan.cc)
+add_library(cls_parquet_scan SHARED ${cls_parquet_scan_srcs})
+set_target_properties(cls_parquet_scan PROPERTIES
+  VERSION "1.0.0"
+  SOVERSION "1"
+  INSTALL_RPATH ""
+  CXX_VISIBILITY_PRESET hidden)
+install(TARGETS cls_parquet_scan DESTINATION ${cls_dir})
+
+set(cls_parquet_scan_client_srcs parquet_scan/cls_parquet_scan_client.cc)
+add_library(cls_parquet_scan_client STATIC ${cls_parquet_scan_client_srcs})
 
 # cls_rbd
 if (WITH_RBD)
