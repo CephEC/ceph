@@ -77,7 +77,7 @@ protected:
   int fetch_bench_metadata(const std::string& metadata_file, uint64_t* op_size,
 			   uint64_t* object_size, int* num_ops, int* num_objects, int* prev_pid);
 
-  int write_bench(int secondsToRun, int concurrentios, const std::string& run_name_meta, unsigned max_objects, int prev_pid);
+  int write_bench(int secondsToRun, int concurrentios, const std::string& run_name_meta, unsigned max_objects, int prev_pid, bool ignore_bench_meta = false);
   int seq_read_bench(int secondsToRun, int num_ops, int num_objects, int concurrentios, int writePid, bool no_verify=false);
   int rand_read_bench(int secondsToRun, int num_ops, int num_objects, int concurrentios, int writePid, bool no_verify=false);
 
@@ -112,7 +112,8 @@ public:
   int aio_bench(
     int operation, int secondsToRun,
     int concurrentios, uint64_t op_size, uint64_t object_size, unsigned max_objects,
-    bool cleanup, bool hints, const std::string& run_name, bool reuse_bench, bool no_verify=false);
+    bool cleanup, bool hints, const std::string& run_name, bool reuse_bench,
+    bool ignore_bench_meta=false, bool no_verify=false);
   int clean_up(const std::string& prefix, int concurrentios, const std::string& run_name);
 
   void set_show_time(bool dt) {

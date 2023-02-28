@@ -18,7 +18,7 @@ AggregateBuffer::AggregateBuffer(CephContext* _cct, const spg_t& _pgid, PrimaryL
   // volume_buffer(_cct->_conf.get_val<std::uint64_t>("osd_aggregate_buffer_capacity"),
                // _cct->_conf.get_val<std::uint64_t>("osd_aggregate_buffer_chunk_size"),
                 // _pgid),
-  volume_buffer(0, 0, _pgid),
+  volume_buffer(_cct, 0, 0, _pgid),
   flush_callback(NULL),
   flush_timer(_cct, timer_lock),
   flush_time_out(0),
@@ -34,12 +34,16 @@ AggregateBuffer::AggregateBuffer(CephContext* _cct, const spg_t& _pgid, PrimaryL
     // flush_time_out = _cct->_conf.get_val<double>("osd_aggregate_buffer_flush_timeout");
   };
 
-void AggregateBuffer::init(uint64_t _volume_cap, uint64_t _chunk_size, double _time_out)
+void AggregateBuffer::init(uint64_t _volume_cap, uint64_t _chunk_size, 
+  bool _flush_timer_enabled, double _time_out)
 {
   initialized = true; 
+  flush_timer_enabled = _flush_timer_enabled;
   volume_buffer.init(_volume_cap, _chunk_size);
-  flush_time_out = _time_out;
-  flush_timer.init(); 
+  if (flush_timer_enabled) {
+    flush_time_out = _time_out;
+    flush_timer.init(); 
+  }
 }
 
 void AggregateBuffer::bind(const hobject_t &first_oid) {
@@ -60,7 +64,8 @@ bool AggregateBuffer::need_aggregate_op(MOSDOp* m)
   std::vector<OSDOp>::const_iterator iter;
 
   for (iter = m->ops.begin(); iter != m->ops.end(); ++iter) {
-    if (iter->op.op == CEPH_OSD_OP_WRITEFULL) {
+    if (iter->op.op == CEPH_OSD_OP_WRITEFULL ||
+        iter->op.op == CEPH_OSD_OP_WRITE) {
       ret = true;
       break;
     }
@@ -94,23 +99,23 @@ int AggregateBuffer::write(OpRequestRef op, MOSDOp* m)
   }
 
   // volume满，未处于flushing状态，则等待flush（一般不会为真）
-  if (volume_buffer.full() && !is_flushing) {
-     if (!is_flushing) {
-       int r = flush();
-       if (r < 0) {
-         return AGGREGATE_FAILED;
-       }
-     }
-     else {
-       waiting_for_aggregate.push_back(op);
-       return AGGREGATE_PENDING_OP;  
-     }
+  if (volume_buffer.full()) {
+    if (!is_flushing) {
+      int r = flush();
+      if (r < 0) {
+        dout(4) << __func__ << " call flush failed" << dendl;
+        return AGGREGATE_FAILED;
+      }
+    }
+    waiting_for_aggregate.push_back(op);
+    return AGGREGATE_PENDING_OP;  
   }
 
   if (!is_bind_volume()) bind(m->get_hobj().get_head());
   // ceph_assert(volume_buffer == nullptr);
 
   if (volume_buffer.add_chunk(op, m) < 0) {
+    dout(4) << __func__ << " call add_chunk failed" << dendl;
     return AGGREGATE_FAILED;
   }
   dout(4) << __func__ << " spg_t = " << volume_buffer.get_spg() << " write request(oid = " << m->get_hobj().get_head() << " aggregate into volume," <<
@@ -121,9 +126,11 @@ int AggregateBuffer::write(OpRequestRef op, MOSDOp* m)
   // flush_timer->add_event_after(flush_time_out, flush_callback);
   waiting_for_reply.push_back(op);
 
-  reset_flush_timeout();
+  if (flush_timer_enabled) {
+    reset_flush_timeout();
+  }
 
-  if (volume_buffer.full()) {
+  if (volume_buffer.full() || !flush_timer_enabled) {
     flush();
   }
   return AGGREGATE_PENDING_REPLY;
@@ -151,8 +158,8 @@ int AggregateBuffer::flush()
     pg->requeue_op(volume_op);
 
     flush_lock.unlock();
-    is_flushing = false;
-    dout(4) << " aggregate finish, try to write volume, op = " << *m << dendl;
+    dout(4) << " aggregate finish, try to write volume, op = " << *m 
+      << " aggregate_op_num = " << volume_buffer.get_volume_info().get_size() << dendl;
     return AGGREGATE_PENDING_REPLY;
   } else {
     dout(4) << " timeout, but volume is empty. " << dendl;
@@ -176,8 +183,17 @@ void AggregateBuffer::remove_volume_meta(const hobject_t& soid) {
   });
 }
 
+void AggregateBuffer::requeue_waiting_for_aggregate_op() {
+  for (auto &op : waiting_for_aggregate) {
+    auto m = op->get_req<MOSDOp>();
+    op->set_requeued();
+    pg->requeue_op(op);
+    dout(4) << __func__ << ": requeue write op " << *m << dendl;
+  }
+}
+
 void AggregateBuffer::update_meta_cache(const hobject_t& soid, std::vector<OSDOp> *ops) {
-  dout(4) << __func__ << "try to update meta cache ops = " << *ops << dendl;
+  dout(4) << __func__ << " try to update meta cache ops = " << *ops << dendl;
   for (auto &osd_op : *ops) {
     if (osd_op.op.op == CEPH_OSD_OP_DELETE) {
       // 删除与该volume对象相关的元数据
@@ -223,11 +239,15 @@ void AggregateBuffer::clear() {
   while (!waiting_for_reply.empty()) {
     waiting_for_reply.pop_front();
   }
+  while (!waiting_for_aggregate.empty()) {
+    waiting_for_aggregate.pop_front();
+  }
   if (volume_op) {
     volume_op.reset();
   }
   volume_buffer.clear();
   is_bind = false;
+  is_flushing = false;
 }
 
 /************ timer *************/

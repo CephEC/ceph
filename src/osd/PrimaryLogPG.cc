@@ -2036,12 +2036,13 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
   if (!m_aggregate_buffer->is_initialized() && is_aggregate_enabled()) {
     uint64_t cap = get_pgbackend()->get_ec_data_chunk_count();
     uint64_t chunk_size = get_pgbackend()->get_ec_stripe_chunk_size();
+    bool flush_timer_enabled = cct->_conf->osd_aggregate_flush_timer_enabled;
     double time_out = cct->_conf->osd_aggregate_buffer_flush_timeout;
     dout(5) << __func__ << " init aggregate buffer, cap = " << cap
 	    << " chunk_size = " << chunk_size
 	    << " flush_time_out = " << time_out << dendl;
     
-    m_aggregate_buffer->init(cap, chunk_size, time_out);
+    m_aggregate_buffer->init(cap, chunk_size, flush_timer_enabled, time_out);
   }
   
   // 对message中的信息解码
@@ -2282,6 +2283,7 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
       int r = m_aggregate_buffer->write(op, m);
       switch (r) {
       case AGGREGATE_PENDING_REPLY:
+      case AGGREGATE_PENDING_OP:
         dout(4) << "aggregate pending to reply " << dendl;
         return;
       case AGGREGATE_CONTINUE:
@@ -4499,6 +4501,7 @@ void PrimaryLogPG::execute_ctx(OpContext *ctx)
   }
   if (is_aggregate_enabled() && ctx->op && ctx->op->is_write_volume_op()) {
     m_aggregate_buffer->send_reply(reply, ignore_out_data);
+    m_aggregate_buffer->requeue_waiting_for_aggregate_op();
   } else {
     // 覆盖写还是走常规的回复流程
     dout(10) << " sending reply to " << m->get_connection()->get_peer_addr() << dendl; 

@@ -250,7 +250,8 @@ int ObjBencher::aio_bench(
   uint64_t op_size, uint64_t object_size,
   unsigned max_objects,
   bool cleanup, bool hints,
-  const std::string& run_name, bool reuse_bench, bool no_verify) {
+  const std::string& run_name, bool reuse_bench, 
+  bool ignore_bench_meta, bool no_verify) {
 
   if (concurrentios <= 0)
     return -EINVAL;
@@ -265,7 +266,7 @@ int ObjBencher::aio_bench(
   const std::string run_name_meta = (run_name.empty() ? BENCH_LASTRUN_METADATA : run_name);
 
   //get data from previous write run, if available
-  if (operation != OP_WRITE || reuse_bench) {
+  if (!ignore_bench_meta && (operation != OP_WRITE || reuse_bench)) {
     uint64_t prev_op_size, prev_object_size;
     r = fetch_bench_metadata(run_name_meta, &prev_op_size, &prev_object_size,
 			     &num_ops, &num_objects, &prev_pid);
@@ -305,7 +306,7 @@ int ObjBencher::aio_bench(
     formatter->open_object_section("bench");
 
   if (OP_WRITE == operation) {
-    r = write_bench(secondsToRun, concurrentios, run_name_meta, max_objects, prev_pid);
+    r = write_bench(secondsToRun, concurrentios, run_name_meta, max_objects, prev_pid, ignore_bench_meta);
     if (r != 0) goto out;
   }
   else if (OP_SEQ_READ == operation) {
@@ -399,7 +400,7 @@ int ObjBencher::fetch_bench_metadata(const std::string& metadata_file,
 
 int ObjBencher::write_bench(int secondsToRun,
 			    int concurrentios, const string& run_name_meta,
-			    unsigned max_objects, int prev_pid) {
+			    unsigned max_objects, int prev_pid, bool ignore_bench_meta) {
   if (concurrentios <= 0)
     return -EINVAL;
 
@@ -634,7 +635,9 @@ int ObjBencher::write_bench(int secondsToRun,
   encode(data.op_size, b_write);
 
   // persist meta-data for further cleanup or read
-  sync_write(run_name_meta, b_write, sizeof(int)*3);
+  if (!ignore_bench_meta) {
+    sync_write(run_name_meta, b_write, sizeof(int)*3);
+  }
 
   completions_done();
 

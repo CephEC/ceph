@@ -6,19 +6,34 @@
  */
 
 #include "AggregateChunk.h"
+#define dout_context cct
+#define dout_subsys ceph_subsys_osd
+#undef dout_prefix
+#define dout_prefix _prefix(_dout, this)
 
+using std::cout;
+using std::ostream;
+using std::ostringstream;
+
+static ostream& _prefix(std::ostream *_dout, const Chunk *buf) {
+  return *_dout << "aggregate chunk. ******* "; 
+}
 
 chunk_t Chunk::set_from_op(OpRequestRef _op, MOSDOp* _m, const uint8_t& seq) {
   
     const hobject_t& oid = _m->get_hobj();
     const spg_t pg_id = _m->get_spg();
     if (pg_id.pgid != chunk_info.get_spg().pgid) {
+      dout(4) << "set_from_op failed, request_pg_id = " << pg_id.pgid
+        << " chunk_pg_id = " << pg_id.pgid << dendl;
       return chunk_t();
     }
       
     uint64_t data_len = _m->get_data_len();
     // 检查data_len是否大于配置文件中的chunk_size 
     if(data_len > chunk_info.get_chunk_size() << 20) {
+      dout(4) << "set_from_op failed, data_len = " << data_len
+        << " max_chunk_size = " << (chunk_info.get_chunk_size() << 20) << dendl;
       return chunk_t();
     }
       

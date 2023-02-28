@@ -24,6 +24,7 @@
 #include "ECUtil.h"
 #include "ECTransaction.h"
 #include "ExtentCache.h"
+#include "osd/ClassHandler.h"
 
 //forward declaration
 struct ECSubWrite;
@@ -189,6 +190,13 @@ public:
     Context *on_complete,
     bool fast_read = false) override;
 
+/*
+  void object_degrade_call_async(
+    const hobject_t &hoid,
+    const std::pair<boost::tuple<uint64_t, uint64_t, uint32_t>,
+              std::pair<ClsParmContext*, OSDOp*> > &call_ctx,
+    Context *on_complete);
+*/
 
   void object_call_async(
     const hobject_t &hoid,

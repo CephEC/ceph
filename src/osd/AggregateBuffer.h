@@ -52,7 +52,7 @@ public:
   /**
    * @brief 初始化buffer(lazy)
    */
-  void init(uint64_t _volume_cap, uint64_t _chunk_size, double _time_out);
+  void init(uint64_t _volume_cap, uint64_t _chunk_size, bool _flush_timer_enabled, double _time_out);
   bool is_initialized() { return initialized; }
 
   /**
@@ -74,6 +74,11 @@ public:
       return nullptr;
     return cls_ctx_map[soid];
   }
+
+  /**
+   * volume对象写盘完成后，将waiting_for_aggregate_op中的RGW写请求重新投入OSD队列再次执行
+  */
+  void requeue_waiting_for_aggregate_op();
 
   /**
    * 从volume_meta_cache,volume_not_full中删除指定volume对象相关的元数据
@@ -192,6 +197,7 @@ private:
 
   bool initialized = false;
   bool is_bind = false;
+  bool flush_timer_enabled = false;
 
   // 属于PG的VolumeMeta
   // std::vector<volume_t> volume_meta_cache;

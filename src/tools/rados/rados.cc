@@ -121,7 +121,7 @@ void usage(ostream& out)
 "   rollback <obj-name> <snap-name>  roll back object to snap <snap-name>\n"
 "\n"
 "   listsnaps <obj-name>             list the snapshots of this object\n"
-"   bench <seconds> write|seq|rand [-t concurrent_operations] [--no-cleanup] [--run-name run_name] [--no-hints] [--reuse-bench]\n"
+"   bench <seconds> write|seq|rand [-t concurrent_operations] [--no-cleanup] [--run-name run_name] [--no-hints] [--reuse-bench] [--ignore-bench-meta]\n"
 "                                    default is 16 concurrent IOs and 4 MB ops\n"
 "                                    default is to clean up after write benchmark\n"
 "                                    default run-name is 'benchmark_last_metadata'\n"
@@ -1097,7 +1097,8 @@ protected:
   int aio_write(const std::string& oid, int slot, bufferlist& bl, size_t len,
 		size_t offset) override {
     librados::ObjectWriteOperation op;
-
+    op.write_full(bl);
+    /**
     if (write_destination & OP_WRITE_DEST_OBJ) {
       if (data.hints)
 	op.set_alloc_hint2(data.object_size, data.op_size,
@@ -1107,6 +1108,7 @@ protected:
 			   ALLOC_HINT_FLAG_IMMUTABLE);
       op.write(offset, bl);
     }
+    */
 
     if (write_destination & OP_WRITE_DEST_OMAP) {
       std::map<std::string, librados::bufferlist> omap;
@@ -1893,6 +1895,7 @@ static int rados_tool_common(const std::map < std::string, std::string > &opts,
   bool no_verify = false;
   bool use_striper = false;
   bool with_clones = false;
+  bool ignore_bench_meta = false;
   const char *snapname = NULL;
   snap_t snapid = CEPH_NOSNAP;
   std::map<std::string, std::string>::const_iterator i;
@@ -2100,6 +2103,10 @@ static int rados_tool_common(const std::map < std::string, std::string > &opts,
   if (i != opts.end()) {
     reuse_bench = true;
   }
+  i = opts.find("ignore-bench-meta");
+  if (i != opts.end()) {
+    ignore_bench_meta = true;
+  }
   i = opts.find("pretty-format");
   if (i != opts.end()) {
     pretty_format = true;
@@ -2232,7 +2239,6 @@ static int rados_tool_common(const std::map < std::string, std::string > &opts,
           << cpp_strerror(ret) << std::endl;
         return 1;
       }
-
       if (requires) {
         uint64_t align = 0;
         ret = io_ctx.pool_required_alignment2(&align);
@@ -3373,7 +3379,7 @@ static int rados_tool_common(const std::map < std::string, std::string > &opts,
     cout << "hints = " << (int)hints << std::endl;
     ret = bencher.aio_bench(operation, seconds,
 			    concurrent_ios, op_size, object_size,
-			    max_objects, cleanup, hints, run_name, reuse_bench, no_verify);
+			    max_objects, cleanup, hints, run_name, reuse_bench, ignore_bench_meta, no_verify);
     if (ret != 0)
       cerr << "error during benchmark: " << cpp_strerror(ret) << std::endl;
     if (formatter && output)
@@ -4159,6 +4165,8 @@ int main(int argc, const char **argv)
       opts["no-hints"] = "true";
     } else if (ceph_argparse_flag(args, i, "--reuse-bench", (char*)NULL)) {
       opts["reuse-bench"] = "true";
+    } else if (ceph_argparse_flag(args, i, "--ignore-bench-meta", (char*)NULL)) {
+      opts["ignore-bench-meta"] = "true";
     } else if (ceph_argparse_flag(args, i, "--no-verify", (char*)NULL)) {
       opts["no-verify"] = "true";
     } else if (ceph_argparse_witharg(args, i, &val, "--run-name", (char*)NULL)) {

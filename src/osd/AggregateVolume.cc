@@ -3,11 +3,23 @@
  */
 
 #include "AggregateVolume.h"
+#define dout_context cct
+#define dout_subsys ceph_subsys_osd
+#undef dout_prefix
+#define dout_prefix _prefix(_dout, this)
 
+using std::cout;
+using std::ostream;
+using std::ostringstream;
 
-Volume::Volume(uint32_t _cap, uint32_t _chunk_size, const spg_t& _pg_id)
+static ostream& _prefix(std::ostream *_dout, const Volume *buf) {
+  return *_dout << "aggregate volume. ******* "; 
+}
+
+Volume::Volume(CephContext* _cct, uint32_t _cap, uint32_t _chunk_size, const spg_t& _pg_id)
   : volume_info(_cap, _pg_id),
-    vol_op(nullptr)
+    vol_op(nullptr),
+    cct(_cct)
 {} 
 
 Volume::~Volume()
@@ -31,7 +43,7 @@ void Volume::init(uint64_t _cap, uint64_t _chunk_size)
   volume_info.reset_chunk_bitmap();
   // 预分配Chunk
   for (uint8_t i = 0; i < _cap; i++) {
-    Chunk* c = new Chunk(i, get_spg(), _chunk_size, this);
+    Chunk* c = new Chunk(cct, i, get_spg(), _chunk_size, this);
     chunks.push_back(c);
   }
 
@@ -45,6 +57,8 @@ int Volume::add_chunk(OpRequestRef op, MOSDOp* m)
 
   uint32_t free_chunk_index = volume_info.find_free_chunk();
   if (free_chunk_index >= volume_info.get_cap()) {
+    dout(4) << " add_chunk failed" << " free_chunk_index = " <<  free_chunk_index
+      << " volume cap = " << volume_info.get_cap() << " m = " << *m << dendl;
     return -1;
   }
   // new Chunk
@@ -52,6 +66,7 @@ int Volume::add_chunk(OpRequestRef op, MOSDOp* m)
   // init chunk & return its metadata
   chunk_t chunk_meta = new_chunk->set_from_op(op, m, free_chunk_index);
   if (chunk_meta == chunk_t()) {
+    dout(4) << " add_chunk failed" << " set_from_op failed " << dendl;
     return -1;
   }
   // 最后处理volume元数据

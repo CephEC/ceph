@@ -29,8 +29,8 @@ class Volume;
 class Chunk {
 public:
 
-  Chunk(uint8_t _seq, const spg_t& _pg_id, uint64_t _chunk_size, Volume* _vol): 
-                        chunk_info(_seq, _pg_id, _chunk_size), vol(_vol) {  }
+  Chunk(CephContext* _cct, uint8_t _seq, const spg_t& _pg_id, uint64_t _chunk_size, Volume* _vol): 
+                        chunk_info(_seq, _pg_id, _chunk_size), vol(_vol), cct(_cct) {  }
 
   /**
    * @brief 根据OpRequest初始化，计算填0部分的偏移
@@ -67,6 +67,7 @@ private:
 
   OpRequestRef op;
   std::vector<OSDOp> ops;
+  CephContext* cct;
 };
 
 #endif // !CEPH_AGGREGATECHUNK_H

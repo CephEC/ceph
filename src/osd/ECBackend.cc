@@ -26,7 +26,6 @@
 #include "messages/MOSDECSubOpCallReply.h"
 
 #include "ECMsgTypes.h"
-#include "osd/ClassHandler.h"
 
 #include "PrimaryLogPG.h"
 #include "osd_tracer.h"
@@ -316,6 +315,65 @@ struct OnRecoveryReadComplete :
       in.first);
   }
 };
+/*
+struct OnDegradeCallComplete : public Context {
+  CephContext *cct;
+  ECBackend *ec;
+  const hobject_t hoid;
+  const std::pair<boost::tuple<uint64_t, uint64_t, uint32_t>,
+    std::pair<ClsParmContext*, OSDOp*> > &call_ctx;
+  std::unique_ptr<Context> on_complete;
+  bufferlist read_data;
+  OnDegradeCallComplete(
+    CephContext *cct,
+    ECBackend *ec,
+    const hobject_t &hoid,
+    const std::pair<boost::tuple<uint64_t, uint64_t, uint32_t>,
+      std::pair<ClsParmContext*, OSDOp*> > &call_ctx,
+    Context *on_complete,
+    bufferlist &read_data) 
+  : cct(cct), ec(ec), hoid(hoid), call_ctx(call_ctx),
+    on_complete(on_complete), read_data(read_data) {}
+  void finish(int r) override {
+    bufferlist bl;
+    std::string cname, mname;
+    bufferlist indata;
+    ClsParmContext* cls_parm_ctx = call_ctx.second.first;
+    ClassHandler::ClassData *cls = nullptr;
+    ClassHandler::ClassMethod *method = nullptr;
+    auto bp = cls_parm_ctx->parm_data.cbegin();
+    try {
+      bp.copy(cls_parm_ctx->class_len, cname);
+      bp.copy(cls_parm_ctx->method_len, mname);
+      bp.copy(cls_parm_ctx->indata_len, indata);
+    } catch (ceph::buffer::error& e) {
+      dout(10) << "call unable to decode class + method + indata" << dendl;
+      r = -EINVAL;
+    }
+    r = ClassHandler::get_instance().open_class(cname, &cls);
+    ceph_assert(r == 0 && cls);   // init_op_flags() already verified this works.
+
+    method = cls->get_method(mname);
+    ceph_assert(method);
+
+    // 为了契合cls exec接口的函数声明,对数据做一下移动
+    cls_parm_ctx->parm_data = std::move(indata);
+
+    dout(10) << "call method " << cname << "." << mname << dendl;
+
+    r = method->exec((cls_method_context_t)(cls_parm_ctx),
+                      read_data,
+                      (call_ctx.second.second)->outdata);
+
+    dout(10) << "method called response length=" << (call_ctx.second.second)->outdata.length() 
+      << " r = " << r << dendl;
+    if (on_complete) {
+      on_complete.release()->complete(r);
+    }
+  }
+  ~OnDegradeCallComplete() override {}
+};
+*/
 
 struct RecoveryMessages {
   map<hobject_t,
@@ -2597,7 +2655,27 @@ void ECBackend::objects_read_async(
 	   to_read,
 	   on_complete)));
 }
-
+/*
+void ECBackend::object_degrade_call_async(
+  const hobject_t &hoid,
+  const pair<boost::tuple<uint64_t, uint64_t, uint32_t>,
+             pair<ClsParmContext*, OSDOp*> > &call_ctx,
+  Context *on_complete) {
+  bufferlist read_data;
+  list<pair<boost::tuple<uint64_t, uint64_t, unsigned>,
+	    pair<bufferlist*, Context*> > > in;
+  in.push_back(make_pair(call_ctx.first,
+                         make_pair(&read_data, nullptr)));
+  objects_read_async(hoid,
+                     in,
+                     new OnDegradeCallComplete(cct,
+                                               this,
+                                               hoid,
+                                               call_ctx,
+                                               on_complete,
+                                               read_data));
+}
+*/
 void ECBackend::object_call_async(
   const hobject_t &hoid,
   const pair<boost::tuple<uint64_t, uint64_t, uint32_t>,
@@ -2631,6 +2709,15 @@ void ECBackend::object_call_async(
     &shards);
   ceph_assert(r == 0);
   ceph_assert(shards.size() == 1);
+
+  /*
+  if (shards.size() == get_ec_data_chunk_count()) {
+    // 数据块丢失，需要恢复整个条带
+    // 选择将整个条带读入Primary OSD再进行Cls操作
+    object_degrade_call_async(hoid, call_ctx, on_complete);
+    return;
+  }
+  */
 
   struct cb {
     ECBackend *ec;

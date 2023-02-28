@@ -90,7 +90,7 @@ static int truncate(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
     CLS_LOG(1, "ERROR: truncate: failed to decode entry: %s", err.what());
     return -EINVAL;
   }
-  auto bp = in->cbegin();
+  auto bp = in->begin(in->length() - truncate_size);
 	bp.copy(truncate_size, *out);
   // this return value will be returned back to the librados caller
   return 0;
