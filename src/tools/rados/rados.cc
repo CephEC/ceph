@@ -2231,6 +2231,7 @@ static int rados_tool_common(const std::map < std::string, std::string > &opts,
     }
 
    // align op_size
+   /*
    {
       bool requires;
       ret = io_ctx.pool_requires_alignment2(&requires);
@@ -2255,6 +2256,7 @@ static int rados_tool_common(const std::map < std::string, std::string > &opts,
           cerr << "INFO: op_size has been rounded to " << op_size << std::endl;
       }
     }
+    */
 
 #ifdef WITH_LIBRADOSSTRIPER
     // create striper interface
@@ -2775,7 +2777,7 @@ static int rados_tool_common(const std::map < std::string, std::string > &opts,
       cerr << "error cls call " << pool_name << "/" << class_name << "/" << method_name << ": " << cpp_strerror(ret) << std::endl;
       return 1;
     }
-    cout << "cls process end, out.length = " << out.length();
+    cout << "cls process end, out.length = " << out.length() << std::endl;
     int fd = TEMP_FAILURE_RETRY(::open(out_file, O_WRONLY|O_CREAT|O_TRUNC|O_BINARY, 0644));
     if (fd < 0) {
       int err = errno;

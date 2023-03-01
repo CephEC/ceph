@@ -11620,18 +11620,23 @@ int BlueStore::load_volume_attrs(
   dout(10) << __func__ << " start to read volume_attrs " <<  dendl;
   std::shared_lock l(c->lock);
   // 遍历得到Onode
-  KeyValueDB::Iterator it = db->get_iterator(PREFIX_OBJ);
-  for (it->upper_bound(string());
+  KeyValueDB::Iterator it = db->get_iterator(PREFIX_OBJ, KeyValueDB::ITERATOR_NOCACHE);
+  for (it->lower_bound(string());
        it->valid();
        it->next()) {
+    if (is_extent_shard_key(it->key())) {
+	    continue;
+    }
     bufferlist v;
     ghobject_t vol_oid;
     get_key_object(it->key(), &vol_oid);
-    Onode *o = nullptr;
+    dout(10) << __func__ << " decode object " << vol_oid
+      << " value.length =  " << it->value().length() << dendl;
+    OnodeRef o;
     if (!c->contains(vol_oid)) {
       continue;
     }
-    o = Onode::decode(c, vol_oid, it->key(), it->value());
+    o.reset(Onode::decode(c, vol_oid, it->key(), it->value()));
     if (!o || !o->exists) {
       continue;
     }
@@ -11647,7 +11652,6 @@ int BlueStore::load_volume_attrs(
     if (bl.begin() != bl.end()) {
       volume_meta.push_back(bl);
     }
-    delete o;
   }
   return 0;
 }
