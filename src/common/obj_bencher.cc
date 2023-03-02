@@ -244,6 +244,26 @@ void *ObjBencher::status_printer(void *_bencher) {
   return NULL;
 }
 
+int ObjBencher::write_data_to_file(bufferlist &write_data, const std::string& outfile) {
+  int fd = STDIN_FILENO;
+  fd = TEMP_FAILURE_RETRY(::open(outfile.c_str(), O_WRONLY|O_CREAT|O_TRUNC|O_BINARY, 0644));
+  if (fd < 0) {
+    int err = errno;
+    out(cout) << "failed to open file: " <<err << std::endl;
+    return -err;
+  }
+  int ret = write_data.write_fd(fd);
+  if (ret < 0) {
+    out(cout) << "error writing to file: " << ret << std::endl;
+    goto out;
+  }
+  ret = 0;
+ out:
+  if (fd != 1)
+    VOID_TEMP_FAILURE_RETRY(::close(fd));
+  return ret;
+}
+
 int ObjBencher::aio_bench(
   int operation, int secondsToRun,
   int concurrentios,
@@ -449,6 +469,7 @@ int ObjBencher::write_bench(int secondsToRun,
     contents[i] = std::make_unique<bufferlist>();
     snprintf(data.object_contents, data.op_size, "I'm the %16dth op!", i);
     contents[i]->append(data.object_contents, data.op_size);
+    write_data_to_file(*contents[i], name[i]);
   }
 
   pthread_t print_thread;
@@ -544,6 +565,7 @@ int ObjBencher::write_bench(int secondsToRun,
     newContents = contents[slot].get();
     snprintf(newContents->c_str(), data.op_size, "I'm the %16dth op!", data.started);
     // we wrote to buffer, going around internal crc cache, so invalidate it now.
+    write_data_to_file(*newContents, newName);
     newContents->invalidate_crc();
 
     start_times[slot] = mono_clock::now();

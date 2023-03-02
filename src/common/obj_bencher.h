@@ -76,7 +76,7 @@ protected:
 
   int fetch_bench_metadata(const std::string& metadata_file, uint64_t* op_size,
 			   uint64_t* object_size, int* num_ops, int* num_objects, int* prev_pid);
-
+  int write_data_to_file(bufferlist &write_data, const std::string& metadata_file);
   int write_bench(int secondsToRun, int concurrentios, const std::string& run_name_meta, unsigned max_objects, int prev_pid, bool ignore_bench_meta = false);
   int seq_read_bench(int secondsToRun, int num_ops, int num_objects, int concurrentios, int writePid, bool no_verify=false);
   int rand_read_bench(int secondsToRun, int num_ops, int num_objects, int concurrentios, int writePid, bool no_verify=false);
