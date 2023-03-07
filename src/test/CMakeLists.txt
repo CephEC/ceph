@@ -742,6 +742,26 @@ add_executable(unittest_bufferlist
 add_ceph_unittest(unittest_bufferlist)
 target_link_libraries(unittest_bufferlist global)
 
+# unittest_bl2arrow
+set(arrow_LIBRARY ${CMAKE_CURRENT_BINARY_DIR}/../arrow/lib/libarrow.a)
+set(parquet_LIBRARY ${CMAKE_CURRENT_BINARY_DIR}/../arrow/lib/libparquet.a)
+set(arrow_INCLUDE ${CMAKE_CURRENT_BINARY_DIR}/../arrow/include)
+message("-- arrow_lib: ${arrow_LIBRARY} parquet_lib: ${parquet_LIBRARY}")
+
+
+add_executable(unittest_bl2arrow
+  test_bl2arrow.cc
+)
+add_ceph_unittest(unittest_bl2arrow)
+target_link_directories(unittest_bl2arrow PUBLIC
+	${arrow_INCLUDE}/arrow
+	${arrow_INCLUDE}/parquet)
+target_link_libraries(unittest_bl2arrow global 
+	${arrow_LIBRARY}
+	${parquet_LIBRARY})
+
+
+
 # compiletest_cxx11_client
 add_executable(compiletest_cxx11_client
   cxx11_client.cc

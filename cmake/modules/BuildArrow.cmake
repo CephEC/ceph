@@ -3,6 +3,9 @@
 function(build_arrow)
   # only enable the parquet component
   set(arrow_CMAKE_ARGS -DARROW_PARQUET=ON)
+  set(arrow_CMAKE_ARGS -DARROW_COMPUTE=ON)
+  set(arrow_CMAKE_ARGS -DARROW_IPC=ON)
+  set(arrow_CMAKE_ARGS -DARROW_UTILITIES=ON)
 
   # only use preinstalled dependencies for arrow, don't fetch/build any
   list(APPEND arrow_CMAKE_ARGS -DARROW_DEPENDENCY_SOURCE=SYSTEM)
