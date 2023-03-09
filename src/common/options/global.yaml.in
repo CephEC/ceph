@@ -3911,7 +3911,7 @@ options:
 - name: bdev_aio_max_queue_depth
   type: int
   level: advanced
-  default: 1024
+  default: 2048
   with_legacy: true
 - name: bdev_aio_reap_max
   type: int

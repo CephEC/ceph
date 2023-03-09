@@ -52,6 +52,7 @@ chunk_t Chunk::set_from_op(OpRequestRef _op, MOSDOp* _m, const uint8_t& seq) {
       }
       ops.push_back(osd_op);
     }
+    dout(4) << " set ops, ops = " << ops << dendl;
     return chunk_info;
   }
 

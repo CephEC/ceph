@@ -489,6 +489,10 @@ void PrimaryLogPG::on_local_recover(
 	waiting_for_unreadable_object.erase(unreadable_object_entry);
       }
     }
+    if (!recovery_state.have_missing()) {
+      load_volume_attrs();
+      requeue_ops(waiting_for_all_object_recovery);
+    }
   } else {
     t->register_on_applied(
       new C_OSD_AppliedRecoveredObjectReplica(this));
@@ -538,6 +542,10 @@ void PrimaryLogPG::on_global_recover(
     dout(20) << " kicking unreadable waiters on " << soid << dendl;
     requeue_ops(unreadable_object_entry->second);
     waiting_for_unreadable_object.erase(unreadable_object_entry);
+  }
+  if (!recovery_state.have_missing()) {
+    load_volume_attrs();
+    requeue_ops(waiting_for_all_object_recovery);
   }
   finish_degraded_object(soid);
 }
@@ -2041,7 +2049,7 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
     dout(5) << __func__ << " init aggregate buffer, cap = " << cap
 	    << " chunk_size = " << chunk_size
 	    << " flush_time_out = " << time_out << dendl;
-    
+    load_volume_attrs();
     m_aggregate_buffer->init(cap, chunk_size, flush_timer_enabled, time_out);
   }
   
@@ -2300,7 +2308,15 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
       // 当volume_meta_cache中不存在对象映射时，不要直接返回对象不存在，而是将请求原封不动继续下发
       int r = m_aggregate_buffer->op_translate(m);
       if (r < 0) {
-        reply_op_error(op, r);
+        // 这里的r只可能是ENOENT,如果后续出现其他错误码,要同步修改错误处理逻辑
+        if (!recovery_state.have_missing()) {
+          reply_op_error(op, r);
+          return;
+        }
+        // primary OSD中还有未恢复的对象，其中可能包含本次待读取的对象
+        // 延迟等待恢复完毕后再次执行本次读请求
+        waiting_for_all_object_recovery.push_back(op);
+        return;
       }
     }
   }
@@ -13259,6 +13275,7 @@ void PrimaryLogPG::on_change(ObjectStore::Transaction &t)
   requeue_ops(waiting_for_flush);
   requeue_ops(waiting_for_active);
   requeue_ops(waiting_for_readable);
+  requeue_ops(waiting_for_all_object_recovery);
 
   vector<ceph_tid_t> tids;
   cancel_copy_ops(is_primary(), &tids);
@@ -13430,6 +13447,10 @@ void PrimaryLogPG::cancel_pull(const hobject_t &soid)
     requeue_ops(waiting_for_unreadable_object[soid]);
     waiting_for_unreadable_object.erase(soid);
   }
+  if (!recovery_state.have_missing()) {
+    load_volume_attrs();
+    requeue_ops(waiting_for_all_object_recovery);
+  }
   if (is_missing_object(soid))
     recovery_state.set_last_requested(0);
   finish_degraded_object(soid);
@@ -13470,6 +13491,8 @@ bool PrimaryLogPG::start_recovery_ops(
 
   if (!recovery_state.have_missing()) {
     recovery_state.local_recovery_complete();
+    load_volume_attrs();
+    requeue_ops(waiting_for_all_object_recovery);
   }
 
   if (!missing.have_missing() || // Primary does not have missing

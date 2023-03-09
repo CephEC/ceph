@@ -605,7 +605,7 @@ options:
     you set this to a value below what clients expect, they will receive an error
     when attempting to write to the cluster.
   fmt_desc: The maximum size of a write in megabytes.
-  default: 600
+  default: 1200
   min: 4
   with_legacy: true
 - name: osd_max_pgls

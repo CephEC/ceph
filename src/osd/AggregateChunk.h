@@ -57,6 +57,7 @@ public:
   void clear() {
     chunk_info.clear();
     op.reset();
+    ops.clear();
   }
 
 private:

@@ -298,7 +298,7 @@ int AggregateBuffer::op_translate(MOSDOp* m) {
   auto it = volume_meta_cache.find(m->get_hobj());
   if (it == volume_meta_cache.end()) {
     // rados对象不存在
-    dout(4) << __func__ << "object(oid = " << rgw_oid << ") not exists" << dendl;
+    dout(4) << __func__ << " object(oid = " << rgw_oid << ") not exists" << dendl;
     return -ENOENT;
   }
   // 这里采用深拷贝,内存中的volume_meta等待删除（或是写入）完成的回调请求来更新
@@ -316,7 +316,7 @@ int AggregateBuffer::op_translate(MOSDOp* m) {
         dout(4) << __func__ << " want delete object(oid = "
           << rgw_oid << "), but just update volume_meta." << dendl;
       } else {
-        dout(4) << __func__ << "want delete object(oid = " << rgw_oid 
+        dout(4) << __func__ << " want delete object(oid = " << rgw_oid 
           << "), but delete volume(oid = " << volume_meta.get_oid() << ")" << dendl;
       }
       // 删除整个volume对象和volume_t元数据(osd_op不用改，只需要把删除对象的oid替换成volume oid即可)

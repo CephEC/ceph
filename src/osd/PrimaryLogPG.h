@@ -1960,7 +1960,7 @@ private:
   AggregateBufferRef m_aggregate_buffer;
   bool aggregate_enabled = true;
   bool aggregate_initialized = false;
-   
+  std::list<OpRequestRef> waiting_for_all_object_recovery;
 };
 
 inline ostream& operator<<(ostream& out, const PrimaryLogPG::RepGather& repop)
