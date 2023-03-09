@@ -3639,7 +3639,7 @@ options:
 - name: osd_max_object_size
   type: size
   level: advanced
-  default: 128_M
+  default: 600_M
   fmt_desc: The maximum size of a RADOS object in bytes.
   with_legacy: true
 # max rados object name len
