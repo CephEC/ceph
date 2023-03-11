@@ -3,9 +3,10 @@
 function(build_arrow)
   # only enable the parquet component
   set(arrow_CMAKE_ARGS -DARROW_PARQUET=ON)
+  list(APPEND arrow_CMAKE_ARGS -DARROW_COMPUTE=ON)
 
   # only use preinstalled dependencies for arrow, don't fetch/build any
-  list(APPEND arrow_CMAKE_ARGS -DARROW_DEPENDENCY_SOURCE=SYSTEM)
+  list(APPEND arrow_CMAKE_ARGS -DARROW_DEPENDENCY_SOURCE=AUTO)
 
   # only build static version of arrow and parquet
   list(APPEND arrow_CMAKE_ARGS -DARROW_BUILD_SHARED=OFF)
@@ -50,6 +51,7 @@ function(build_arrow)
     find_package(Zstd 1.4.4 REQUIRED)
     list(APPEND arrow_INTERFACE_LINK_LIBRARIES Zstd::Zstd)
   endif (WITH_SYSTEM_ZSTD)
+
 
   list(APPEND arrow_CMAKE_ARGS -DBOOST_ROOT=${BOOST_ROOT})
   list(APPEND arrow_CMAKE_ARGS -DBOOST_INCLUDEDIR=${Boost_INCLUDE_DIR})
