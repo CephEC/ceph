@@ -3,6 +3,8 @@ include(AddCephTest)
 set(UNITTEST_LIBS GMock::Main GMock::GMock GTest::GTest ${CMAKE_THREAD_LIBS_INIT}
     ${GSSAPI_LIBRARIES} ${CMAKE_DL_LIBS})
 
+set(ARROW_LIBRARIES Arrow::Arrow Arrow::Parquet)
+
 if(WIN32)
   # Needed by Boost.
   list(APPEND UNITTEST_LIBS ws2_32)
@@ -42,7 +44,6 @@ if(NOT WIN32)
   add_subdirectory(cls_lock)
   add_subdirectory(cls_log)
   add_subdirectory(cls_numops)
-  add_subdirectory(cls_parquet_scan)
   add_subdirectory(cls_sdk)
   if(WITH_RBD)
     add_subdirectory(cls_journal)
@@ -741,6 +742,34 @@ add_executable(unittest_bufferlist
   )
 add_ceph_unittest(unittest_bufferlist)
 target_link_libraries(unittest_bufferlist global)
+
+# unittest_bl2arrow
+# set(ARROW_LIB_PATH ${CMAKE_BINARY_DIR}/src/arrow/lib)
+message("-- arrow is installed, test/unittest_bl2arrow is able to run")
+set(ARROW_INCLUDE_DIR ${CMAKE_SOURCE_DIR}/src/arrow/include)
+add_executable(test_bl2arrow
+	test_bl2arrow_main.cc
+	)
+# find_package(Arrow REQUIRED)
+# find_package(Parquet REQUIRED)
+# find_library(ARROW_LIB arrow ${ARROW_LIB_PATH})
+# find_library(PARQUET_LIB parquet ${ARROW_LIB_PATH})
+# find_library(ARROW_TESTING_LIB 	arrow_testing ${ARROW_LIB_PATH})
+# test_bl2arrow
+target_include_directories(test_bl2arrow PUBLIC ${ARROW_INCLUDE_DIR})
+# target_link_libraries(test_bl2arrow global ${ARROW_LIB} ${PARQUET_LIB})
+target_link_libraries(test_bl2arrow 
+	PUBLIC
+	global 
+	PRIVATE
+	/usr/lib64/libre2.so
+	/usr/lib64/libutf8proc.so.2
+	utf8proc::utf8proc
+	${ARROW_LIBRARIES}
+	)
+
+
+
 
 # compiletest_cxx11_client
 add_executable(compiletest_cxx11_client
