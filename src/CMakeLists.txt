@@ -714,9 +714,27 @@ add_subdirectory(compressor)
 
 add_subdirectory(tools)
 
-if(WITH_TESTS)
-  add_subdirectory(test)
-endif()
+# if(WITH_TESTS)
+ 
+#  if(WITH_SYSTEM_ARROW)
+#    find_package(Arrow 4 REQUIRED QUIET)
+#    find_package(Parquet 4 REQUIRED QUIET)
+#  else()
+#  # find arrow's dependencies
+#  if (WITH_SYSTEM_UTF8PROC)
+#    find_package(utf8proc 2.2.0 REQUIRED)
+#  else()
+#    include(BuildUtf8proc)
+#    build_utf8proc()
+#  endif()
+#  find_package(thrift 0.13 REQUIRED)
+
+#  include(BuildArrow)
+#  build_arrow()
+#  endif()
+
+# add_subdirectory(test)
+#endif()
 
 add_subdirectory(crypto)
 
@@ -845,30 +863,48 @@ set(SPAWN_BUILD_TESTS OFF CACHE INTERNAL "disable building of spawn unit tests")
 set(SPAWN_INSTALL OFF CACHE INTERNAL "disable installation of spawn headers")
 add_subdirectory(spawn)
 
-# RadosGW
-if(WITH_KVS)
-  add_subdirectory(key_value_store)
-endif(WITH_KVS)
-
-if(WITH_RADOSGW)
-  if(WITH_RADOSGW_SELECT_PARQUET)
-    if(WITH_SYSTEM_ARROW)
-      find_package(Arrow 4 REQUIRED QUIET)
-      find_package(Parquet 4 REQUIRED QUIET)
-    else()
-      # find arrow's dependencies
+if(WITH_TESTS)
+  # find arrow's dependencies
       if (WITH_SYSTEM_UTF8PROC)
         find_package(utf8proc 2.2.0 REQUIRED)
       else()
         include(BuildUtf8proc)
         build_utf8proc()
       endif()
-      find_package(thrift 0.13 REQUIRED)
+ 
+  find_package(thrift 0.13 REQUIRED)
 
-      include(BuildArrow)
-      build_arrow()
-    endif()
-  endif()
+  include(BuildArrow)
+  build_arrow()
+
+  add_subdirectory(test)
+endif()
+
+
+# RadosGW
+if(WITH_KVS)
+  add_subdirectory(key_value_store)
+endif(WITH_KVS)
+
+if(WITH_RADOSGW)
+#  if(WITH_RADOSGW_SELECT_PARQUET)
+#    if(WITH_SYSTEM_ARROW)
+#      find_package(Arrow 4 REQUIRED QUIET)
+#      find_package(Parquet 4 REQUIRED QUIET)
+#    else()
+#      # find arrow's dependencies
+#      if (WITH_SYSTEM_UTF8PROC)
+#        find_package(utf8proc 2.2.0 REQUIRED)
+#      else()
+#        include(BuildUtf8proc)
+#        build_utf8proc()
+#      endif()
+#      find_package(thrift 0.13 REQUIRED)
+
+#      include(BuildArrow)
+#      build_arrow()
+#    endif()
+#  endif()
 
   add_subdirectory(libkmip)
   add_subdirectory(rgw)
