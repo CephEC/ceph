@@ -18,6 +18,7 @@
 #include <sstream>
 #include <cstdio>
 #include <include/compat.h>
+#include "arrow/api.h"
 
 using ceph::bufferlist;
 using std::string;
@@ -45,8 +46,8 @@ static int count(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
    *
    */
 
-
-
+  // 文件流转化为 arrow::Buffer
+  auto arrow_buffer = std::make_shared<arrow::Buffer>((uint8_t*)in->c_str(), in->length());  
 
 
   /*
