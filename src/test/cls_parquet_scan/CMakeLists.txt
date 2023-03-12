@@ -9,7 +9,9 @@ target_link_libraries(ceph_test_cls_parquet_scan
   ${BLKID_LIBRARIES}
   ${CMAKE_DL_LIBS}
   radostest-cxx
-  ${UNITTEST_LIBS} 
+  ${UNITTEST_LIBS}
+  Arrow::Arrow
+  Arrow::Parquet 
   )
 install(TARGETS
   ceph_test_cls_parquet_scan
