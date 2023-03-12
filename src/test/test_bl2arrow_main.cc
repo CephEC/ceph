@@ -129,6 +129,16 @@ std::shared_ptr<arrow::Table> get_arrow_table_from_arrow_buffer(
   std::shared_ptr<arrow::Table> table;
   arrow_reader->ReadTable(&table);  
 
+  arrow::Datum sum;
+  sum = arrow::compute::Sum({table->GetColumnByName("c0")}).ValueOrDie();
+
+  cout << "Datum kind: " << sum.ToString() << endl;
+  cout << "Datum size: " << sum.length() << endl;
+
+  int64_t result = sum.scalar_as<arrow::Int64Scalar>().value;
+
+  cout << "result: " << result << endl;
+
   return table;
  
 }
