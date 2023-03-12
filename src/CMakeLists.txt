@@ -566,9 +566,6 @@ if(WITH_CEPHFS OR WITH_RADOSGW)
   find_package(Lua 5.3 REQUIRED)
 endif()
 
-# rados object classes
-add_subdirectory(cls)
-
 # RADOS client/library
 add_subdirectory(osdc)
 
@@ -879,6 +876,11 @@ if(WITH_TESTS)
 
   add_subdirectory(test)
 endif()
+
+
+# rados object classes
+add_subdirectory(cls)
+
 
 
 # RadosGW
