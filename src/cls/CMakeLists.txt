@@ -54,6 +54,7 @@ install(TARGETS cls_parquet_scan DESTINATION ${cls_dir})
 
 set(cls_parquet_scan_client_srcs parquet_scan/cls_parquet_scan_client.cc)
 add_library(cls_parquet_scan_client STATIC ${cls_parquet_scan_client_srcs})
+target_link_libraries(cls_parquet_scan_client ${ARROW_LIBRARIES})
 
 # cls_rbd
 if (WITH_RBD)

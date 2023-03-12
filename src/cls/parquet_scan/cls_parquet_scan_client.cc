@@ -17,6 +17,18 @@ using librados::bufferlist;
 namespace rados {
   namespace cls {
     namespace parquet_scan {
+      int sum(librados::IoCtx *ioctx,
+	        const std::string& oid,
+		const std::string& column_name,
+	        bufferlist& result)
+      {
+        bufferlist in;
+
+	encode(column_name, in);
+
+	return ioctx->exec(oid, "parquet_scan", "sum", in, result);
+      }
+
       int sql_exec(librados::IoCtx *ioctx,
 	           const std::string& oid,
 		   const std::string& sql,

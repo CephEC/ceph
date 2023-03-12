@@ -9,7 +9,12 @@
 namespace rados {
   namespace cls {
     namespace parquet_scan {
-      extern int sql_exec(librados::IoCtx *ioctx,
+      	extern int sum(librados::IoCtx *ioctx,
+	        const std::string& oid,
+		const std::string& column_name,
+	        bufferlist& result);
+ 
+      	    extern int sql_exec(librados::IoCtx *ioctx,
 		          const std::string& oid,
 			  const std::string& sql,
 			  librados::bufferlist& result);
