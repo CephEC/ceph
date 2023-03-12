@@ -36,7 +36,15 @@ add_library(cls_numops_client STATIC ${cls_numops_client_srcs})
 
 # cls_parquet_scan
 set(cls_parquet_scan_srcs parquet_scan/cls_parquet_scan.cc)
+set(ARROW_LIBRARIES Arrow::Arrow Arrow::Parquet)
 add_library(cls_parquet_scan SHARED ${cls_parquet_scan_srcs})
+target_include_directories(cls_parquet_scan PUBLIC ${arrow_INCLUDE_DIR})
+target_link_libraries(cls_parquet_scan
+	PRIVATE
+	/usr/lib64/libre2.so
+	/usr/lib64/libutf8proc.so.2
+	${ARROW_LIBRARIES}
+	)
 set_target_properties(cls_parquet_scan PROPERTIES
   VERSION "1.0.0"
   SOVERSION "1"
