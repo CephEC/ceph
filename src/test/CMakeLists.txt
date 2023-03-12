@@ -768,7 +768,7 @@ target_link_libraries(test_bl2arrow
 	${ARROW_LIBRARIES}
 	)
 
-
+add_subdirectory(cls_parquet_scan)
 
 
 # compiletest_cxx11_client

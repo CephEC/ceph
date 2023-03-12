@@ -29,14 +29,11 @@ TEST(ClsParquetScan, Count) {
   IoCtx ioctx;
   cluster.ioctx_create(pool_name.c_str(), ioctx);
 
-  bufferlist in, out;
-  char buf[4096];
-  memset(buf, 1, sizeof(buf));
-  in.append(buf, sizeof(buf));
+  bufferlist out;
+  std::string column_name = "c0";
 
  // 调用parquet_scan类的count方法
-  ASSERT_EQ(0, ioctx.exec("myobject", "parquet_scan", "count", in, out));
-
+  ASSERT_EQ(0, rados::cls::parquet_scan::sum(&ioctx, "myobject", column_name, out));
   std::cout << "result = " << out.c_str() << std::endl;
 
   // 销毁临时pool
