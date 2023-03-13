@@ -34,7 +34,9 @@
 
 
 #include "parquet/file_reader.h"
+#include "parquet/file_writer.h"
 #include "parquet/arrow/reader.h"
+#include "parquet/arrow/writer.h"
 #include "parquet/column_reader.h"
 #include "parquet/api/reader.h"
 
@@ -122,42 +124,67 @@ static int sum(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
   return 0;
 }
 
-static int sql_exec(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
+std::shared_ptr<arrow::Buffer> write_table_to_arrow_buffer(
+				std::shared_ptr<arrow::Table> new_table, 
+				bufferlist* outdata, 
+				int file_size)
 {
+  arrow::MemoryPool* pool = arrow::default_memory_pool();
+	
+  // parquet to arrow
+  std::shared_ptr<arrow::io::BufferOutputStream> out_arrow_stream;
+  out_arrow_stream = arrow::io::BufferOutputStream::Create(file_size).ValueOrDie();
+  const int64_t chunk_size = std::max(static_cast<int64_t>(1), new_table->num_rows()); 
+  
+  CLS_LOG(1, "write table to output stream");
+  parquet::arrow::WriteTable(*new_table.get(), 
+                              pool, out_arrow_stream, 
+                              chunk_size); 
+  auto out_arrow_buffer = out_arrow_stream->Finish();
+  std::shared_ptr<::arrow::Buffer> out_buffer = out_arrow_buffer.ValueOrDie();
+
+  CLS_LOG(1, "append result to bufferlist");	  
+  char *out_ptr = reinterpret_cast<char*>(const_cast<uint8_t*>(out_buffer->data()));
+  outdata->append(out_ptr, out_buffer->size());
+  return out_arrow_buffer.ValueOrDie();
+}
+
+
+static int select(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
+{
+
+
   if (in->length() == 0)
     return -EINVAL;
 
-  string sql;
-  // 获取输入参数（这里是一条sql语句，见test_cls_parquet.cc
-  // 请自己把这个方法拆成不同类型的sql语句分开进行单元测试
-  auto iter = in->cbegin();
+  // 参数解析
+  ClsParmContext *pctx = (ClsParmContext *)hctx;
+  std::string offset_str;
+  int file_size;
   try {
-    decode(sql, iter);
-  } catch (const ceph::buffer::error &err) {
-    CLS_LOG(5, "count: invalid decode of input");
+    auto in_iter = (pctx->parm_data).cbegin();
+    decode(offset_str, in_iter);
+    decode(file_size, in_iter);
+  } catch (ceph::buffer::error& err) {
+    CLS_LOG(1, "ERROR: select: failed to decode entry: %s", err.what());
     return -EINVAL;
   }
 
-   /*
-   * TODO: 测试阶段可以直接调C++标准库文件接口比如fstream读取本地parquet文件
-   * 
-   * 流程同上，执行自己的sql语句
-   *
-   * 临时文件路径: /home/ceph/parquet/
-   *
-   */
+  int offset = std::stoi(offset_str);
 
+  CLS_LOG(1, "get the offset %d", offset);
+  
+  std::shared_ptr<arrow::Table> table;
+  get_table_from_binary_stream(in, file_size, &table);
+  
+  std::shared_ptr<arrow::Table> new_table = table->Slice(0, offset);
 
-
-
-
-  /*
-   *
-   */
-  CLS_LOG(5, "sql_exec: ");
-  out->append("temp test result");
+  std::shared_ptr<arrow::Buffer> out_buffer = write_table_to_arrow_buffer(new_table, out, file_size);  
+  
   return 0;
+
 }
+
 
 // 注册parquet_scan类
 CLS_INIT(parquet_scan)
@@ -166,13 +193,13 @@ CLS_INIT(parquet_scan)
 
   cls_handle_t h_class;
   cls_method_handle_t h_sum;
-  cls_method_handle_t h_sql_exec;
+  cls_method_handle_t h_select;
 
   cls_register("parquet_scan", &h_class);
   cls_register_cxx_method(h_class, "sum",
                           CLS_METHOD_RD | CLS_METHOD_WR,
                           sum, &h_sum);
-  cls_register_cxx_method(h_class, "sql_exec",
+  cls_register_cxx_method(h_class, "select",
                           CLS_METHOD_RD | CLS_METHOD_WR,
-                          sql_exec, &h_sql_exec);
+                          select, &h_select);
 }
