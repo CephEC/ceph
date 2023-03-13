@@ -271,6 +271,7 @@ int ObjBencher::aio_bench(
   unsigned max_objects,
   bool cleanup, bool hints,
   const std::string& run_name, bool reuse_bench, 
+  const char* bench_latency_file,
   bool ignore_bench_meta, bool no_verify) {
 
   if (concurrentios <= 0)
@@ -326,15 +327,15 @@ int ObjBencher::aio_bench(
     formatter->open_object_section("bench");
 
   if (OP_WRITE == operation) {
-    r = write_bench(secondsToRun, concurrentios, run_name_meta, max_objects, prev_pid, ignore_bench_meta);
+    r = write_bench(secondsToRun, concurrentios, run_name_meta, max_objects, prev_pid, bench_latency_file, ignore_bench_meta);
     if (r != 0) goto out;
   }
   else if (OP_SEQ_READ == operation) {
-    r = seq_read_bench(secondsToRun, num_ops, num_objects, concurrentios, prev_pid, no_verify);
+    r = seq_read_bench(secondsToRun, num_ops, num_objects, concurrentios, prev_pid, bench_latency_file, no_verify);
     if (r != 0) goto out;
   }
   else if (OP_RAND_READ == operation) {
-    r = rand_read_bench(secondsToRun, num_ops, num_objects, concurrentios, prev_pid, no_verify);
+    r = rand_read_bench(secondsToRun, num_ops, num_objects, concurrentios, prev_pid, bench_latency_file, no_verify);
     if (r != 0) goto out;
   }
 
@@ -420,7 +421,7 @@ int ObjBencher::fetch_bench_metadata(const std::string& metadata_file,
 
 int ObjBencher::write_bench(int secondsToRun,
 			    int concurrentios, const string& run_name_meta,
-			    unsigned max_objects, int prev_pid, bool ignore_bench_meta) {
+			    unsigned max_objects, int prev_pid, const char* bench_latency_file, bool ignore_bench_meta) {
   if (concurrentios <= 0)
     return -EINVAL;
 
@@ -439,6 +440,15 @@ int ObjBencher::write_bench(int secondsToRun,
     formatter->dump_format("max_objects", "%d", max_objects);
   }
   bufferlist* newContents = 0;
+
+  std::ofstream fout;
+  if (bench_latency_file) {
+    fout.open(bench_latency_file, std::ios::in | std::ios::out | std::ios::binary);
+    if (!fout.is_open()) {
+      out(cout) << "failed to open bench_latency_file" << std::endl;
+      return -EINVAL;
+    }
+  }
 
   std::string prefix = prev_pid ? generate_object_prefix(prev_pid) : generate_object_prefix();
   if (!formatter)
@@ -532,6 +542,9 @@ int ObjBencher::write_bench(int secondsToRun,
       goto ERR;
     }
     data.cur_latency = mono_clock::now() - start_times[slot];
+    if (fout.is_open()) {
+      fout << data.cur_latency.count() << std::endl;
+    }
     total_latency += data.cur_latency.count();
     if( data.cur_latency.count() > data.max_latency)
       data.max_latency = data.cur_latency.count();
@@ -662,7 +675,9 @@ int ObjBencher::write_bench(int secondsToRun,
   }
 
   completions_done();
-
+  if (fout.is_open()) {
+    fout.close();
+  }
   return 0;
 
  ERR:
@@ -670,12 +685,15 @@ int ObjBencher::write_bench(int secondsToRun,
   data.done = 1;
   locker.unlock();
   pthread_join(print_thread, NULL);
+  if (fout.is_open()) {
+    fout.close();
+  }
   return r;
 }
 
 int ObjBencher::seq_read_bench(
   int seconds_to_run, int num_ops, int num_objects,
-  int concurrentios, int pid, bool no_verify) {
+  int concurrentios, int pid, const char* bench_latency_file,  bool no_verify) {
 
   lock_cond lc(&lock);
 
@@ -694,6 +712,15 @@ int ObjBencher::seq_read_bench(
   std::chrono::duration<double> timePassed;
   sanitize_object_contents(&data, data.op_size); //clean it up once; subsequent
   //changes will be safe because string length should remain the same
+
+  std::ofstream fout;
+  if (bench_latency_file) {
+    fout.open(bench_latency_file, std::ios::in | std::ios::out | std::ios::binary);
+    if (!fout.is_open()) {
+      out(cout) << "failed to open bench_latency_file" << std::endl;
+      return -EINVAL;
+    }
+  }
 
   unsigned reads_per_object = 1;
   if (data.op_size)
@@ -764,7 +791,9 @@ int ObjBencher::seq_read_bench(
 
     // calculate latency here, so memcmp doesn't inflate it
     data.cur_latency = mono_clock::now() - start_times[slot];
-
+    if (fout.is_open()) {
+      fout << data.cur_latency.count() << std::endl;
+    }
     cur_contents = contents[slot].get();
     int current_index = index[slot];
 
@@ -872,7 +901,9 @@ int ObjBencher::seq_read_bench(
   }
 
   completions_done();
-
+  if (fout.is_open()) {
+    fout.close();
+  }
   return (errors > 0 ? -EIO : 0);
 
  ERR:
@@ -880,12 +911,15 @@ int ObjBencher::seq_read_bench(
   data.done = 1;
   locker.unlock();
   pthread_join(print_thread, NULL);
+  if (fout.is_open()) {
+    fout.close();
+  }
   return r;
 }
 
 int ObjBencher::rand_read_bench(
   int seconds_to_run, int num_ops, int num_objects,
-  int concurrentios, int pid, bool no_verify) {
+  int concurrentios, int pid, const char* bench_latency_file, bool no_verify) {
 
   lock_cond lc(&lock);
 
@@ -904,6 +938,15 @@ int ObjBencher::rand_read_bench(
   std::chrono::duration<double> timePassed;
   sanitize_object_contents(&data, data.op_size); //clean it up once; subsequent
   //changes will be safe because string length should remain the same
+  
+  std::ofstream fout;
+  if (bench_latency_file) {
+    fout.open(bench_latency_file, std::ios::in | std::ios::out | std::ios::binary);
+    if (!fout.is_open()) {
+      out(cout) << "failed to open bench_latency_file" << std::endl;
+      return -EINVAL;
+    }
+  }
 
   unsigned reads_per_object = 1;
   if (data.op_size)
@@ -977,7 +1020,9 @@ int ObjBencher::rand_read_bench(
 
     // calculate latency here, so memcmp doesn't inflate it
     data.cur_latency = mono_clock::now() - start_times[slot];
-
+    if (fout.is_open()) {
+      fout << data.cur_latency.count() << std::endl;
+    }
     locker.unlock();
 
     int current_index = index[slot];
@@ -1084,7 +1129,9 @@ int ObjBencher::rand_read_bench(
     formatter->dump_format("min_latency", "%f", data.min_latency);
   }
   completions_done();
-
+  if (fout.is_open()) {
+    fout.close();
+  }
   return (errors > 0 ? -EIO : 0);
 
  ERR:
@@ -1092,6 +1139,9 @@ int ObjBencher::rand_read_bench(
   data.done = 1;
   locker.unlock();
   pthread_join(print_thread, NULL);
+  if (fout.is_open()) {
+    fout.close();
+  }
   return r;
 }
 
