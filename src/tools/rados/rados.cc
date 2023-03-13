@@ -101,7 +101,7 @@ void usage(ostream& out)
 "   rmsnap <snap-name>               remove snap <snap-name>\n"
 "\n"
 "OBJECT COMMANDS\n"
-"   call <obj-name> [--class_name] [--method_name] [--call_args] [--out_file]\n"
+"   call <obj-name> [--class_name] [--method_name] [--call_arg1] [--call_arg2] [--out_file]\n"
 "   get <obj-name> <outfile>         fetch object\n"
 "   put <obj-name> <infile> [--offset offset]\n"
 "                                    write object with start offset (default:0)\n"
@@ -121,7 +121,7 @@ void usage(ostream& out)
 "   rollback <obj-name> <snap-name>  roll back object to snap <snap-name>\n"
 "\n"
 "   listsnaps <obj-name>             list the snapshots of this object\n"
-"   bench <seconds> write|seq|rand [-t concurrent_operations] [--no-cleanup] [--run-name run_name] [--no-hints] [--reuse-bench] [--ignore-bench-meta]\n"
+"   bench <seconds> write|seq|rand [-t concurrent_operations] [--no-cleanup] [--run-name run_name] [--no-hints] [--reuse-bench] [--ignore-bench-meta] [--bench_latency_file]\n"
 "                                    default is 16 concurrent IOs and 4 MB ops\n"
 "                                    default is to clean up after write benchmark\n"
 "                                    default run-name is 'benchmark_last_metadata'\n"
@@ -499,6 +499,7 @@ static int do_get(IoCtx& io_ctx, const std::string& oid, const char *outfile, un
 
   uint64_t offset = 0;
   int ret;
+  std::chrono::duration<double> timePassed;
   while (true) {
     bufferlist outdata;
 
@@ -516,6 +517,8 @@ static int do_get(IoCtx& io_ctx, const std::string& oid, const char *outfile, un
     offset += outdata.length();
   }
   ret = 0;
+  timePassed = mono_clock::now() - start_time;
+  cout << "Get object and total get time: " << timePassed.count() << std::endl;
 
  out:
   if (fd != 1)
@@ -592,6 +595,7 @@ static int do_put(IoCtx& io_ctx,
   }
   int count = op_size;
   uint64_t offset = obj_offset;
+  std::chrono::duration<double> timePassed;
   while (count != 0) {
     bufferlist indata;
     count = indata.read_fd(fd, op_size);
@@ -631,6 +635,8 @@ static int do_put(IoCtx& io_ctx,
     offset += count;
   }
   ret = 0;
+  timePassed = mono_clock::now() - start_time;
+  cout << "Put object and total get time: " << timePassed.count() << std::endl;
  out:
   if (fd != STDOUT_FILENO)
     VOID_TEMP_FAILURE_RETRY(close(fd));
@@ -1876,8 +1882,10 @@ static int rados_tool_common(const std::map < std::string, std::string > &opts,
   bool create_pool = false;
   const char *class_name = NULL;
   const char *method_name = NULL;
-  unsigned call_args = 0;
+  std::string call_arg1;
+  int call_arg2 = 0;
   const char *out_file = NULL;
+  const char *bench_latency_file = NULL;
   const char *pool_name = NULL;
   const char *target_pool_name = NULL;
   string oloc, target_oloc, nspace, target_nspace;
@@ -1941,13 +1949,21 @@ static int rados_tool_common(const std::map < std::string, std::string > &opts,
   if (i != opts.end()) {
     out_file = i->second.c_str();
   }
+  i = opts.find("bench_latency_file");
+  if (i != opts.end()) {
+    bench_latency_file = i->second.c_str();
+  }
   i = opts.find("method_name");
   if (i != opts.end()) {
     method_name = i->second.c_str();
   }
-  i = opts.find("call_args");
+  i = opts.find("call_arg1");
   if (i != opts.end()) {
-    if (rados_sistrtoll(i, &call_args)) {
+    call_arg1 = i->second;
+  }
+  i = opts.find("call_arg2");
+  if (i != opts.end()) {
+    if (rados_sistrtoll(i, &call_arg2)) {
       return -EINVAL;
     }
   }
@@ -2771,7 +2787,11 @@ static int rados_tool_common(const std::map < std::string, std::string > &opts,
       obj_name = nargs[1];
     }
     bufferlist out, in;
-    encode(call_args, in);
+    std::chrono::duration<double> timePassed;
+    encode(call_arg1, in);
+    if (call_arg2 != 0)
+      encode(call_arg2, in);
+    mono_time start_time = mono_clock::now();
     ret = io_ctx.exec(*obj_name, class_name, method_name, in, out);
     if (ret < 0) {
       cerr << "error cls call " << pool_name << "/" << class_name << "/" << method_name << ": " << cpp_strerror(ret) << std::endl;
@@ -2785,6 +2805,8 @@ static int rados_tool_common(const std::map < std::string, std::string > &opts,
       return -err;
     }
     ret = out.write_fd(fd);
+    timePassed = mono_clock::now() - start_time;
+    cout << "Cls complete and total get time: " << timePassed.count() << std::endl;
     if (ret < 0) {
       cerr << "error writing to file: " << cpp_strerror(ret) << std::endl;
     }
@@ -3381,7 +3403,7 @@ static int rados_tool_common(const std::map < std::string, std::string > &opts,
     cout << "hints = " << (int)hints << std::endl;
     ret = bencher.aio_bench(operation, seconds,
 			    concurrent_ios, op_size, object_size,
-			    max_objects, cleanup, hints, run_name, reuse_bench, ignore_bench_meta, no_verify);
+			    max_objects, cleanup, hints, run_name, reuse_bench, bench_latency_file, ignore_bench_meta, no_verify);
     if (ret != 0)
       cerr << "error during benchmark: " << cpp_strerror(ret) << std::endl;
     if (formatter && output)
@@ -4273,10 +4295,14 @@ int main(int argc, const char **argv)
       opts["class_name"] = val;
     } else if (ceph_argparse_witharg(args, i, &val, "--method_name", (char*)NULL)) {
       opts["method_name"] = val;
-    } else if (ceph_argparse_witharg(args, i, &val, "--call_args", (char*)NULL)) {
-      opts["call_args"] = val;
-    } else if (ceph_argparse_witharg(args, i, &val, "--out_file", (char*)NULL)) {
+    } else if (ceph_argparse_witharg(args, i, &val, "--call_arg1", (char*)NULL)) {
+      opts["call_arg1"] = val;
+    } else if (ceph_argparse_witharg(args, i, &val, "--call_arg2", (char*)NULL)) {
+      opts["call_arg2"] = val;
+    }else if (ceph_argparse_witharg(args, i, &val, "--out_file", (char*)NULL)) {
       opts["out_file"] = val;
+    } else if (ceph_argparse_witharg(args, i, &val, "--bench_latency_file", (char*)NULL)){
+      opts["bench_latency_file"] = val;
     } else {
       if (val[0] == '-')
         usage_exit();
