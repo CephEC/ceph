@@ -51,9 +51,12 @@ using namespace std;
 #define SUCCESS 0
 
 
-// const char* parquet_file_path = "/home/fhvhv_tripdata_2022-11.parquet";
-const char* parquet_file_path = "/home/ceph/src/s3select/parquet_mix_types.parquet";
-const char* output_file_name = "/home/result.parquet";
+const char* parquet_file_path = "/home/fhvhv_tripdata_2022-11.parquet";
+// const char* parquet_file_path = "/home/ceph/src/s3select/parquet_mix_types.parquet";
+// const char* output_file_name = "/home/result.parquet";
+// char parquet_file_path[1000];
+std::string output_file_name;
+int output_row = 0;
 
 // 读parquet文件 输出到arrow_buffer
 int read_origin_parquet_file(bufferlist& indata, const char* file_name)
@@ -122,22 +125,25 @@ std::shared_ptr<arrow::Table> get_arrow_table_from_arrow_buffer(
   std::unique_ptr<parquet::arrow::FileReader> arrow_reader;
   if (arrow::Status::OK() != parquet::arrow::FileReader::Make(pool,
  			  			std::move(parquet_reader),
- 					        &arrow_reader)) {
+ 					        &arrow_reader)) 
+  {
     cout << "failed to build arrow_reader." << endl;
     return nullptr;
   }
   std::shared_ptr<arrow::Table> table;
   arrow_reader->ReadTable(&table);  
 
-  arrow::Datum sum;
-  sum = arrow::compute::Sum({table->GetColumnByName("c0")}).ValueOrDie();
 
-  cout << "Datum kind: " << sum.ToString() << endl;
-  cout << "Datum size: " << sum.length() << endl;
 
-  int64_t result = sum.scalar_as<arrow::Int64Scalar>().value;
+/*   arrow::Datum sum; */
+  /* sum = arrow::compute::Sum({table->GetColumnByName("c0")}).ValueOrDie(); */
 
-  cout << "result: " << result << endl;
+  /* cout << "Datum kind: " << sum.ToString() << endl; */
+  /* cout << "Datum size: " << sum.length() << endl; */
+
+  /* int64_t result = sum.scalar_as<arrow::Int64Scalar>().value; */
+
+  /* cout << "result: " << result << endl; */
 
   return table;
  
@@ -203,7 +209,7 @@ int write_parquet_file(bufferlist& outdata, const int& file_size)
 {
   int fd;
 
-  fd = ::open(output_file_name, O_WRONLY|O_CREAT|O_TRUNC, 0644);
+  fd = ::open(output_file_name.c_str(), O_WRONLY|O_CREAT|O_TRUNC, 0644);
   if (fd < 0) {
     cout << "failed to open output file" << endl;
     return ERR;
@@ -223,7 +229,7 @@ int check_parquet_file()
   bufferlist indata;
  
   cout << "--- check output file" << endl;
-  int file_size = read_origin_parquet_file(indata, output_file_name);
+  int file_size = read_origin_parquet_file(indata, output_file_name.c_str());
 
   cout << "output file size: " << file_size << endl;
  
@@ -245,8 +251,73 @@ void check_in_and_out_data(bufferlist& in, bufferlist& out)
   }
 }
 
-void get_field_name(shared_ptr<arrow::Table> table)
+
+void turncate_parquet(arrow::MemoryPool* pool, std::shared_ptr<arrow::Buffer> arrow_buffer)
 {
+ 
+  // 根据 ArrowBuffer 构造 BufferReader  
+  auto arrow_buffer_reader = std::make_shared<::arrow::io::BufferReader>(arrow_buffer);
+
+  // 从文件流中解析parquet文件
+  std::unique_ptr<parquet::ParquetFileReader> parquet_reader = parquet::ParquetFileReader::Open(arrow_buffer_reader);
+  
+  // 获取parquet文件元数据
+  std::shared_ptr<parquet::FileMetaData> metadata = parquet_reader->metadata();
+  cout << "Parquet schema: " << metadata->schema()->ToString() << endl;
+
+  int num_row_groups = metadata->num_row_groups();
+  cout << "row groups: " << num_row_groups << endl;
+
+  int num_rows = metadata->num_rows();
+  cout << "rows: " << num_rows << endl;
+
+  int num_columns = metadata->num_columns();
+  cout << "colunms: " << num_columns << endl;
+  
+  // 从parquet文件中获取table
+  std::unique_ptr<parquet::arrow::FileReader> arrow_reader;
+  if (arrow::Status::OK() != parquet::arrow::FileReader::Make(pool,
+ 			  			std::move(parquet_reader),
+ 					        &arrow_reader)) {
+    cout << "failed to build arrow_reader." << endl;
+    return;
+  }
+  std::shared_ptr<arrow::Table> table;
+  arrow_reader->ReadTable(&table);  
+
+  // 创建本地文件流实例
+  // parquet to arrow
+  // std::shared_ptr<arrow::io::BufferOutputStream> out_arrow_stream;
+  // out_arrow_stream = arrow::io::BufferOutputStream::Create(file_size).ValueOrDie();
+  std::shared_ptr<arrow::io::FileOutputStream> out_file;
+  PARQUET_ASSIGN_OR_THROW(out_file, arrow::io::FileOutputStream::Open(output_file_name));
+  
+  PARQUET_THROW_NOT_OK(
+	 parquet::arrow::WriteTable(*(table->Slice(0, output_row)), arrow::default_memory_pool(), out_file, 1 << 20));
+
+ /*  // schema */
+  /* // get table fields */
+  /* std::vector<std::shared_ptr<arrow::Field>> fields = table->fields(); */
+  /* std::shared_ptr<::arrow::Schema> arrow_schema = arrow::schema(fields); */
+
+  /* cout << "arrow schema: " << arrow_schema->ToString(true) << endl; */
+
+  /* // props */
+  /* parquet::WriterProperties::Builder prop_builder; */
+  /* std::shared_ptr<::parquet::WriterProperties> properties = */
+	  /* prop_builder */
+	  /* .version(metadata->version()) */
+	  /* ->created_by(metadata->created_by()) */
+	  /* ->build(); */
+  /* std::shared_ptr<::parquet::ArrowWriterProperties> arrow_properties = */
+		    /* ::parquet::default_arrow_writer_properties(); */
+  
+
+  /* std::shared_ptr<parquet::SchemaDescriptor> parquet_schema; */
+  /* ::parquet::arrow::ToParquetSchema(arrow_schema.get(), *properties.get(), */
+					    /* *arrow_properties, &parquet_schema); */
+
+
   
 }
 
@@ -255,27 +326,37 @@ int cls_main(bufferlist& indata, bufferlist& outdata, const int& file_size)
   // default memory pool
   arrow::MemoryPool* pool = arrow::default_memory_pool();
   cout << "cls_main: memory pool" << pool << endl;
- 
+
+  // indata->arrow buffer 
   std::shared_ptr<arrow::Buffer> buffer = get_arrow_buffer_from_parquet_binary(pool, indata);
-  std::shared_ptr<arrow::Table> table =  get_arrow_table_from_arrow_buffer(pool, buffer);
+  // std::shared_ptr<arrow::Table> table =  get_arrow_table_from_arrow_buffer(pool, buffer);
+  turncate_parquet(pool, buffer);
+  // std::shared_ptr<arrow::Buffer> out_buffer = write_table_to_arrow_buffer(pool, table, outdata, file_size);
 
-  std::shared_ptr<arrow::Buffer> out_buffer = write_table_to_arrow_buffer(pool, table, outdata, file_size);
-
+  check_parquet_file();
   
   return 0; 
 
 }
 
 
-int main()
+int main(int argc, char *argv[])
 {
   bufferlist indata, outdata;
- 
+  
+  output_file_name = std::string(argv[1]);
+
+  std::string row_count = std::string(argv[2]);
+
+  output_row = std::stoi(row_count);
+
+  cout << "output row: " << output_row << endl;
+
   int file_size = read_origin_parquet_file(indata, parquet_file_path);
 
   cls_main(indata, outdata, file_size);
 
-  write_parquet_file(outdata, file_size);
+  // write_parquet_file(outdata, file_size);
 
   // bug: 从buffer中读table会出错，而且返回的size大于原始size，这是因为传过来的table没有压缩 
   // check_parquet_file();
