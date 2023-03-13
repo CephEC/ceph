@@ -46,7 +46,8 @@ using ceph::encode;
 CLS_VER(1,0)
 CLS_NAME(parquet_scan)
 
-void get_table_from_binary_stream(bufferlist *in, 
+void get_table_from_binary_stream(bufferlist *in,
+	        int file_size,	
 		std::shared_ptr<arrow::Table>* table)
 {
  
@@ -54,7 +55,7 @@ void get_table_from_binary_stream(bufferlist *in,
 
   // 文件流转化为 arrow::Buffer
   auto arrow_buffer = 
-	  std::make_shared<arrow::Buffer>((uint8_t*)in->c_str(), in->length());  
+	  std::make_shared<arrow::Buffer>((uint8_t*)in->c_str(), file_size);  
 
   // 根据 ArrowBuffer 构造 BufferReader  
   auto arrow_buffer_reader = std::make_shared<arrow::io::BufferReader>(arrow_buffer); 
@@ -93,9 +94,11 @@ static int sum(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
   // 参数解析
   ClsParmContext *pctx = (ClsParmContext *)hctx;
   std::string column_name;
+  int file_size;
   try {
     auto in_iter = (pctx->parm_data).cbegin();
     decode(column_name, in_iter);
+    decode(file_size, in_iter);
   } catch (ceph::buffer::error& err) {
     CLS_LOG(1, "ERROR: sum: failed to decode entry: %s", err.what());
     return -EINVAL;
@@ -104,7 +107,7 @@ static int sum(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
   CLS_LOG(1, "get the sum of column %s", column_name.c_str());
   
   std::shared_ptr<arrow::Table> table;
-  get_table_from_binary_stream(in, &table);
+  get_table_from_binary_stream(in, file_size, &table);
   
   arrow::Datum sum;
   sum = arrow::compute::Sum({table->GetColumnByName(column_name)}).ValueOrDie();
