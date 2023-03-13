@@ -598,6 +598,7 @@ static int do_put(IoCtx& io_ctx,
   uint64_t offset = obj_offset;
   mono_time start_time = mono_clock::now();
   std::chrono::duration<double> timePassed;
+  mono_time start_time = mono_clock::now();
   while (count != 0) {
     bufferlist indata;
     count = indata.read_fd(fd, op_size);
