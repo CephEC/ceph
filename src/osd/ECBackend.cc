@@ -2700,8 +2700,9 @@ void ECBackend::object_call_async(
   // 只会下发单个对象的Cls算子,正常来说只涉及单个volume对象的单个chunk
   auto &read_range = call_ctx.first;
   ceph_assert(read_range.get<0>() % sinfo.get_chunk_size() == 0);
-  ceph_assert(read_range.get<1>() % sinfo.get_chunk_size() == 0);
+  // ceph_assert(read_range.get<1>() % sinfo.get_chunk_size() == 0);
   uint32_t read_chunks_num = read_range.get<1>() / sinfo.get_chunk_size();
+  if (!read_chunks_num) read_chunks_num++; // 主要针对那些未对齐到stripe_unit的对象做修正
   uint32_t first_chunk_id = read_range.get<0>() / sinfo.get_chunk_size();
   for (uint32_t i = 0; i < read_chunks_num; i++) {
     uint32_t logical_data_chunk_id = first_chunk_id + i;
