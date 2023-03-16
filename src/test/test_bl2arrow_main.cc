@@ -16,7 +16,7 @@
 #include <memory>
 
 #include "include/buffer.h"
-
+#include "common/ceph_time.h"
 #include "arrow/device.h"
 #include "arrow/io/memory.h"
 #include "arrow/api.h"
@@ -335,9 +335,10 @@ int main(int argc, char *argv[])
   bufferlist indata, outdata;
   
   input_file_name = std::string(argv[1]);
-
+  std::chrono::duration<double> timePassed;
   std::string opcode = argv[2];
 
+  mono_time start_time = mono_clock::now();
   // default memory pool
   arrow::MemoryPool* pool = arrow::default_memory_pool();
   int file_size = read_origin_parquet_file(indata, input_file_name.c_str());
@@ -366,7 +367,8 @@ int main(int argc, char *argv[])
          
     }
   }
-  
+  timePassed = mono_clock::now() - start_time;
+  cout << "process complete and total time: " << timePassed.count() << std::endl;
  
   // output_file_name = std::string(argv[1]);
 
