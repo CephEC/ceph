@@ -2545,7 +2545,16 @@ void ECBackend::objects_read_async(
        ++i) {
     if (is_aggregate_enabled()) {
       // 这里的offset和length不需要对齐到stripe，因为cephEC中的读操作不以条带为单位
-      es.union_insert(i->first.get<0>(), i->first.get<1>());
+      auto adjusted_off = i->first.get<0>();
+      auto adjusted_len = i->first.get<1>();
+      auto chunk_size = sinfo.get_chunk_size();
+      if(adjusted_off % chunk_size) {
+        adjusted_off = adjusted_off - (adjusted_off % chunk_size);
+      }
+      if(adjusted_len % chunk_size) {
+        adjusted_len = adjusted_len - (adjusted_len % chunk_size) + chunk_size;
+      }
+      es.union_insert(adjusted_off, adjusted_len);
     } else {
       pair<uint64_t, uint64_t> tmp =
         sinfo.offset_len_to_stripe_bounds(
@@ -2691,8 +2700,9 @@ void ECBackend::object_call_async(
   // 只会下发单个对象的Cls算子,正常来说只涉及单个volume对象的单个chunk
   auto &read_range = call_ctx.first;
   ceph_assert(read_range.get<0>() % sinfo.get_chunk_size() == 0);
-  ceph_assert(read_range.get<1>() % sinfo.get_chunk_size() == 0);
+  // ceph_assert(read_range.get<1>() % sinfo.get_chunk_size() == 0);
   uint32_t read_chunks_num = read_range.get<1>() / sinfo.get_chunk_size();
+  if (!read_chunks_num) read_chunks_num++; // 主要针对那些未对齐到stripe_unit的对象做修正
   uint32_t first_chunk_id = read_range.get<0>() / sinfo.get_chunk_size();
   for (uint32_t i = 0; i < read_chunks_num; i++) {
     uint32_t logical_data_chunk_id = first_chunk_id + i;
@@ -2905,7 +2915,10 @@ struct CallClientContexts :
       }
     } else {
         // cephEC的正常读取链路
+        dout_impl(ec->cct, dout_subsys, 20) _prefix(_dout, ec) << __func__ << ": entering partial read logic"
+            << ", oid=" << hoid.oid << ", read extent count=" << res.returned.size() << dendl;
         for (auto &read_range : res.returned) {
+          dout_impl(ec->cct, dout_subsys, 20) _prefix(_dout, ec) << __func__ << ": in partial read, processing extent " << read_range << dendl;
           auto target_data_chunk = read_range.get<2>();
           result.insert(read_range.get<0>(),  // off
                         read_range.get<1>(),  // len

@@ -340,7 +340,7 @@ int AggregateBuffer::op_translate(MOSDOp* m) {
         cls_ctx_map[volume_meta.get_oid()] = cls_parm_ctx;
       }
       uint64_t vol_offset = uint8_t(chunk_meta.get_chunk_id()) * chunk_meta.get_chunk_size();
-      uint64_t vol_length = chunk_meta.get_chunk_size();
+      uint64_t vol_length = chunk_meta.get_offset();
       // 将待访问RGW对象的oid,off,len替换为volume对象的oid,off,len
       if (osd_op.op.extent.offset == chunk_meta.get_chunk_size()) {
         // offset超出RGW对象本身的大小，本次不读取任何数据
