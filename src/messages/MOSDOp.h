@@ -83,6 +83,8 @@ public:
     pgid = p;
   }
 
+  void set_flag(__u32 flag) { flags |= flag; }
+
   void set_hobj(const hobject_t& h) { hobj = h; }
 
   // Fields decoded in partial decoding

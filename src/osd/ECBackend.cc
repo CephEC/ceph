@@ -2685,6 +2685,35 @@ void ECBackend::object_degrade_call_async(
                                                read_data));
 }
 */
+
+int object_locate(MOSDOp* m) {
+  ceph_assert(is_aggregate_enabled());
+  for (iter = m->ops.begin(); iter != m->ops.end(); ++iter) {
+    if (iter->op.op == CEPH_OSD_OP_READ        ||  
+        iter->op.op == CEPH_OSD_OP_SPARSE_READ ||
+        iter->op.op == CEPH_OSD_OP_SYNC_READ   ||) {
+      set<int> want_to_read;
+      set<int> logical_data_chunk_set;
+      map<pg_shard_t, vector<pair<int, int>>> shards;
+      auto chunk_size = sinfo.get_chunk_size();
+      auto logical_data_chunk_id = (iter->op.extent.offset + chunk_size - 1) / chunk_size;
+      logical_data_chunk_set.insert(logical_data_chunk_id);
+      get_want_to_read_shards_cephEC(logical_data_chunk_set, &want_to_read);
+      int r = get_min_avail_to_read_shards(
+        m->get_hobj().get_head(),
+        want_to_read,
+        false,
+        false,
+        &shards);
+      ceph_assert(r == 0);
+      // 如果需要访问的数据块（或者叫分片）暂时无法访问
+      // 那么就需要走常规流程，在primary OSD恢复出整个条带
+      return shards.size() == 1? shards.begin()->first().osd : -1;
+    }
+  }
+  return -1;
+}
+
 void ECBackend::object_call_async(
   const hobject_t &hoid,
   const pair<boost::tuple<uint64_t, uint64_t, uint32_t>,

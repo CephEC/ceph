@@ -198,6 +198,11 @@ public:
     Context *on_complete);
 */
 
+  // 对RGW对象的读请求转译为对volume对象的部分读之后
+  // 在ECBackend确定所需读取的volume数据块在哪个OSD，
+  // 直接将转译后的volume部分读请求转发到指定OSD上执行（减少读过程中的一次网络时延）
+   int object_locate(MOSDOp* m) override;
+
   void object_call_async(
     const hobject_t &hoid,
     const std::pair<boost::tuple<uint64_t, uint64_t, uint32_t>,

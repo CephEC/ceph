@@ -2282,7 +2282,9 @@ void PrimaryLogPG::do_op(OpRequestRef &op)
   MOSDOp *m = static_cast<MOSDOp *>(op->get_nonconst_req());
   ceph_assert(m->get_type() == CEPH_MSG_OSD_OP);
   // lazy initialize
-  if (!m_aggregate_buffer->is_initialized() && is_aggregate_enabled()) {
+  if (!m_aggregate_buffer->is_initialized() && 
+      is_aggregate_enabled()
+      is_primary()) {
     uint64_t cap = get_pgbackend()->get_ec_data_chunk_count();
     uint64_t chunk_size = get_pgbackend()->get_ec_stripe_chunk_size();
     bool flush_timer_enabled = cct->_conf->osd_aggregate_flush_timer_enabled;
@@ -2550,7 +2552,10 @@ void PrimaryLogPG::do_op(OpRequestRef &op)
   // 如果发现要写入的volume丢失数据或是正在修复中，那么就选择另外一个volume写入
 
   // TODO(zhengfuyu): 这一块代码有点乱，后续可以根据OSDOp的Op code来更加准确地调用AggregateBuffer的相关接口
-  if (is_aggregate_enabled() && !op->is_write_volume_op() && op->get_reqid().name.is_client()) {
+  if (is_primary() &&
+      is_aggregate_enabled() && 
+      !op->is_write_volume_op() && 
+      op->get_reqid().name.is_client()) {
     if (m_aggregate_buffer->need_aggregate_op(m)) {
       dout(4) << "write op " << op << " in buffer." << dendl;
       int r = m_aggregate_buffer->write(op, m);
@@ -2582,6 +2587,16 @@ void PrimaryLogPG::do_op(OpRequestRef &op)
         // 延迟等待恢复完毕后再次执行本次读请求
         waiting_for_all_object_recovery.push_back(op);
         return;
+      } else {
+        // 转译后的请求转发到对应OSD
+        int target_osd = object_locate(m);
+        if (target_osd != whoami_shard().osd) {
+          std::vector<std::pair<int, Message*>> m;
+          m->set_flag(CEPH_OSD_FLAG_BALANCE_READS);
+          m.push_back(make_pair(target_osd, m));
+          osd->send_message_osd_cluster(m, get_osdmap_epoch());
+          return;
+        }
       }
     }
   }
