@@ -607,7 +607,8 @@ PGBackend *PGBackend::build_pg_backend(
       cct,
       ec_impl,
       pool.stripe_width,
-      aggregate_enabled);
+      aggregate_enabled,
+      cct->_conf.get_val<bool>("enable_cephEC_balance_read"));
   }
   default:
     ceph_abort();

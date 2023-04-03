@@ -262,13 +262,15 @@ ECBackend::ECBackend(
   CephContext *cct,
   ErasureCodeInterfaceRef ec_impl,
   uint64_t stripe_width,
-  bool _aggregate_enabled)
+  bool _aggregate_enabled,
+  bool _cephEC_balance_read)
   : PGBackend(cct, pg, store, coll, ch),
     ec_impl(ec_impl),
     sinfo(ec_impl->get_data_chunk_count(), stripe_width) {
   ceph_assert((ec_impl->get_data_chunk_count() *
 	  ec_impl->get_chunk_size(stripe_width)) == stripe_width);
     aggregate_enabled = _aggregate_enabled;
+    cephEC_balance_read = _cephEC_balance_read;
 }
 
 PGBackend::RecoveryHandle *ECBackend::open_recovery_op()
@@ -1027,7 +1029,11 @@ bool ECBackend::_handle_message(
     // 从OSD的读请求在这里处理
     auto op = _op->get_req<MOSDECSubOpRead>();
     MOSDECSubOpReadReply *reply = new MOSDECSubOpReadReply;
-    reply->pgid = get_parent()->primary_spg_t();
+    if (op->is_localize_read()) {
+      reply->pgid = get_parent()->whoami_spg_t();
+    } else {
+      reply->pgid = get_parent()->primary_spg_t();
+    }
     reply->map_epoch = get_osdmap_epoch();
     reply->min_epoch = get_parent()->get_interval_start_epoch();
     handle_sub_read(op->op.from, op->op, &(reply->op), _op->pg_trace);
@@ -2110,6 +2116,9 @@ void ECBackend::do_read_op(ReadOp &op)
     msg->pgid = spg_t(
       get_parent()->whoami_spg_t().pgid,
       i->first.shard);
+    if (msg->pgid == get_parent()->whoami_spg_t()) {
+      msg->localize_read = true;
+    }
     msg->map_epoch = get_osdmap_epoch();
     msg->min_epoch = get_parent()->get_interval_start_epoch();
     // 把刚才构建的ECSubRead塞进去
@@ -2662,7 +2671,8 @@ void ECBackend::objects_read_async(
 	cb(this,
 	   hoid,
 	   to_read,
-	   on_complete)));
+	   on_complete)),
+    !is_primary());
 }
 /*
 void ECBackend::object_degrade_call_async(
@@ -2686,12 +2696,12 @@ void ECBackend::object_degrade_call_async(
 }
 */
 
-int object_locate(MOSDOp* m) {
+int ECBackend::object_locate(MOSDOp* m, pg_shard_t &target_shard) {
   ceph_assert(is_aggregate_enabled());
-  for (iter = m->ops.begin(); iter != m->ops.end(); ++iter) {
+  for (auto iter = m->ops.begin(); iter != m->ops.end(); ++iter) {
     if (iter->op.op == CEPH_OSD_OP_READ        ||  
         iter->op.op == CEPH_OSD_OP_SPARSE_READ ||
-        iter->op.op == CEPH_OSD_OP_SYNC_READ   ||) {
+        iter->op.op == CEPH_OSD_OP_SYNC_READ) {
       set<int> want_to_read;
       set<int> logical_data_chunk_set;
       map<pg_shard_t, vector<pair<int, int>>> shards;
@@ -2708,7 +2718,10 @@ int object_locate(MOSDOp* m) {
       ceph_assert(r == 0);
       // 如果需要访问的数据块（或者叫分片）暂时无法访问
       // 那么就需要走常规流程，在primary OSD恢复出整个条带
-      return shards.size() == 1? shards.begin()->first().osd : -1;
+      if (shards.size() == 1) {
+        target_shard = shards.begin()->first;
+        return 0;
+      }
     }
   }
   return -1;
@@ -2965,7 +2978,8 @@ void ECBackend::objects_read_and_reconstruct(
   map<hobject_t,
     std::list<boost::tuple<uint64_t, uint64_t, uint32_t> >> &reads,
   bool fast_read,
-  GenContextURef<map<hobject_t,pair<int, extent_map> > &&> &&func)
+  GenContextURef<map<hobject_t,pair<int, extent_map> > &&> &&func,
+  bool balance_read)
 {
   in_progress_client_reads.emplace_back(
     reads.size(), std::move(func));
@@ -3004,15 +3018,28 @@ void ECBackend::objects_read_and_reconstruct(
       // 看get_chunk_mapping的注释，解释的很清晰
       get_want_to_read_shards(&want_to_read);
     }
-    int r = get_min_avail_to_read_shards(
-      to_read.first,
-      want_to_read,
-      false,
-      fast_read,
-      &shards);
-    // 判断all_data_shard中的数据分片是否都能正常读取
-    // 如果存在数据分片无法正常读取，则需要额外读取编码分片来恢复数据
-    ceph_assert(r == 0);
+    if (is_aggregate_enabled() &&
+        cephEC_balance_read_enabled() &&
+        balance_read) {
+      // cephEC balance read过程中，replicate OSD执行get_shard_missing获取不同OSD的对象缺失列表时，会触发assert
+      // 可能只有primary OSD才会记录PG内其他OSD的对象缺失信息
+      // 由于cephEC balance read实际上只会读当前replicate OSD的本地数据，所以只需要检查自身的missing_loc就能判断数据是否丢失
+      // 这一部分的检查工作在do_op中的is_unreadable_object已经完成了
+      vector<pair<int, int>> default_subchunks;
+      default_subchunks.push_back(make_pair(0, ec_impl->get_sub_chunk_count()));
+      ceph_assert(want_to_read.size() == 1);
+      shards.insert(make_pair(get_parent()->whoami_shard(), default_subchunks));
+    } else {
+      int r = get_min_avail_to_read_shards(
+        to_read.first,
+        want_to_read,
+        false,
+        fast_read,
+        &shards);
+      // 判断all_data_shard中的数据分片是否都能正常读取
+      // 如果存在数据分片无法正常读取，则需要额外读取编码分片来恢复数据
+      ceph_assert(r == 0);
+    }
 
     if (is_aggregate_enabled() && shards.size() == get_ec_data_chunk_count()) {
       // 正常情况下只需要读取一个chunk

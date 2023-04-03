@@ -576,7 +576,7 @@ typedef std::shared_ptr<const OSDMap> OSDMapRef;
      return -EOPNOTSUPP;
    }
 
-   virtual int object_locate(MOSDOp* m) {
+   virtual int object_locate(MOSDOp* m, pg_shard_t &target_shard) {
      return -EOPNOTSUPP;
    }
 
