@@ -576,6 +576,10 @@ typedef std::shared_ptr<const OSDMap> OSDMapRef;
      return -EOPNOTSUPP;
    }
 
+   virtual int object_locate(MOSDOp* m, pg_shard_t &target_shard) {
+     return -EOPNOTSUPP;
+   }
+
   virtual void object_call_async(
     const hobject_t &hoid,
     const std::pair<boost::tuple<uint64_t, uint64_t, uint32_t>,

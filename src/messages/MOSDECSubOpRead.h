@@ -26,6 +26,7 @@ private:
 public:
   spg_t pgid;
   epoch_t map_epoch = 0, min_epoch = 0;
+  bool localize_read = false;
   ECSubRead op;
 
   int get_cost() const override {
@@ -40,6 +41,7 @@ public:
   spg_t get_spg() const override {
     return pgid;
   }
+  bool is_localize_read() const { return localize_read; }
 
   MOSDECSubOpRead()
     : MOSDFastDispatchOp{MSG_OSD_EC_READ, HEAD_VERSION, COMPAT_VERSION}
@@ -50,6 +52,7 @@ public:
     auto p = payload.cbegin();
     decode(pgid, p);
     decode(map_epoch, p);
+    decode(localize_read, p);
     decode(op, p);
     if (header.version >= 3) {
       decode(min_epoch, p);
@@ -63,6 +66,7 @@ public:
     using ceph::encode;
     encode(pgid, payload);
     encode(map_epoch, payload);
+    encode(localize_read, payload);
     encode(op, payload, features);
     encode(min_epoch, payload);
     encode_trace(payload, features);
@@ -73,7 +77,8 @@ public:
   void print(std::ostream& out) const override {
     out << "MOSDECSubOpRead(" << pgid
 	<< " " << map_epoch << "/" << min_epoch
-	<< " " << op;
+	<< " " << op
+  << " localize_read " << localize_read;
     out << ")";
   }
 private:

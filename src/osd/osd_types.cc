@@ -307,6 +307,8 @@ void request_redirect_t::encode(ceph::buffer::list& bl) const
   ENCODE_START(1, 1, bl);
   encode(redirect_locator, bl);
   encode(redirect_object, bl);
+  encode(redirect_osd, bl);
+  encode(redirect_shard, bl);
   // legacy of the removed osd_instructions member
   encode((uint32_t)0, bl);
   ENCODE_FINISH(bl);
@@ -318,6 +320,8 @@ void request_redirect_t::decode(ceph::buffer::list::const_iterator& bl)
   uint32_t legacy_osd_instructions_len;
   decode(redirect_locator, bl);
   decode(redirect_object, bl);
+  decode(redirect_osd, bl);
+  decode(redirect_shard, bl);
   decode(legacy_osd_instructions_len, bl);
   if (legacy_osd_instructions_len) {
     bl += legacy_osd_instructions_len;
@@ -340,6 +344,7 @@ void request_redirect_t::generate_test_instances(list<request_redirect_t*>& o)
   o.push_back(new request_redirect_t(loc, 0));
   o.push_back(new request_redirect_t(loc, "redir_obj"));
   o.push_back(new request_redirect_t(loc));
+  o.push_back(new request_redirect_t(loc, "redir_obj", 0, shard_id_t()));
 }
 
 void objectstore_perf_stat_t::dump(Formatter *f) const

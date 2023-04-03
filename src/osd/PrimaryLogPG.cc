@@ -2041,7 +2041,9 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
   MOSDOp *m = static_cast<MOSDOp*>(op->get_nonconst_req());
   ceph_assert(m->get_type() == CEPH_MSG_OSD_OP);
   // lazy initialize
-  if (!m_aggregate_buffer->is_initialized() && is_aggregate_enabled()) {
+  if (!m_aggregate_buffer->is_initialized() && 
+      is_aggregate_enabled() &&
+      is_primary()) {
     uint64_t cap = get_pgbackend()->get_ec_data_chunk_count();
     uint64_t chunk_size = get_pgbackend()->get_ec_stripe_chunk_size();
     bool flush_timer_enabled = cct->_conf->osd_aggregate_flush_timer_enabled;
@@ -2287,18 +2289,18 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
   // TODO(zhengfuyu): 这一块代码有点乱，后续可以根据OSDOp的Op code来更加准确地调用AggregateBuffer的相关接口
   if (is_aggregate_enabled() && !op->is_write_volume_op() && op->get_reqid().name.is_client()) {
     if (m_aggregate_buffer->need_aggregate_op(m)) {
-      dout(4) << "write op " << op << " in buffer." << dendl;
+      dout(10) << "write op " << op << " in buffer." << dendl;
       int r = m_aggregate_buffer->write(op, m);
       switch (r) {
       case AGGREGATE_PENDING_REPLY:
       case AGGREGATE_PENDING_OP:
-        dout(4) << "aggregate pending to reply " << dendl;
+        dout(10) << "aggregate pending to reply " << dendl;
         return;
       case AGGREGATE_CONTINUE:
-        dout(4) << "op continue." << dendl;
+        dout(10) << "op continue." << dendl;
         break;
       default:
-        dout(4) << "aggregate failed." << dendl;
+        dout(10) << "aggregate failed." << dendl;
         reply_op_error(op, -EINVAL); // TODO(zhengfuyu):先随便找个错误码应付下
         return;
       }
@@ -2317,6 +2319,23 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
         // 延迟等待恢复完毕后再次执行本次读请求
         waiting_for_all_object_recovery.push_back(op);
         return;
+      } else {
+        // 转译后的请求重定向到对应OSD
+        pg_shard_t shard;
+        int r = pgbackend->object_locate(m, shard);
+        if (!r) {
+          // m->set_flag(CEPH_OSD_FLAG_BALANCE_READS);
+          int flags = m->get_flags() & (CEPH_OSD_FLAG_ACK | CEPH_OSD_FLAG_ONDISK);
+          // m->set_spg(spg_t(whoami_spg_t().pgid, shard.shard));
+          MOSDOpReply *reply = new MOSDOpReply(m, -ENOENT, get_osdmap_epoch(),
+                                              flags, false);
+          request_redirect_t redir(m->get_object_locator(), m->get_hobj().oid.name, shard.osd, shard.shard);
+          reply->set_redirect(redir);
+          dout(10) << "redirect volume read request to osd(" << shard.osd << ")" << 
+            " redirect_request " << redir << dendl;
+          m->get_connection()->send_message(reply);
+          return;
+        }
       }
     }
   }

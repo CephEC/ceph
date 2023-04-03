@@ -322,6 +322,8 @@ struct request_redirect_t {
 private:
   object_locator_t redirect_locator; ///< this is authoritative
   std::string redirect_object; ///< If non-empty, the request goes to this object name
+  int redirect_osd = -1; // 如果redirect_osd不是-1表示本次需要重定向到pg内的指定OSD上
+  shard_id_t redirect_shard;
 
   friend std::ostream& operator<<(std::ostream& out, const request_redirect_t& redir);
 public:
@@ -331,12 +333,18 @@ public:
       redirect_locator(orig) { redirect_locator.pool = rpool; }
   explicit request_redirect_t(const object_locator_t& rloc) :
       redirect_locator(rloc) {}
+  explicit request_redirect_t(const object_locator_t& orig, const std::string& robj, int osd, shard_id_t shard) :
+      redirect_locator(orig), redirect_object(robj), redirect_osd(osd), redirect_shard(shard) {}
   explicit request_redirect_t(const object_locator_t& orig,
                               const std::string& robj) :
       redirect_locator(orig), redirect_object(robj) {}
 
   bool empty() const { return redirect_locator.empty() &&
-			      redirect_object.empty(); }
+			      redirect_object.empty() && redirect_osd == -1; }
+
+  int get_redirect_osd() const { return redirect_osd; }
+
+  shard_id_t get_redirect_shard() const { return redirect_shard; }
 
   void combine_with_locator(object_locator_t& orig, std::string& obj) const {
     orig = redirect_locator;
@@ -352,7 +360,8 @@ public:
 WRITE_CLASS_ENCODER(request_redirect_t)
 
 inline std::ostream& operator<<(std::ostream& out, const request_redirect_t& redir) {
-  out << "object " << redir.redirect_object << ", locator{" << redir.redirect_locator << "}";
+  out << "object " << redir.redirect_object << ", locator{" << redir.redirect_locator << "}"
+    << " redirect_osd " << redir.redirect_osd << " redirect_shard " << redir.redirect_shard << std::endl;
   return out;
 }
 

@@ -155,7 +155,8 @@ public:
   void objects_read_and_reconstruct(
     std::map<hobject_t, std::list<boost::tuple<uint64_t, uint64_t, uint32_t> >> &reads,
     bool fast_read,
-    GenContextURef<std::map<hobject_t,std::pair<int, extent_map> > &&> &&func);
+    GenContextURef<std::map<hobject_t,std::pair<int, extent_map> > &&> &&func,
+    bool balance_read);
 
   friend struct CallClientContexts;
   struct ClientAsyncReadStatus {
@@ -198,6 +199,11 @@ public:
     Context *on_complete);
 */
 
+  // 对RGW对象的读请求转译为对volume对象的部分读之后
+  // 在ECBackend确定所需读取的volume数据块在哪个OSD，
+  // 直接将转译后的volume部分读请求转发到指定OSD上执行（减少读过程中的一次网络时延）
+   int object_locate(MOSDOp* m, pg_shard_t &target_shard) override;
+
   void object_call_async(
     const hobject_t &hoid,
     const std::pair<boost::tuple<uint64_t, uint64_t, uint32_t>,
@@ -220,7 +226,8 @@ public:
       false,
       make_gen_lambda_context<
       std::map<hobject_t,std::pair<int, extent_map> > &&, Func>(
-	  std::forward<Func>(on_complete)));
+	  std::forward<Func>(on_complete)),
+      false);
   }
   void kick_reads() {
     while (in_progress_client_reads.size() &&
@@ -745,6 +752,7 @@ public:
 				    const std::map<std::string, ceph::buffer::ptr, std::less<>> *attr = NULL);
   
   bool aggregate_enabled = false;
+  bool cephEC_balance_read = false;
 public:
   ECBackend(
     PGBackend::Listener *pg,
@@ -754,9 +762,12 @@ public:
     CephContext *cct,
     ceph::ErasureCodeInterfaceRef ec_impl,
     uint64_t stripe_width,
-    bool _aggregate_enabled = false);
+    bool _aggregate_enabled = false,
+    bool _cephEC_balance_read = false);
 
   bool is_aggregate_enabled() { return aggregate_enabled; }
+
+  bool cephEC_balance_read_enabled() { return cephEC_balance_read; }
   
   /// Returns to_read replicas sufficient to reconstruct want
   int get_min_avail_to_read_shards(

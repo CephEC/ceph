@@ -94,6 +94,7 @@ public:
   const request_redirect_t& get_redirect() const { return redirect; }
   bool is_redirect_reply() const { return do_redirect; }
 
+  const std::vector<OSDOp>& get_ops() { return ops; }
   void add_flags(int f) { flags |= f; }
 
   void claim_op_out_data(std::vector<OSDOp>& o) {
