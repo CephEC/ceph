@@ -279,6 +279,19 @@ struct object_locator_t {
   explicit object_locator_t(const hobject_t& soid)
     : pool(soid.pool), key(soid.get_key()), nspace(soid.nspace), hash(-1) {}
 
+  void swap(object_locator_t& r) {
+    auto tmp_pool = pool;
+    pool = r.pool;
+    r.pool = tmp_pool;
+
+    auto tmp_hash = hash;
+    hash = r.hash;
+    r.hash = tmp_hash;
+
+    key.swap(r.key);
+    nspace.swap(r.nspace);
+  }
+
   int64_t get_pool() const {
     return pool;
   }
@@ -557,6 +570,11 @@ struct spg_t {
   explicit spg_t(pg_t pgid) : pgid(pgid), shard(shard_id_t::NO_SHARD) {}
   unsigned get_split_bits(unsigned pg_num) const {
     return pgid.get_split_bits(pg_num);
+  }
+  void swap(spg_t &to) {
+    spg_t tmp = to;
+    to = *this;
+    *this = tmp;
   }
   spg_t get_parent() const {
     return spg_t(pgid.get_parent(), shard);

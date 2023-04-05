@@ -6304,7 +6304,7 @@ options:
   default: 0
   services:
   - mgr
-- name: enable_cephEC_balance_read
+- name: enable_cephEC_redirect_read
   type: bool
   level: advanced
   desc: redirect translated cephEC read request to replicate OSD
