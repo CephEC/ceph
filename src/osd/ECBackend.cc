@@ -263,14 +263,14 @@ ECBackend::ECBackend(
   ErasureCodeInterfaceRef ec_impl,
   uint64_t stripe_width,
   bool _aggregate_enabled,
-  bool _cephEC_balance_read)
+  bool _cephEC_redirect_read)
   : PGBackend(cct, pg, store, coll, ch),
     ec_impl(ec_impl),
     sinfo(ec_impl->get_data_chunk_count(), stripe_width) {
   ceph_assert((ec_impl->get_data_chunk_count() *
 	  ec_impl->get_chunk_size(stripe_width)) == stripe_width);
     aggregate_enabled = _aggregate_enabled;
-    cephEC_balance_read = _cephEC_balance_read;
+    cephEC_redirect_read = _cephEC_redirect_read;
 }
 
 PGBackend::RecoveryHandle *ECBackend::open_recovery_op()
@@ -3019,7 +3019,7 @@ void ECBackend::objects_read_and_reconstruct(
       get_want_to_read_shards(&want_to_read);
     }
     if (is_aggregate_enabled() &&
-        cephEC_balance_read_enabled() &&
+        cephEC_redirect_read_enabled() &&
         balance_read) {
       // cephEC balance read过程中，replicate OSD执行get_shard_missing获取不同OSD的对象缺失列表时，会触发assert
       // 可能只有primary OSD才会记录PG内其他OSD的对象缺失信息

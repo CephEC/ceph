@@ -752,7 +752,7 @@ public:
 				    const std::map<std::string, ceph::buffer::ptr, std::less<>> *attr = NULL);
   
   bool aggregate_enabled = false;
-  bool cephEC_balance_read = false;
+  bool cephEC_redirect_read = false;
 public:
   ECBackend(
     PGBackend::Listener *pg,
@@ -763,11 +763,11 @@ public:
     ceph::ErasureCodeInterfaceRef ec_impl,
     uint64_t stripe_width,
     bool _aggregate_enabled = false,
-    bool _cephEC_balance_read = false);
+    bool _cephEC_redirect_read = false);
 
   bool is_aggregate_enabled() { return aggregate_enabled; }
 
-  bool cephEC_balance_read_enabled() { return cephEC_balance_read; }
+  bool cephEC_redirect_read_enabled() { return cephEC_redirect_read; }
   
   /// Returns to_read replicas sufficient to reconstruct want
   int get_min_avail_to_read_shards(

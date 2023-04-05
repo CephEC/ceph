@@ -1769,6 +1769,8 @@ public:
     object_locator_t base_oloc;
     object_t target_oid;
     object_locator_t target_oloc;
+    object_t redirect_oid;
+    object_locator_t redirect_oloc;
 
     ///< true if we are directed at base_pgid, not base_oid
     bool precalc_pgid = false;
@@ -1897,6 +1899,7 @@ public:
 
   struct Op : public RefCountedObject {
     OSDSession *session = nullptr;
+    OSDSession *redirect_session = nullptr;
     int incarnation = 0;
 
     op_target_t target;
@@ -1905,6 +1908,7 @@ public:
     uint64_t features = CEPH_FEATURES_SUPPORTED_DEFAULT; // explicitly specified op features
 
     osdc_opvec ops;
+    osdc_opvec translated_ops; // cephEC读优化中被使用
 
     snapid_t snapid = CEPH_NOSNAP;
     SnapContext snapc;
@@ -1937,6 +1941,7 @@ public:
     uint64_t ontimeout = 0;
 
     ceph_tid_t tid = 0;
+
     int attempts = 0;
 
     version_t *objver;
