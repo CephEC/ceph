@@ -1058,6 +1058,11 @@ bool ECBackend::_handle_message(
     reply->pgid = get_parent()->primary_spg_t();
     reply->map_epoch = get_osdmap_epoch();
     reply->min_epoch = get_parent()->get_interval_start_epoch();
+    if (op->is_localize_call()) {
+      reply->pgid = get_parent()->whoami_spg_t();
+    } else {
+      reply->pgid = get_parent()->primary_spg_t();
+    }
     handle_sub_call(op->op.from, op->op, &(reply->op), _op->pg_trace);
     reply->trace = _op->pg_trace;
     get_parent()->send_message_osd_cluster(
@@ -2671,8 +2676,7 @@ void ECBackend::objects_read_async(
 	cb(this,
 	   hoid,
 	   to_read,
-	   on_complete)),
-    !is_primary());
+	   on_complete)));
 }
 /*
 void ECBackend::object_degrade_call_async(
@@ -2701,7 +2705,8 @@ int ECBackend::object_locate(MOSDOp* m, pg_shard_t &target_shard) {
   for (auto iter = m->ops.begin(); iter != m->ops.end(); ++iter) {
     if (iter->op.op == CEPH_OSD_OP_READ        ||  
         iter->op.op == CEPH_OSD_OP_SPARSE_READ ||
-        iter->op.op == CEPH_OSD_OP_SYNC_READ) {
+        iter->op.op == CEPH_OSD_OP_SYNC_READ   ||
+        iter->op.op == CEPH_OSD_OP_CALL) {
       set<int> want_to_read;
       set<int> logical_data_chunk_set;
       map<pg_shard_t, vector<pair<int, int>>> shards;
@@ -2715,6 +2720,8 @@ int ECBackend::object_locate(MOSDOp* m, pg_shard_t &target_shard) {
         false,
         false,
         &shards);
+      dout(10) << __func__ << ": object " << m->get_hobj() << " offset " << iter->op.extent.offset
+        << " logical_data_chunk_id " << logical_data_chunk_id << " shards " << shards << dendl;
       ceph_assert(r == 0);
       // 如果需要访问的数据块（或者叫分片）暂时无法访问
       // 那么就需要走常规流程，在primary OSD恢复出整个条带
@@ -2753,15 +2760,28 @@ void ECBackend::object_call_async(
     }
   }
   get_want_to_read_shards_cephEC(logical_data_chunk_set, &want_to_read);
-  int r = get_min_avail_to_read_shards(
-    hoid,
-    want_to_read,
-    false,
-    false,
-    &shards);
-  ceph_assert(r == 0);
-  ceph_assert(shards.size() == 1);
-
+  if (is_aggregate_enabled() &&
+      cephEC_redirect_read_enabled() &&
+      !is_primary()) {
+    // cephEC balance read过程中，replicate OSD执行get_shard_missing获取不同OSD的对象缺失列表时，会触发assert
+    // 可能只有primary OSD才会记录PG内其他OSD的对象缺失信息
+    // 由于cephEC balance read实际上只会读当前replicate OSD的本地数据，所以只需要检查自身的missing_loc就能判断数据是否丢失
+    // 这一部分的检查工作在do_op中的is_unreadable_object已经完成了
+    vector<pair<int, int>> default_subchunks;
+    default_subchunks.push_back(make_pair(0, ec_impl->get_sub_chunk_count()));
+    ceph_assert(want_to_read.size() == 1);
+    shards.insert(make_pair(get_parent()->whoami_shard(), default_subchunks));
+  } else {
+    int r = get_min_avail_to_read_shards(
+      hoid,
+      want_to_read,
+      false,
+      false,
+      &shards);
+    // 判断all_data_shard中的数据分片是否都能正常读取
+    // 如果存在数据分片无法正常读取，则需要额外读取编码分片来恢复数据
+    ceph_assert(r == 0);
+  }
   /*
   if (shards.size() == get_ec_data_chunk_count()) {
     // 数据块丢失，需要恢复整个条带
@@ -2883,6 +2903,9 @@ void ECBackend::do_async_call(AsyncCallOp &op) {
     msg->pgid = spg_t(
       get_parent()->whoami_spg_t().pgid,
       i->first.shard);
+    if (msg->pgid == get_parent()->whoami_spg_t()) {
+      msg->localize_call = true;
+    }
     msg->map_epoch = get_osdmap_epoch();
     msg->min_epoch = get_parent()->get_interval_start_epoch();
     // 把刚才构建的ECSubCall塞进去
@@ -2978,8 +3001,7 @@ void ECBackend::objects_read_and_reconstruct(
   map<hobject_t,
     std::list<boost::tuple<uint64_t, uint64_t, uint32_t> >> &reads,
   bool fast_read,
-  GenContextURef<map<hobject_t,pair<int, extent_map> > &&> &&func,
-  bool balance_read)
+  GenContextURef<map<hobject_t,pair<int, extent_map> > &&> &&func)
 {
   in_progress_client_reads.emplace_back(
     reads.size(), std::move(func));
@@ -3020,7 +3042,7 @@ void ECBackend::objects_read_and_reconstruct(
     }
     if (is_aggregate_enabled() &&
         cephEC_redirect_read_enabled() &&
-        balance_read) {
+        !is_primary()) {
       // cephEC balance read过程中，replicate OSD执行get_shard_missing获取不同OSD的对象缺失列表时，会触发assert
       // 可能只有primary OSD才会记录PG内其他OSD的对象缺失信息
       // 由于cephEC balance read实际上只会读当前replicate OSD的本地数据，所以只需要检查自身的missing_loc就能判断数据是否丢失

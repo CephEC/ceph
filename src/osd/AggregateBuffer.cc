@@ -292,7 +292,6 @@ void AggregateBuffer::insert_to_meta_cache(std::shared_ptr<volume_t> meta_ptr) {
 }
 
 
-
 int AggregateBuffer::op_translate(MOSDOp* m) {
   auto rgw_oid = m->get_hobj();
   auto it = volume_meta_cache.find(m->get_hobj());
@@ -316,6 +315,7 @@ int AggregateBuffer::op_translate(MOSDOp* m) {
         dout(4) << __func__ << " want delete object(oid = "
           << rgw_oid << "), but just update volume_meta." << dendl;
       } else {
+        // volume中全部都是无效数据，直接删除整个volume对象
         dout(4) << __func__ << " want delete object(oid = " << rgw_oid 
           << "), but delete volume(oid = " << volume_meta.get_oid() << ")" << dendl;
       }
@@ -339,6 +339,10 @@ int AggregateBuffer::op_translate(MOSDOp* m) {
                             osd_op.indata);
         cls_ctx_map[volume_meta.get_oid()] = cls_parm_ctx;
       }
+      // 如果是read请求，那就只需要执行下面这段公用的off,len转译代码就行
+      // if (osd_op.op.op == CEPH_OSD_OP_READ) {}
+
+      // READ, CALL, WRITEFULL公用的转译逻辑
       uint64_t vol_offset = uint8_t(chunk_meta.get_chunk_id()) * chunk_meta.get_chunk_size();
       uint64_t vol_length = chunk_meta.get_offset();
       // 将待访问RGW对象的oid,off,len替换为volume对象的oid,off,len
@@ -350,8 +354,8 @@ int AggregateBuffer::op_translate(MOSDOp* m) {
         osd_op.op.extent.length = vol_length;
       }
       dout(4) << __func__ << " translate access object(oid = " << rgw_oid << ") to access_volume(oid = "
-        << volume_meta.get_oid() << " off =  " << uint8_t(chunk_meta.get_chunk_id()) * chunk_meta.get_chunk_size()
-        << " len = " << chunk_meta.get_chunk_size() << ")" << dendl;
+        << volume_meta.get_oid() << " off =  " << osd_op.op.extent.offset
+        << " len = " << osd_op.op.extent.length << ")" << dendl;
     }
   }
   return 0;

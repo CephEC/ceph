@@ -27,6 +27,7 @@ public:
   spg_t pgid;
   epoch_t map_epoch = 0, min_epoch = 0;
   ECSubCall op;
+  bool localize_call = false;
 
   int get_cost() const override {
     return 0;
@@ -40,6 +41,8 @@ public:
   spg_t get_spg() const override {
     return pgid;
   }
+
+  bool is_localize_call() const { return localize_call; }
 
   MOSDECSubOpCall()
     : MOSDFastDispatchOp{MSG_OSD_EC_CALL, HEAD_VERSION, COMPAT_VERSION}

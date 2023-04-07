@@ -2591,7 +2591,8 @@ void PrimaryLogPG::do_op(OpRequestRef &op)
         // 转译后的请求重定向到对应OSD
         pg_shard_t shard;
         int r = pgbackend->object_locate(m, shard);
-        if (!r) {
+        // 如果确定数据在当前OSD上，那就不需要重定向
+        if (!r && shard != whoami_shard()) {
           // m->set_flag(CEPH_OSD_FLAG_BALANCE_READS);
           int flags = m->get_flags() & (CEPH_OSD_FLAG_ACK | CEPH_OSD_FLAG_ONDISK);
           // m->set_spg(spg_t(whoami_spg_t().pgid, shard.shard));
