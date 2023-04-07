@@ -3256,6 +3256,7 @@ void Objecter::_send_op(Op *op)
     op->redirect_session = tmp_session;
     op->ops.swap(op->translated_ops);
     op->session->ops[op->tid] = op;
+    // std::cout << "_send op " << op->target.target_oid << " to osd " << op->session->osd << std::endl;
   }
   // rwlock is locked
   // op->session->lock is locked
@@ -3496,7 +3497,6 @@ void Objecter::handle_osd_op_reply(MOSDOpReply *m)
       }
       // 建立到replicate OSD的连接；
       int r = _get_session(redirect_osd, &(op->redirect_session), sul);
-      std::cout << "make session between client and replicate OSD, r = " << r << std::endl;
       if (r == -EAGAIN ||
           sul.owns_lock_shared() ||
           cct->_conf->objecter_debug_inject_relock_delay) {

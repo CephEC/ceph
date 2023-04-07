@@ -155,8 +155,7 @@ public:
   void objects_read_and_reconstruct(
     std::map<hobject_t, std::list<boost::tuple<uint64_t, uint64_t, uint32_t> >> &reads,
     bool fast_read,
-    GenContextURef<std::map<hobject_t,std::pair<int, extent_map> > &&> &&func,
-    bool balance_read);
+    GenContextURef<std::map<hobject_t,std::pair<int, extent_map> > &&> &&func);
 
   friend struct CallClientContexts;
   struct ClientAsyncReadStatus {
@@ -226,8 +225,7 @@ public:
       false,
       make_gen_lambda_context<
       std::map<hobject_t,std::pair<int, extent_map> > &&, Func>(
-	  std::forward<Func>(on_complete)),
-      false);
+	  std::forward<Func>(on_complete)));
   }
   void kick_reads() {
     while (in_progress_client_reads.size() &&
