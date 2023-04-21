@@ -2308,7 +2308,7 @@ options:
   type: size
   level: advanced
   desc: Max in-flight data in bytes (both directions)
-  default: 100_M
+  default: 1000_M
   with_legacy: true
 - name: objecter_inflight_ops
   type: uint
