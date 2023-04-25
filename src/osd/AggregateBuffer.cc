@@ -5,7 +5,6 @@
 #undef dout_prefix
 #define dout_prefix _prefix(_dout, this)
 
-using std::cout;
 using std::ostream;
 using std::ostringstream;
 

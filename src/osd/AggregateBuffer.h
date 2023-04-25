@@ -75,6 +75,8 @@ public:
     return cls_ctx_map[soid];
   }
 
+  Volume& get_active_volume() { return volume_buffer; }
+
   /**
    * volume对象写盘完成后，将waiting_for_aggregate_op中的RGW写请求重新投入OSD队列再次执行
   */
