@@ -6920,6 +6920,14 @@ public:
     return out;
   }
 
+  std::vector<const chunk_t*> get_all_chunks() {
+    std::vector<const chunk_t*> out;
+    for(auto& kv: chunks) {
+      out.push_back(&(kv.second));
+    }
+    return out;
+  }
+
   uint32_t find_free_chunk() {
     for (uint32_t i = 0; i < cap; i++) {
       if (!chunk_is_full[i]) {
