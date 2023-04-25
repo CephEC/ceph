@@ -12,12 +12,15 @@
  *
  */
 
+#include <boost/format/format_fwd.hpp>
 #include <iostream>
+#include <optional>
 #include <vector>
 #include <sstream>
 
 #include "ECTransaction.h"
 #include "ECUtil.h"
+#include "common/dout.h"
 #include "os/ObjectStore.h"
 #include "common/inline_variant.h"
 
@@ -28,6 +31,7 @@ using std::pair;
 using std::set;
 using std::string;
 using std::vector;
+using std::optional;
 
 using ceph::bufferlist;
 using ceph::decode;
@@ -46,7 +50,8 @@ void encode_and_write(
   ECUtil::HashInfoRef hinfo,
   extent_map &written,
   map<shard_id_t, ObjectStore::Transaction> *transactions,
-  DoutPrefixProvider *dpp) {
+  DoutPrefixProvider *dpp,
+  std::optional<map<int, size_t>> compress_off = std::nullopt) {
   const uint64_t before_size = hinfo->get_total_logical_size(sinfo);
   ceph_assert(sinfo.logical_offset_is_stripe_aligned(offset));
   ceph_assert(sinfo.logical_offset_is_stripe_aligned(bl.length()));
@@ -90,6 +95,21 @@ void encode_and_write(
       enc_bl.length(),
       enc_bl,
       flags);
+
+    // compress to tail if padding specified
+    if(compress_off && compress_off->find(i.first) != compress_off->end()) {
+      auto offset = compress_off.value()[i.first];
+      auto length = enc_bl.length() - offset;  // assume enc_bl is already aligned here, thus zeroing to the end
+      
+      ldpp_dout(dpp, 20) << __func__ << ": aggregate obj " << oid << ", chunk #" << i.first
+	<< ", zeroing extent (" << offset << ',' << offset + length  << ')' << dendl;
+
+      i.second.zero(
+	coll_t(spg_t(pgid, i.first)),
+	ghobject_t(oid, ghobject_t::NO_GEN, i.first),
+	offset,
+	length);
+    }
   }
 }
 
@@ -118,7 +138,8 @@ void ECTransaction::generate_transactions(
   set<hobject_t> *temp_added,
   set<hobject_t> *temp_removed,
   DoutPrefixProvider *dpp,
-  const ceph_release_t require_osd_release)
+  const ceph_release_t require_osd_release,
+  optional<map<int, size_t>> compress_off)
 {
   ceph_assert(written_map);
   ceph_assert(transactions);
@@ -135,6 +156,7 @@ void ECTransaction::generate_transactions(
   }
 
   t.safe_create_traverse(
+    // 遍历Transaction中，以object-ObjectOperation为kv对
     [&](pair<const hobject_t, PGTransaction::ObjectOperation> &opair) {
       const hobject_t &oid = opair.first;
       auto &op = opair.second;
@@ -403,6 +425,7 @@ void ECTransaction::generate_transactions(
 	}
       }
 
+      // 把remote_read的结果中，取出当前object这部分，放到to_write中
       extent_map to_write;
       auto pextiter = partial_extents.find(oid);
       if (pextiter != partial_extents.end()) {
@@ -412,15 +435,19 @@ void ECTransaction::generate_transactions(
       vector<pair<uint64_t, uint64_t> > rollback_extents;
       const uint64_t orig_size = hinfo->get_total_logical_size(sinfo);
 
+      // 记录对象的最终大小（从最低的truncate偏移开始增长）
       uint64_t new_size = orig_size;
+      // 超过这个偏移量的算作append操作（似乎只在truncate最小值对齐的时候修改过一次？）
       uint64_t append_after = new_size;
       ldpp_dout(dpp, 20) << __func__ << ": new_size start " << new_size << dendl;
+      // 这里的truncate记录形式是std::pair，first和second分别表示truncate值最小和最后一次的文件大小数值
       if (op.truncate && op.truncate->first < new_size) {
 	ceph_assert(!op.is_fresh_object());
 	new_size = sinfo.logical_to_next_stripe_offset(
 	  op.truncate->first);
 	ldpp_dout(dpp, 20) << __func__ << ": new_size truncate down "
 			   << new_size << dendl;
+	// 对对齐部分额外添加的长度填充0
 	if (new_size != op.truncate->first) { // 0 the unaligned part
 	  bufferlist bl;
 	  bl.append_zero(new_size - op.truncate->first);
@@ -433,10 +460,12 @@ void ECTransaction::generate_transactions(
 	} else {
 	  append_after = new_size;
 	}
+	// 由于truncate之后，超过该范围的数据必然丢失，所以直接从to_write中删除所有位置大于最小长度truncate的原始数据
 	to_write.erase(
 	  new_size,
 	  std::numeric_limits<uint64_t>::max() - new_size);
 
+	// 在满足[某些情况？]下，使用clone_range将truncate掉的数据被分到带版本的object中（ghobject = generational, hashed object）
 	if (entry && !op.is_fresh_object()) {
 	  uint64_t restore_from = sinfo.logical_to_prev_chunk_offset(
 	    op.truncate->first);
@@ -478,6 +507,7 @@ void ECTransaction::generate_transactions(
 	}
       }
 
+      // 把buffer_updates里要新写入的数据整合进to_write，并记录最新的object大小
       uint32_t fadvise_flags = 0;
       for (auto &&extent: op.buffer_updates) {
 	using BufferUpdate = PGTransaction::ObjectOperation::BufferUpdate;
@@ -497,6 +527,8 @@ void ECTransaction::generate_transactions(
 	      "CloneRange is not allowed, do_op should have returned ENOTSUPP");
 	  });
 
+	// 对于超出object现有大小的写操作，ECTransaction给出的条件竟然是...
+	// 从当前对象大小开始，填充0，直到写入的起始位置为止
 	uint64_t off = extent.get_off();
 	uint64_t len = extent.get_len();
 	uint64_t end = off + len;
@@ -531,6 +563,7 @@ void ECTransaction::generate_transactions(
 	  new_size = end;
       }
 
+      // truncate之后仍然要对object做粒度对齐（也可能会修改new_size）
       if (op.truncate &&
 	  op.truncate->second > new_size) {
 	ceph_assert(op.truncate->second > append_after);
@@ -550,10 +583,12 @@ void ECTransaction::generate_transactions(
 			   << dendl;
       }
 
+      // want所有的chunk_id（相当于打算写入所有分片？）
       set<int> want;
       for (unsigned i = 0; i < ecimpl->get_chunk_count(); ++i) {
 	want.insert(i);
       }
+      // 从to_write中取出不超过append_after的部分作为overwrite处理
       auto to_overwrite = to_write.intersect(0, append_after);
       ldpp_dout(dpp, 20) << __func__ << ": to_overwrite: "
 			 << to_overwrite
@@ -570,6 +605,7 @@ void ECTransaction::generate_transactions(
 	  ldpp_dout(dpp, 20) << __func__ << ": overwriting "
 			     << restore_from << "~" << restore_len
 			     << dendl;
+	  // 类似于版本备份的操作，通过clone_range把这里overwrite部分写之前的内容记录到旧版本
 	  if (rollback_extents.empty()) {
 	    for (auto &&st : *transactions) {
 	      st.second.touch(
@@ -588,6 +624,8 @@ void ECTransaction::generate_transactions(
 	      restore_from);
 	  }
 	}
+	// 一次写一个extent
+	// get_val()获取bufferlist，长度怎么确定？
 	encode_and_write(
 	  pgid,
 	  oid,
@@ -603,12 +641,18 @@ void ECTransaction::generate_transactions(
 	  dpp);
       }
 
+      // 超过append_after的部分视作append操作
+      // 与overwrite的区别好像在于，不做clone_range？
       auto to_append = to_write.intersect(
 	append_after,
 	std::numeric_limits<uint64_t>::max() - append_after);
       ldpp_dout(dpp, 20) << __func__ << ": to_append: "
 			 << to_append
 			 << dendl;
+      // 目前只考虑单个stripe填充的情况
+      if(compress_off) {
+	ceph_assert(to_append.ext_count() <= 1);
+      }
       for (auto &&extent: to_append) {
 	ceph_assert(sinfo.logical_offset_is_stripe_aligned(extent.get_off()));
 	ceph_assert(sinfo.logical_offset_is_stripe_aligned(extent.get_len()));
@@ -627,7 +671,8 @@ void ECTransaction::generate_transactions(
 	  hinfo,
 	  written,
 	  transactions,
-	  dpp);
+	  dpp,
+	  move(compress_off));
       }
 
       ldpp_dout(dpp, 20) << __func__ << ": " << oid

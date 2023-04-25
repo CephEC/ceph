@@ -14,8 +14,10 @@
 
 #include <iostream>
 #include <sstream>
+#include <utility>
 
 #include "ECBackend.h"
+#include "include/ceph_assert.h"
 #include "messages/MOSDPGPush.h"
 #include "messages/MOSDPGPushReply.h"
 #include "messages/MOSDECSubOpWrite.h"
@@ -2377,6 +2379,43 @@ bool ECBackend::try_reads_to_commit()
 
   map<hobject_t,extent_map> written;
   if (op->plan.t) {
+    std::optional<map<int, size_t>> compress_off = std::nullopt;
+    if(auto client_op = dynamic_cast<OpRequest*>(op->client_op.get());
+      client_op != nullptr && client_op->is_write_volume_op()) {
+      
+      auto pg = dynamic_cast<PrimaryLogPG*>(get_parent());
+      ceph_assert(pg != nullptr && pg->is_aggregate_enabled());
+
+      compress_off = map<int, size_t>();
+      auto& volume = pg->get_aggregate_buffer()->get_active_volume();
+      const std::vector<int> &chunk_mapping = ec_impl->get_chunk_mapping();
+
+      [[maybe_unused]] bool oid_match = false;
+
+      dout(20) << __func__ << "aggregate object " << op->hoid << dendl;
+
+      auto chunks = volume.get_volume_info().get_all_chunks();
+      for(const auto& chunk: chunks) {
+        int chunk_id = chunk->get_chunk_id().id;
+        if(chunk_id < chunk_mapping.size()) chunk_id = chunk_mapping[chunk_id];
+
+	compress_off->insert(make_pair(chunk_id, chunk->get_offset()));
+
+	dout(20) << __func__ << "aggregate object #" << chunk_id << ", size=" << chunk->get_offset() << dendl;
+
+	if(chunk->get_oid() == op->hoid) oid_match = true;
+      }
+      
+      for(int i = 0; i < get_ec_data_chunk_count(); ++i) {
+        int chunk_id = i < chunk_mapping.size() ? chunk_mapping[i] : i;
+        if(compress_off->find(chunk_id) == compress_off->end()) {
+          compress_off->insert(make_pair(chunk_id, 0));
+        }
+      }
+
+      if(!oid_match)
+        dout(20) << __func__ << " warning: object " << op->hoid << " not found in volume " << volume.get_volume_info().get_oid() << dendl;
+    }
     ECTransaction::generate_transactions(
       op->plan,
       ec_impl,
@@ -2389,7 +2428,8 @@ bool ECBackend::try_reads_to_commit()
       &(op->temp_added),
       &(op->temp_cleared),
       get_parent()->get_dpp(),
-      get_osdmap()->require_osd_release);
+      get_osdmap()->require_osd_release,
+      move(compress_off));
   }
 
   dout(20) << __func__ << ": " << cache << dendl;
