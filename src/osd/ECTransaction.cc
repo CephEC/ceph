@@ -109,6 +109,9 @@ void encode_and_write(
 	ghobject_t(oid, ghobject_t::NO_GEN, i.first),
 	offset,
 	length);
+    } else {
+      ldpp_dout(dpp, 20) << __func__ << " object " << oid << ", not zeroing chunk #" << i.first <<
+	    " because " << (compress_off ? "hint entry not found" : "hint is nullopt") << dendl;
     }
   }
 }
@@ -638,7 +641,8 @@ void ECTransaction::generate_transactions(
 	  hinfo,
 	  written,
 	  transactions,
-	  dpp);
+	  dpp,
+          compress_off);
       }
 
       // 超过append_after的部分视作append操作
@@ -672,7 +676,7 @@ void ECTransaction::generate_transactions(
 	  written,
 	  transactions,
 	  dpp,
-	  move(compress_off));
+	  compress_off);
       }
 
       ldpp_dout(dpp, 20) << __func__ << ": " << oid
