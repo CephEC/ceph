@@ -2392,16 +2392,14 @@ bool ECBackend::try_reads_to_commit()
 
       [[maybe_unused]] bool oid_match = false;
 
-      dout(20) << __func__ << "aggregate object " << op->hoid << dendl;
-
       auto chunks = volume.get_volume_info().get_all_chunks();
       for(const auto& chunk: chunks) {
         int chunk_id = chunk->get_chunk_id().id;
         if(chunk_id < chunk_mapping.size()) chunk_id = chunk_mapping[chunk_id];
-
+        
 	compress_off->insert(make_pair(chunk_id, chunk->get_offset()));
 
-	dout(20) << __func__ << "aggregate object #" << chunk_id << ", size=" << chunk->get_offset() << dendl;
+	dout(20) << __func__ << " aggregate void=" << op->hoid << ", object #" << chunk_id << ", size=" << chunk->get_offset() << dendl;
 
 	if(chunk->get_oid() == op->hoid) oid_match = true;
       }
