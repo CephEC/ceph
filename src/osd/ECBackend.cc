@@ -2392,23 +2392,42 @@ bool ECBackend::try_reads_to_commit()
 
       [[maybe_unused]] bool oid_match = false;
 
+      size_t max_data_length = 0;
       auto chunks = volume.get_volume_info().get_all_chunks();
       for(const auto& chunk: chunks) {
         int chunk_id = chunk->get_chunk_id().id;
         if(chunk_id < chunk_mapping.size()) chunk_id = chunk_mapping[chunk_id];
         
 	compress_off->insert(make_pair(chunk_id, chunk->get_offset()));
+        max_data_length = std::max(max_data_length, chunk->get_offset());
 
 	dout(20) << __func__ << " aggregate void=" << op->hoid << ", object #" << chunk_id << ", size=" << chunk->get_offset() << dendl;
 
 	if(chunk->get_oid() == op->hoid) oid_match = true;
       }
-      
+
+      // 根据Reed-Solomon编码规则，假定条带中前k个为顺序的原始数据块，后m个为纠删码块
       for(int i = 0; i < get_ec_data_chunk_count(); ++i) {
         int chunk_id = i < chunk_mapping.size() ? chunk_mapping[i] : i;
         if(compress_off->find(chunk_id) == compress_off->end()) {
           compress_off->insert(make_pair(chunk_id, 0));
         }
+      }
+
+      // 纠删码编码也有粒度，目前常见的有1/2/4字节，没找到获取配置的接口，这里直接按最大粒度对齐
+      int ec_encode_unit = 4;
+      if(max_data_length & (ec_encode_unit - 1)) {
+        max_data_length = (max_data_length & ~(ec_encode_unit - 1)) + ec_encode_unit;
+      }
+
+      // 根据纠删码编码规律，直接将纠删码裁剪到数据长度
+      for(int i = 0; i < ec_impl->get_coding_chunk_count(); ++i) {
+        int chunk_id = get_ec_data_chunk_count() + i;
+        if(chunk_id < chunk_mapping.size()) {
+          chunk_id = chunk_mapping[chunk_id];
+        }
+
+        compress_off->insert(make_pair(chunk_id, max_data_length));
       }
 
       if(!oid_match)
