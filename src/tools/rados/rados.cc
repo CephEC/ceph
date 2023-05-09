@@ -121,7 +121,7 @@ void usage(ostream& out)
 "   rollback <obj-name> <snap-name>  roll back object to snap <snap-name>\n"
 "\n"
 "   listsnaps <obj-name>             list the snapshots of this object\n"
-"   bench <seconds> write|seq|rand [-t concurrent_operations] [--no-cleanup] [--run-name run_name] [--no-hints] [--reuse-bench] [--ignore-bench-meta] [--bench_latency_file]\n"
+"   bench <seconds> write|seq|rand|half_read [-t concurrent_operations] [--no-cleanup] [--run-name run_name] [--no-hints] [--reuse-bench] [--ignore-bench-meta] [--bench_latency_file]\n"
 "                                    default is 16 concurrent IOs and 4 MB ops\n"
 "                                    default is to clean up after write benchmark\n"
 "                                    default run-name is 'benchmark_last_metadata'\n"
@@ -3359,6 +3359,8 @@ static int rados_tool_common(const std::map < std::string, std::string > &opts,
       operation = OP_SEQ_READ;
     else if (strcmp(nargs[2], "rand") == 0)
       operation = OP_RAND_READ;
+    else if (strcmp(nargs[2], "half_read") == 0)
+      operation = OP_HALF_READ;
     else {
       usage(cerr);
       return 1;
