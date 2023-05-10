@@ -581,7 +581,6 @@ int ObjBencher::write_bench(int secondsToRun,
     newContents = contents[slot].get();
     snprintf(newContents->c_str(), data.op_size, "I'm the %16dth op!", data.started);
     // we wrote to buffer, going around internal crc cache, so invalidate it now.
-    write_data_to_file(*newContents, newName);
     newContents->invalidate_crc();
 
     start_times[slot] = mono_clock::now();
@@ -1096,7 +1095,7 @@ int ObjBencher::half_read_bench(
   pthread_join(print_thread, NULL);
 
   double bandwidth;
-  bandwidth = ((double)data.finished)*((double)data.op_size)/timePassed.count();
+  bandwidth = ((double)data.finished)*((double)data.op_size / 2)/timePassed.count();
   bandwidth = bandwidth/(1024*1024); // we want it in MB/sec
 
   double iops_stddev;
