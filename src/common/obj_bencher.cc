@@ -272,7 +272,7 @@ int ObjBencher::aio_bench(
   bool cleanup, bool hints,
   const std::string& run_name, bool reuse_bench, 
   const char* bench_latency_file,
-  bool ignore_bench_meta, bool no_verify) {
+  int read_length, bool no_verify) {
 
   if (concurrentios <= 0)
     return -EINVAL;
@@ -287,7 +287,7 @@ int ObjBencher::aio_bench(
   const std::string run_name_meta = (run_name.empty() ? BENCH_LASTRUN_METADATA : run_name);
 
   //get data from previous write run, if available
-  if (!ignore_bench_meta && (operation != OP_WRITE || reuse_bench)) {
+  if (operation != OP_WRITE || reuse_bench) {
     uint64_t prev_op_size, prev_object_size;
     r = fetch_bench_metadata(run_name_meta, &prev_op_size, &prev_object_size,
 			     &num_ops, &num_objects, &prev_pid);
@@ -327,7 +327,7 @@ int ObjBencher::aio_bench(
     formatter->open_object_section("bench");
 
   if (OP_WRITE == operation) {
-    r = write_bench(secondsToRun, concurrentios, run_name_meta, max_objects, prev_pid, bench_latency_file, ignore_bench_meta);
+    r = write_bench(secondsToRun, concurrentios, run_name_meta, max_objects, prev_pid, bench_latency_file);
     if (r != 0) goto out;
   }
   else if (OP_SEQ_READ == operation) {
@@ -338,8 +338,8 @@ int ObjBencher::aio_bench(
     r = rand_read_bench(secondsToRun, num_ops, num_objects, concurrentios, prev_pid, bench_latency_file, no_verify);
     if (r != 0) goto out;
   }
-  else if (OP_HALF_READ == operation) {
-    r = half_read_bench(secondsToRun, num_ops, num_objects, concurrentios, prev_pid, bench_latency_file, no_verify);
+  else if (OP_PARTIAL_READ == operation) {
+    r = partial_read_bench(secondsToRun, num_ops, num_objects, concurrentios, prev_pid, read_length, bench_latency_file, no_verify);
     if (r != 0) goto out;  
   }
 
@@ -425,7 +425,7 @@ int ObjBencher::fetch_bench_metadata(const std::string& metadata_file,
 
 int ObjBencher::write_bench(int secondsToRun,
 			    int concurrentios, const string& run_name_meta,
-			    unsigned max_objects, int prev_pid, const char* bench_latency_file, bool ignore_bench_meta) {
+			    unsigned max_objects, int prev_pid, const char* bench_latency_file) {
   if (concurrentios <= 0)
     return -EINVAL;
 
@@ -672,9 +672,7 @@ int ObjBencher::write_bench(int secondsToRun,
   encode(data.op_size, b_write);
 
   // persist meta-data for further cleanup or read
-  if (!ignore_bench_meta) {
-    sync_write(run_name_meta, b_write, sizeof(int)*3);
-  }
+  sync_write(run_name_meta, b_write, sizeof(int)*3);
 
   completions_done();
   if (fout.is_open()) {
@@ -920,9 +918,9 @@ int ObjBencher::seq_read_bench(
   return r;
 }
 
-int ObjBencher::half_read_bench(
+int ObjBencher::partial_read_bench(
   int seconds_to_run, int num_ops, int num_objects,
-  int concurrentios, int pid, const char* bench_latency_file, bool no_verify) {
+  int concurrentios, int pid, int read_length, const char* bench_latency_file, bool no_verify) {
 
   lock_cond lc(&lock);
 
@@ -939,6 +937,7 @@ int ObjBencher::half_read_bench(
   std::vector<mono_time> start_times(concurrentios);
   mono_clock::duration time_to_run = std::chrono::seconds(seconds_to_run);
   std::chrono::duration<double> timePassed;
+  if (read_length) data.op_size = read_length;
   sanitize_object_contents(&data, data.op_size); //clean it up once; subsequent
   //changes will be safe because string length should remain the same
   
@@ -982,8 +981,7 @@ int ObjBencher::half_read_bench(
     index[i] = i;
     start_times[i] = mono_clock::now();
     create_completion(i, _aio_cb, (void *)&lc);
-    r = aio_read(name[i], i, contents[i].get(), data.op_size / 2,
-		 data.op_size * (i % reads_per_object));
+    r = aio_read(name[i], i, contents[i].get(), data.op_size, 0);
     if (r < 0) {
       cerr << "r = " << r << std::endl;
       goto ERR;
@@ -1050,10 +1048,9 @@ int ObjBencher::half_read_bench(
 
     if (!no_verify) {
       snprintf(data.object_contents, data.op_size, "I'm the %16dth op!", current_index);
-      if ((cur_contents->length() != data.op_size / 2) ||
-          (memcmp(data.object_contents, cur_contents->c_str(), data.op_size / 2) != 0)) {
-        // cerr << name[slot] << " is not correct!" << std::endl;
-        cerr << name[slot] << " length = " << cur_contents->length() << " is not correct!" << std::endl;
+      if ((cur_contents->length() != data.op_size) ||
+          (memcmp(data.object_contents, cur_contents->c_str(), data.op_size) != 0)) {
+        cerr << name[slot] << " is not correct!" << std::endl;
         ++errors;
       }
     }
@@ -1075,8 +1072,7 @@ int ObjBencher::half_read_bench(
 
     start_times[slot] = mono_clock::now();
     create_completion(slot, _aio_cb, (void *)&lc);
-    r = aio_read(newName, slot, contents[slot].get(), data.op_size / 2,
-		 data.op_size * (rand_id % reads_per_object));
+    r = aio_read(newName, slot, contents[slot].get(), data.op_size, 0);
     if (r < 0) {
       goto ERR;
     }
@@ -1095,7 +1091,7 @@ int ObjBencher::half_read_bench(
   pthread_join(print_thread, NULL);
 
   double bandwidth;
-  bandwidth = ((double)data.finished)*((double)data.op_size / 2)/timePassed.count();
+  bandwidth = ((double)data.finished)*((double)data.op_size)/timePassed.count();
   bandwidth = bandwidth/(1024*1024); // we want it in MB/sec
 
   double iops_stddev;
