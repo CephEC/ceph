@@ -208,7 +208,7 @@ private:
 
   std::map<hobject_t, ClsParmContext*> cls_ctx_map;
   // TODO: 缓存EC块
-  // std::map<volume_t, bufferlist> ec_buffer;
+  std::pair<volume_t, std::vector< bufferlist >> ec_buffer;
 };
 
 

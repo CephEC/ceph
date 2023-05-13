@@ -121,7 +121,7 @@ void usage(ostream& out)
 "   rollback <obj-name> <snap-name>  roll back object to snap <snap-name>\n"
 "\n"
 "   listsnaps <obj-name>             list the snapshots of this object\n"
-"   bench <seconds> write|seq|rand|half_read [-t concurrent_operations] [--no-cleanup] [--run-name run_name] [--no-hints] [--reuse-bench] [--ignore-bench-meta] [--bench_latency_file]\n"
+"   bench <seconds> write|seq|rand|partial_read [-t concurrent_operations] [--no-cleanup] [--run-name run_name] [--no-hints] [--reuse-bench] [--bench-latency-file] [--read-length]\n"
 "                                    default is 16 concurrent IOs and 4 MB ops\n"
 "                                    default is to clean up after write benchmark\n"
 "                                    default run-name is 'benchmark_last_metadata'\n"
@@ -1888,6 +1888,7 @@ static int rados_tool_common(const std::map < std::string, std::string > &opts,
   int call_arg2 = 0;
   const char *out_file = NULL;
   const char *bench_latency_file = NULL;
+  int read_length = 0;
   const char *pool_name = NULL;
   const char *target_pool_name = NULL;
   string oloc, target_oloc, nspace, target_nspace;
@@ -1905,7 +1906,6 @@ static int rados_tool_common(const std::map < std::string, std::string > &opts,
   bool no_verify = false;
   bool use_striper = false;
   bool with_clones = false;
-  bool ignore_bench_meta = false;
   const char *snapname = NULL;
   snap_t snapid = CEPH_NOSNAP;
   std::map<std::string, std::string>::const_iterator i;
@@ -1954,6 +1954,12 @@ static int rados_tool_common(const std::map < std::string, std::string > &opts,
   i = opts.find("bench_latency_file");
   if (i != opts.end()) {
     bench_latency_file = i->second.c_str();
+  }
+  i = opts.find("read_length");
+  if (i != opts.end()) {
+    if (rados_sistrtoll(i, &read_length)) {
+      return -EINVAL;
+    }
   }
   i = opts.find("method_name");
   if (i != opts.end()) {
@@ -2120,10 +2126,6 @@ static int rados_tool_common(const std::map < std::string, std::string > &opts,
   i = opts.find("reuse-bench");
   if (i != opts.end()) {
     reuse_bench = true;
-  }
-  i = opts.find("ignore-bench-meta");
-  if (i != opts.end()) {
-    ignore_bench_meta = true;
   }
   i = opts.find("pretty-format");
   if (i != opts.end()) {
@@ -3359,8 +3361,8 @@ static int rados_tool_common(const std::map < std::string, std::string > &opts,
       operation = OP_SEQ_READ;
     else if (strcmp(nargs[2], "rand") == 0)
       operation = OP_RAND_READ;
-    else if (strcmp(nargs[2], "half_read") == 0)
-      operation = OP_HALF_READ;
+    else if (strcmp(nargs[2], "partial_read") == 0)
+      operation = OP_PARTIAL_READ;
     else {
       usage(cerr);
       return 1;
@@ -3407,7 +3409,7 @@ static int rados_tool_common(const std::map < std::string, std::string > &opts,
     cout << "hints = " << (int)hints << std::endl;
     ret = bencher.aio_bench(operation, seconds,
 			    concurrent_ios, op_size, object_size,
-			    max_objects, cleanup, hints, run_name, reuse_bench, bench_latency_file, ignore_bench_meta, no_verify);
+			    max_objects, cleanup, hints, run_name, reuse_bench, bench_latency_file, read_length, no_verify);
     if (ret != 0)
       cerr << "error during benchmark: " << cpp_strerror(ret) << std::endl;
     if (formatter && output)
@@ -4193,8 +4195,6 @@ int main(int argc, const char **argv)
       opts["no-hints"] = "true";
     } else if (ceph_argparse_flag(args, i, "--reuse-bench", (char*)NULL)) {
       opts["reuse-bench"] = "true";
-    } else if (ceph_argparse_flag(args, i, "--ignore-bench-meta", (char*)NULL)) {
-      opts["ignore-bench-meta"] = "true";
     } else if (ceph_argparse_flag(args, i, "--no-verify", (char*)NULL)) {
       opts["no-verify"] = "true";
     } else if (ceph_argparse_witharg(args, i, &val, "--run-name", (char*)NULL)) {
@@ -4305,8 +4305,10 @@ int main(int argc, const char **argv)
       opts["call_arg2"] = val;
     }else if (ceph_argparse_witharg(args, i, &val, "--out_file", (char*)NULL)) {
       opts["out_file"] = val;
-    } else if (ceph_argparse_witharg(args, i, &val, "--bench_latency_file", (char*)NULL)){
+    } else if (ceph_argparse_witharg(args, i, &val, "--bench-latency-file", (char*)NULL)){
       opts["bench_latency_file"] = val;
+    } else if (ceph_argparse_witharg(args, i, &val, "--read-length", (char*)NULL)) {
+      opts["read_length"] = val;
     } else {
       if (val[0] == '-')
         usage_exit();

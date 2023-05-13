@@ -1514,6 +1514,14 @@ void ECBackend::handle_sub_read_reply(
       pair<uint64_t, uint64_t> adjusted;
       if (is_aggregate_enabled()) {
         adjusted = make_pair(0, sinfo.get_chunk_size());
+        if (req_iter->get<1>() > sinfo.get_chunk_size()) {
+        // 如果是Volume对象修复  或是  RMW覆盖写，那么需要对"所有chunk"，读取整个chunk的数据
+          adjusted = make_pair(0, sinfo.get_chunk_size());
+        } else {
+        // 如果是上层下发的RGW对象的部分读，那么只读取"某个chunk"的一部分数据
+          adjusted = make_pair(req_iter->get<0>() % sinfo.get_chunk_size(),
+                               req_iter->get<1>());
+        }
       } else {
         adjusted = sinfo.aligned_offset_len_to_chunk(
           make_pair(req_iter->get<0>(), req_iter->get<1>()));
@@ -2087,8 +2095,15 @@ void ECBackend::do_read_op(ReadOp &op)
       if (is_aggregate_enabled()) {
         // cephEC中，Volume对象只对应一条EC条带，所以每个OSD上也只会保存该对象的单个数据块（或者编码块）
         // 不需要调用aligned_offset_len_to_chunk计算具体需要读取OSD上的哪些chunk（毕竟只有1个chunk）
-        // 所以chunk_off_len = <0, chunk_size>
-        chunk_off_len = make_pair(0, sinfo.get_chunk_size());
+        // chunk_off_len的取值有2种情况：
+        if (j->get<1>() > sinfo.get_chunk_size()) {
+        // 如果是Volume对象修复  或是  RMW覆盖写，那么需要对"所有chunk"，读取整个chunk的数据
+          chunk_off_len = make_pair(0, sinfo.get_chunk_size());
+        } else {
+        // 如果是上层下发的RGW对象的部分读，那么只读取"某个chunk"的一部分数据
+          chunk_off_len = make_pair(j->get<0>() % sinfo.get_chunk_size(),
+                                    j->get<1>());
+        }
       } else {
         // 把stripe的id和length,转换为分片内的chunk offset和length
         chunk_off_len = sinfo.aligned_offset_len_to_chunk(make_pair(j->get<0>(), j->get<1>()));
@@ -2559,9 +2574,9 @@ void ECBackend::objects_read_async(
        ++i) {
     if (is_aggregate_enabled()) {
       // 这里的offset和length不需要对齐到stripe，因为cephEC中的读操作不以条带为单位
+      /*
       auto adjusted_off = i->first.get<0>();
       auto adjusted_len = i->first.get<1>();
-      auto chunk_size = sinfo.get_chunk_size();
       if(adjusted_off % chunk_size) {
         adjusted_off = adjusted_off - (adjusted_off % chunk_size);
       }
@@ -2569,6 +2584,8 @@ void ECBackend::objects_read_async(
         adjusted_len = adjusted_len - (adjusted_len % chunk_size) + chunk_size;
       }
       es.union_insert(adjusted_off, adjusted_len);
+      */
+      es.union_insert(i->first.get<0>(), i->first.get<1>());
     } else {
       pair<uint64_t, uint64_t> tmp =
         sinfo.offset_len_to_stripe_bounds(
@@ -3016,20 +3033,17 @@ void ECBackend::objects_read_and_reconstruct(
   map<hobject_t, read_request_t> for_read_op;
   for (auto &&to_read: reads) {
     map<pg_shard_t, vector<pair<int, int>>> shards;
-    // cephEC正常情况下，to_read中每个offset和length都是chunk对齐的
+    // cephEC正常情况下，to_read中每个offset都是chunk对齐的
     if (is_aggregate_enabled()) {
       set<int> logical_data_chunk_set;
       // 即使是在cephEC的配置下，volume覆盖写也会调用objects_read_and_reconstruct
       // 注意代码的兼容性
       for (auto &read_range : to_read.second) {
-        ceph_assert(read_range.get<0>() % sinfo.get_chunk_size() == 0);
-        ceph_assert(read_range.get<1>() % sinfo.get_chunk_size() == 0);
-        uint32_t read_chunks_num = read_range.get<1>() / sinfo.get_chunk_size();
         uint32_t first_chunk_id = read_range.get<0>() / sinfo.get_chunk_size();
-        for (uint32_t i = 0; i < read_chunks_num; i++) {
-          uint32_t logical_data_chunk_id = first_chunk_id + i;
-          if (logical_data_chunk_set.count(logical_data_chunk_id) == 0) {
-            logical_data_chunk_set.insert(logical_data_chunk_id);
+        uint32_t last_chunk_id = (read_range.get<0>() + read_range.get<1>() - 1) / sinfo.get_chunk_size();
+        for (uint32_t i = first_chunk_id; i <= last_chunk_id; i++) {
+          if (logical_data_chunk_set.count(i) == 0) {
+            logical_data_chunk_set.insert(i);
           }
         }
       }
