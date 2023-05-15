@@ -464,14 +464,14 @@ options:
   type: str
   level: advanced
   default: cephfs hello journal lock log numops otp rbd refcount rgw rgw_gc timeindex
-    user version cas cmpomap queue 2pc_queue fifo
+    user version cas cmpomap queue 2pc_queue fifo parquet_op
   with_legacy: true
 # list of object classes with default execute perm (allow all: *)
 - name: osd_class_default_list
   type: str
   level: advanced
   default: cephfs hello journal lock log numops otp rbd refcount rgw rgw_gc timeindex
-    user version cas cmpomap queue 2pc_queue fifo
+    user version cas cmpomap queue 2pc_queue fifo parquet_op
   with_legacy: true
 - name: osd_agent_max_ops
   type: int
@@ -605,7 +605,7 @@ options:
     you set this to a value below what clients expect, they will receive an error
     when attempting to write to the cluster.
   fmt_desc: The maximum size of a write in megabytes.
-  default: 90
+  default: 128
   min: 4
   with_legacy: true
 - name: osd_max_pgls

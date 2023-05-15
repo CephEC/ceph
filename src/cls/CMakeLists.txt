@@ -21,6 +21,8 @@ set_target_properties(cls_hello PROPERTIES
   CXX_VISIBILITY_PRESET hidden)
 install(TARGETS cls_hello DESTINATION ${cls_dir})
 
+
+
 # cls_numops
 set(cls_numops_srcs numops/cls_numops.cc)
 add_library(cls_numops SHARED ${cls_numops_srcs})
@@ -34,6 +36,24 @@ install(TARGETS cls_numops DESTINATION ${cls_dir})
 set(cls_numops_client_srcs numops/cls_numops_client.cc)
 add_library(cls_numops_client STATIC ${cls_numops_client_srcs})
 
+# cls_parquet_op
+set(cls_parquet_op_srcs parquet_op/cls_parquet_op.cc)
+set(ARROW_LIBRARIES Arrow::Arrow Arrow::Parquet)
+
+add_library(cls_parquet_op SHARED ${cls_parquet_op_srcs})
+target_include_directories(cls_parquet_op PUBLIC ${arrow_INCLUDE_DIR})
+target_link_libraries(cls_parquet_op
+	PRIVATE
+	/usr/lib64/libre2.so
+	/usr/lib64/libutf8proc.so.2
+	${ARROW_LIBRARIES}
+	)
+set_target_properties(cls_parquet_op PROPERTIES
+  VERSION "1.0.0"
+  SOVERSION "1"
+  INSTALL_RPATH ""
+  CXX_VISIBILITY_PRESET hidden)
+install(TARGETS cls_parquet_op DESTINATION ${cls_dir})
 
 # cls_rbd
 if (WITH_RBD)

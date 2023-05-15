@@ -6140,6 +6140,7 @@ int PrimaryLogPG::do_osd_ops(OpContext *ctx, vector<OSDOp>& ops)
 	string cname, mname;
 	bufferlist indata;
 	try {
+    //根据上面的定义auto bp = osd_op.indata.cbegin();
 	  bp.copy(op.cls.class_len, cname);
 	  bp.copy(op.cls.method_len, mname);
 	  bp.copy(op.cls.indata_len, indata);
@@ -6173,7 +6174,7 @@ int PrimaryLogPG::do_osd_ops(OpContext *ctx, vector<OSDOp>& ops)
 	dout(10) << "call method " << cname << "." << mname << dendl;
 	int prev_rd = ctx->num_read;
 	int prev_wr = ctx->num_write;
-	result = method->exec((cls_method_context_t)&ctx, indata, outdata);
+	result = method->exec((cls_method_context_t)&ctx, indata, outdata);//cls_method_context_t就是void*
 
 	if (ctx->num_read > prev_rd && !(flags & CLS_METHOD_RD)) {
 	  derr << "method " << cname << "." << mname << " tried to read object but is not marked RD" << dendl;
