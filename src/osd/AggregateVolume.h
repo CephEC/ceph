@@ -25,7 +25,7 @@ class Volume {
   volume_t volume_info;
 
 public:
-  Volume(CephContext* _cct, uint32_t _cap, uint32_t _chunk_size, const spg_t& _pg_id);
+  Volume(CephContext* _cct, uint32_t _cap, const spg_t& _pg_id);
 
   ~Volume();
   

@@ -29,8 +29,8 @@ class Volume;
 class Chunk {
 public:
 
-  Chunk(CephContext* _cct, uint8_t _seq, const spg_t& _pg_id, uint64_t _chunk_size, Volume* _vol): 
-                        chunk_info(_seq, _pg_id, _chunk_size), vol(_vol), cct(_cct) {  }
+  Chunk(CephContext* _cct, uint8_t _seq, const spg_t& _pg_id, Volume* _vol): 
+                        chunk_info(_seq, _pg_id), vol(_vol), cct(_cct) {  }
 
   /**
    * @brief 根据OpRequest初始化，计算填0部分的偏移
@@ -39,20 +39,14 @@ public:
    * @param seq chunk在volume内的索引
    * @return int
    */
-  chunk_t set_from_op(OpRequestRef _op, MOSDOp* _m, const uint8_t& seq); 
+  chunk_t set_from_op(OpRequestRef _op, MOSDOp* _m, const uint8_t& seq, uint64_t chunk_size); 
   chunk_t get_chunk_info() { return chunk_info; }
-  uint64_t get_chunk_size() { return chunk_info.get_chunk_size(); }
   OpRequestRef get_req() { return op; }
   std::vector<OSDOp>& get_ops() { return ops; }
 
   bool is_empty() { return chunk_info.is_empty(); }
   bool is_valid() { return chunk_info.is_valid(); }
   bool is_invalid() { return chunk_info.is_invalid(); }
-
-  void filled_with_zero(uint64_t _data_len, uint64_t _chunk_size) {
-    // TODO: chunk填充0
-    // ops里面每个op的indata填到128M
-  }
 
   void clear() {
     chunk_info.clear();

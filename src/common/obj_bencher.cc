@@ -1047,7 +1047,7 @@ int ObjBencher::partial_read_bench(
     --data.in_flight;
 
     if (!no_verify) {
-      snprintf(data.object_contents, data.op_size, "I'm the %16dth op!", current_index);
+      snprintf(data.object_contents, data.object_size, "I'm the %16dth op!", current_index);
       if ((cur_contents->length() != data.op_size) ||
           (memcmp(data.object_contents, cur_contents->c_str(), data.op_size) != 0)) {
         cerr << name[slot] << " is not correct!" << std::endl;

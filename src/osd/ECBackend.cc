@@ -2280,24 +2280,30 @@ bool ECBackend::try_state_to_reads()
     for (auto &&hpair: op->plan.will_write) {
       auto to_read_plan_iter = op->plan.to_read.find(hpair.first);
       const extent_set &to_read_plan =
-	to_read_plan_iter == op->plan.to_read.end() ?
-	empty :
-	to_read_plan_iter->second;
+        to_read_plan_iter == op->plan.to_read.end() ?
+        empty :
+        to_read_plan_iter->second;
 
       extent_set remote_read = cache.reserve_extents_for_rmw(
-	hpair.first,
-	op->pin,
-	hpair.second,
-	to_read_plan);
+        hpair.first,
+        op->pin,
+        hpair.second,
+        to_read_plan);
 
       extent_set pending_read = to_read_plan;
       pending_read.subtract(remote_read);
-
       if (!remote_read.empty()) {
-	op->remote_read[hpair.first] = std::move(remote_read);
+        op->remote_read[hpair.first] = std::move(remote_read);
       }
       if (!pending_read.empty()) {
-	op->pending_read[hpair.first] = std::move(pending_read);
+        op->pending_read[hpair.first] = std::move(pending_read);
+      }
+      // 直接获取已缓存的EC数据块，越过Read过程
+      auto aggregate_buffer = (dynamic_cast<PrimaryLogPG*>(get_parent()))->get_aggregate_buffer();
+      if (is_aggregate_enabled() && 
+          aggregate_buffer->is_object_cached(hpair.first)) {
+        op->remote_read.erase(hpair.first);
+        aggregate_buffer->ec_cache_read(op->remote_read_result[hpair.first]);
       }
     }
   } else {
@@ -2311,8 +2317,16 @@ bool ECBackend::try_state_to_reads()
     objects_read_async_no_cache(
       op->remote_read,
       [this, op](map<hobject_t,pair<int, extent_map> > &&results) {
-	for (auto &&i: results) {
-	  op->remote_read_result.emplace(i.first, i.second.second);
+  for (auto &&i: results) {
+    op->remote_read_result.emplace(i.first, i.second.second);
+
+    // 这部分逻辑主要针对 删除操作产生的非完全填充volume对象
+    // 后续第一次填充这些volume对象时，ec_cache中没有缓存volume对象中 已落盘的数据块数据
+    // 那么就需要执行一次完整的"R"MW, 把已落盘但未缓存的数据块 缓存到ec_cache中
+    if (is_aggregate_enabled()) {
+      (dynamic_cast<PrimaryLogPG*>(get_parent()))->
+        get_aggregate_buffer()->cache_data_chunk(i.second.second);
+    }
 	}
 	check_ops();
       });
