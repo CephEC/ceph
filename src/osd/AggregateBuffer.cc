@@ -18,7 +18,7 @@ AggregateBuffer::AggregateBuffer(CephContext* _cct, const spg_t& _pgid, PrimaryL
   // volume_buffer(_cct->_conf.get_val<std::uint64_t>("osd_aggregate_buffer_capacity"),
                // _cct->_conf.get_val<std::uint64_t>("osd_aggregate_buffer_chunk_size"),
                 // _pgid),
-  volume_buffer(_cct, 0, 0, _pgid),
+  volume_buffer(_cct, 0, _pgid),
   flush_callback(NULL),
   flush_timer(_cct, timer_lock),
   flush_time_out(0),
@@ -44,6 +44,14 @@ void AggregateBuffer::init(uint64_t _volume_cap, uint64_t _chunk_size,
     flush_time_out = _time_out;
     flush_timer.init(); 
   }
+  // 初始化ec_cache
+  ec_cache.second.resize(_volume_cap);
+  /*
+  for (uint32_t i = 0; i < _volume_cap; i++) {
+    bufferlist bl;
+    ec_cache.second[i] = bl;
+  }
+  */
 }
 
 void AggregateBuffer::bind(const hobject_t &first_oid) {
@@ -137,6 +145,47 @@ int AggregateBuffer::write(OpRequestRef op, MOSDOp* m)
 
 }
 
+bool AggregateBuffer::is_object_cached(const hobject_t& soid) {
+  if (!ec_cache.first) return false;
+  if (soid != ec_cache.first->get_oid()) return false;
+  auto chunk_bitmap = ec_cache.first->get_chunk_bitmap();
+  uint64_t chunk_size = ec_cache.first->get_chunk_size();
+  for (uint32_t i = 0; i < ec_cache.first->get_cap(); i++) {
+    if (chunk_bitmap[i] && ec_cache.second[i].length() != chunk_size) {
+      return false;
+    }
+  }
+  return true;
+}
+
+void AggregateBuffer::cache_data_chunk(extent_map& data) {
+  ceph_assert(!ec_cache.first);
+  for (auto &&extent: data) {
+    uint64_t off = extent.get_off();
+    uint64_t len = extent.get_len();
+    uint64_t chunk_size = volume_buffer.get_volume_info().get_chunk_size();
+    ceph_assert(len == chunk_size);
+    ceph_assert(off % chunk_size == 0);
+    ec_cache.second[off / chunk_size] = extent.get_val();
+  }
+}
+
+void AggregateBuffer::ec_cache_read(extent_map& read_result) {
+  // TODO: 单个数据块内仅缓存有效数据
+  for (uint32_t i = 0; i < ec_cache.second.size(); i++) {
+    uint64_t chunk_size = volume_buffer.get_volume_info().get_chunk_size();
+    uint64_t off = i * chunk_size;
+    auto &bl = ec_cache.second[i];
+    if (bl.length()) {
+      ceph_assert(bl.length() == chunk_size);
+      read_result.insert(off, chunk_size, bl);
+    } else {
+      bufferlist bl;
+      bl.append_zero(chunk_size);
+      read_result.insert(off, chunk_size, std::move(bl));
+    }
+  }
+}
 
 int AggregateBuffer::flush()
 {
@@ -192,9 +241,10 @@ void AggregateBuffer::requeue_waiting_for_aggregate_op() {
   }
 }
 
-void AggregateBuffer::update_meta_cache(const hobject_t& soid, std::vector<OSDOp> *ops) {
+void AggregateBuffer::update_cache(const hobject_t& soid, std::vector<OSDOp> *ops) {
   dout(4) << __func__ << " try to update meta cache ops = " << *ops << dendl;
-  for (auto &osd_op : *ops) {
+  for (auto i = ops->rbegin(); i != ops->rend(); i++) {
+    auto &osd_op = *i;
     if (osd_op.op.op == CEPH_OSD_OP_DELETE) {
       // 删除与该volume对象相关的元数据
       remove_volume_meta(soid);
@@ -217,9 +267,30 @@ void AggregateBuffer::update_meta_cache(const hobject_t& soid, std::vector<OSDOp
       insert_to_meta_cache(meta_ptr);
       if (!meta_ptr->full()) {
         // 未满的volume添加到volume_not_full
-        volume_not_full.push_back(meta_ptr);
+        if (ec_cache.first && meta_ptr->get_oid() == ec_cache.first->get_oid()) {
+          // ec_cache中已经缓存了该volume的数据块，那么下一轮聚合优先填充该volume
+          volume_not_full.push_front(meta_ptr);
+        } else {
+          volume_not_full.push_back(meta_ptr);
+        }
+        ec_cache.first = volume_meta_cache[soid]; // 更新映射关系
         dout(4) << __func__ << " spg_t = " << volume_buffer.get_spg() << " add volume(oid = " <<
           meta_ptr->get_oid() << ") into volume_not_full" << dendl;
+      }
+    } else if (osd_op.op.op == CEPH_OSD_OP_WRITE) {
+      if (volume_meta_cache[soid]->full()) {
+        for (uint32_t i = 0; i < ec_cache.second.capacity(); i++) {
+          ec_cache.second[i].clear();
+        }
+        ec_cache.first.reset();
+      } else {
+        ceph_assert(ec_cache.first->get_oid() == soid);
+        int chunk_size = volume_buffer.get_volume_info().get_chunk_size();
+        ceph_assert(osd_op.op.extent.length == chunk_size);
+        uint64_t chunk_id = osd_op.op.extent.offset / chunk_size;
+        ceph_assert(ec_cache.second[chunk_id].length() == 0);
+        ec_cache.second[chunk_id].append(std::move(osd_op.indata));
+        ceph_assert(ec_cache.second[chunk_id].length() == chunk_size);
       }
     }
   }
@@ -343,13 +414,13 @@ int AggregateBuffer::op_translate(MOSDOp* m) {
       // if (osd_op.op.op == CEPH_OSD_OP_READ) {}
 
       // READ, CALL, WRITEFULL公用的转译逻辑
-      uint64_t vol_offset = uint8_t(chunk_meta.get_chunk_id()) * chunk_meta.get_chunk_size();
+      uint64_t vol_offset = uint8_t(chunk_meta.get_chunk_id()) * volume_meta.get_chunk_size();
       uint64_t vol_length = osd_op.op.extent.length > chunk_meta.get_offset() ?
         chunk_meta.get_offset() : osd_op.op.extent.length;
       // 将待访问RGW对象的oid,off,len替换为volume对象的oid,off,len
-      if (osd_op.op.extent.offset == chunk_meta.get_chunk_size()) {
+      if (osd_op.op.extent.offset == volume_meta.get_chunk_size()) {
         // offset超出RGW对象本身的大小，本次不读取任何数据
-        osd_op.op.extent.offset = volume_meta.get_cap() * chunk_meta.get_chunk_size();
+        osd_op.op.extent.offset = volume_meta.get_cap() * volume_meta.get_chunk_size();
       } else {
         osd_op.op.extent.offset = vol_offset;
         osd_op.op.extent.length = vol_length;

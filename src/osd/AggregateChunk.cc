@@ -19,7 +19,7 @@ static ostream& _prefix(std::ostream *_dout, const Chunk *buf) {
   return *_dout << "aggregate chunk. ******* "; 
 }
 
-chunk_t Chunk::set_from_op(OpRequestRef _op, MOSDOp* _m, const uint8_t& seq) {
+chunk_t Chunk::set_from_op(OpRequestRef _op, MOSDOp* _m, const uint8_t& seq, uint64_t chunk_size) {
 
   const hobject_t& oid = _m->get_hobj();
   const spg_t pg_id = _m->get_spg();
@@ -31,9 +31,9 @@ chunk_t Chunk::set_from_op(OpRequestRef _op, MOSDOp* _m, const uint8_t& seq) {
     
   uint64_t data_len = _m->get_data_len();
   // 检查data_len是否大于配置文件中的chunk_size 
-  if(data_len > chunk_info.get_chunk_size()) {
+  if(data_len > chunk_size) {
     dout(4) << "set_from_op failed, data_len = " << data_len
-      << " max_chunk_size = " << (chunk_info.get_chunk_size()) << dendl;
+      << " max_chunk_size = " << chunk_size << dendl;
     return chunk_t();
   }
     
@@ -48,12 +48,12 @@ chunk_t Chunk::set_from_op(OpRequestRef _op, MOSDOp* _m, const uint8_t& seq) {
       osd_op.op.op = CEPH_OSD_OP_WRITE;
       
       dout(20) << __func__ << ": bufferlist before zerofilling " << osd_op.indata << dendl;
-      size_t zero_to_fill = chunk_info.get_chunk_size() - osd_op.indata.length();
+      size_t zero_to_fill = chunk_size - osd_op.indata.length();
       osd_op.indata.append_zero(zero_to_fill);
       dout(20) << __func__ << ": bufferlist after zerofilling " << osd_op.indata << dendl;
 
-      osd_op.op.extent.offset = chunk_info.get_seq() * chunk_info.get_chunk_size();
-      osd_op.op.extent.length = chunk_info.get_chunk_size();
+      osd_op.op.extent.offset = chunk_info.get_seq() * chunk_size;
+      osd_op.op.extent.length = chunk_size;
     }
     ops.push_back(osd_op);
   }

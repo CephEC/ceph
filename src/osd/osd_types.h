@@ -6737,13 +6737,13 @@ public:
   static constexpr state_t INVALID = 2;
 
   chunk_t() : chunk_id(chunk_id_t()), chunk_state(EMPTY),
-              chunk_fill_offset(0), chunk_size(0), 
-	            pg_id(spg_t()), soid(hobject_t()), is_erasure(false) {}
+              chunk_fill_offset(0), pg_id(spg_t()),
+              soid(hobject_t()), is_erasure(false) {}
   
-  chunk_t(uint8_t _id, const spg_t& _pg_id, uint64_t _chunk_size, bool _is_erasure = false) : 
-              chunk_id(_id), chunk_state(EMPTY),
-              chunk_fill_offset(0), chunk_size(_chunk_size), 
-	            pg_id(_pg_id), soid(hobject_t()), is_erasure(false) {}
+  chunk_t(uint8_t _id, const spg_t& _pg_id, bool _is_erasure = false) : 
+          chunk_id(_id), chunk_state(EMPTY),
+          chunk_fill_offset(0), pg_id(_pg_id), 
+          soid(hobject_t()), is_erasure(false) {}
 
 
   void set_from_op(uint8_t _chunk_id, uint64_t _offset, const hobject_t& _soid)  
@@ -6756,7 +6756,6 @@ public:
 
   chunk_id_t get_chunk_id() const { return chunk_id; }
   spg_t get_spg() const { return pg_id; }
-  uint64_t get_chunk_size() const { return chunk_size; }
   uint64_t get_offset() const { return chunk_fill_offset; }
   bool get_type() const { return is_erasure; }
 
@@ -6781,7 +6780,6 @@ public:
     encode(chunk_id, bl);
     encode(chunk_state, bl);
     encode(chunk_fill_offset, bl);
-    encode(chunk_size, bl);
     encode(is_erasure, bl);
     encode(soid, bl);
     ENCODE_FINISH(bl);
@@ -6792,7 +6790,6 @@ public:
     decode(chunk_id, bl);
     decode(chunk_state, bl);
     decode(chunk_fill_offset, bl);
-    decode(chunk_size, bl);
     decode(is_erasure, bl);
     decode(soid, bl);
     DECODE_FINISH(bl);
@@ -6801,7 +6798,6 @@ public:
     this->chunk_id = rhs.chunk_id;
     this->chunk_state = rhs.chunk_state;
     this->chunk_fill_offset = rhs.chunk_fill_offset;
-    this->chunk_size = rhs.chunk_size;
     this->pg_id = rhs.pg_id;
     this->soid = rhs.soid;
     this->is_erasure = rhs.is_erasure;
@@ -6810,19 +6806,16 @@ public:
 
   bool operator==(const chunk_t& rhs) const {
     return get_chunk_id() == rhs.get_chunk_id() && chunk_state == rhs.chunk_state &&
-      chunk_fill_offset == rhs.chunk_fill_offset && chunk_size == rhs.chunk_size &&
-      is_erasure == rhs.is_erasure && soid == rhs.soid;
+      chunk_fill_offset == rhs.chunk_fill_offset && is_erasure == rhs.is_erasure && soid == rhs.soid;
   }
   bool operator!=(const chunk_t& rhs) const {
     return get_chunk_id() != rhs.get_chunk_id() || chunk_state != rhs.chunk_state ||
-      chunk_fill_offset != rhs.chunk_fill_offset || chunk_size != rhs.chunk_size ||
-      is_erasure != rhs.is_erasure || soid != rhs.soid;
+      chunk_fill_offset != rhs.chunk_fill_offset || is_erasure != rhs.is_erasure || soid != rhs.soid;
   }
   friend std::ostream& operator<<(std::ostream& out, const chunk_t& o) {
     out << "chunk_id = " << int8_t(o.chunk_id) << std::endl;
     out << "chunk_state = " << o.chunk_state << std::endl;
     out << "chunk_fill_offset = " << o.chunk_fill_offset << std::endl;
-    out << "chunk_size = " << o.chunk_size << std::endl;
     out << "pg_id = " << o.pg_id << std::endl;
     out << "soid = " << o.soid << std::endl;
     out << "is_erasure = " << o.is_erasure << std::endl;
@@ -6838,7 +6831,6 @@ private:
   state_t chunk_state;
   // 计算填0部分开始的偏移
   uint64_t chunk_fill_offset;
-  uint64_t chunk_size;
   // pgid信息
   spg_t pg_id;
   // object元数据
@@ -6859,24 +6851,25 @@ public:
     chunk_is_full.resize(cap);
     chunk_is_full.assign(cap, false);
   }
-  volume_t(): volume_id(hobject_t()), size(0), cap(4), pg_id(spg_t()) {
+  volume_t(): volume_id(hobject_t()), chunk_size(0), size(0), cap(4), pg_id(spg_t()) {
     chunk_is_full.resize(cap);
     chunk_is_full.assign(cap, false);
   }
-  volume_t(const hobject_t& oid, uint32_t _cap, const spg_t& _pg_id): 
-    volume_id(oid), size(0), cap(_cap), pg_id(_pg_id) {
+  volume_t(const hobject_t& _oid, uint32_t _cap, const spg_t& _pg_id, uint64_t _chunk_size): 
+    volume_id(_oid), chunk_size(_chunk_size), size(0), cap(_cap), pg_id(_pg_id) {
     chunk_is_full.resize(cap);
     chunk_is_full.assign(cap, false);
   }
   void set_volume_id(const hobject_t& oid) { volume_id = oid; }
   void set_cap(uint64_t _cap) { cap = _cap; }
-
+  void set_chunk_size(uint64_t _chunk_size) { chunk_size = _chunk_size; }
   void reset_chunk_bitmap() {
     chunk_is_full.resize(cap);
     chunk_is_full.assign(cap, false);
   }
+  uint64_t get_chunk_size() { return chunk_size; }
   bool full() const { return size == cap; }
-  bool empty() const {return size == 0; }
+  bool empty() const { return size == 0; }
   uint32_t get_size() const { return size; }
   uint32_t get_cap() const { return cap; }
   const spg_t get_spg() const { return pg_id; }
@@ -6884,6 +6877,7 @@ public:
   void set_oid(const hobject_t& _oid) { volume_id = _oid; }
   hobject_t get_oid() { return volume_id; }
 
+  const std::vector<bool>& get_chunk_bitmap() const { return chunk_is_full; }
   // 对象是否存在
   bool exist(hobject_t& soid) { return chunks.count(soid); }
   // 获取指定soid所在chunk（元数据）
@@ -6969,6 +6963,7 @@ public:
     encode(cap, bl);
     encode(size, bl);
     encode(volume_id, bl);
+    encode(chunk_size, bl);
     encode(chunks, bl);
     encode(chunk_is_full, bl);
     ENCODE_FINISH(bl);
@@ -6979,6 +6974,7 @@ public:
     decode(cap, bl);
     decode(size, bl);
     decode(volume_id, bl);
+    decode(chunk_size, bl);
     decode(chunks, bl);
     decode(chunk_is_full, bl);
     DECODE_FINISH(bl);
@@ -6992,6 +6988,7 @@ public:
       this->chunk_is_full[i] = rhs.chunk_is_full[i];
     }
     this->volume_id = rhs.volume_id;
+    this->chunk_size = rhs.chunk_size;
     this->size = rhs.size;
     this->cap = rhs.cap;
     this->pg_id = rhs.pg_id;
@@ -7016,7 +7013,7 @@ public:
         return false;
       }
     }
-    return volume_id == rhs.volume_id && 
+    return volume_id == rhs.volume_id && chunk_size == rhs.chunk_size &&
       size == rhs.size && cap == rhs.cap;
   }
 
@@ -7037,7 +7034,8 @@ private:
   std::unordered_map<hobject_t, chunk_t> chunks;
   std::vector<bool> chunk_is_full;
   hobject_t volume_id;
-
+  // 内部每个chunk的最大可容纳空间
+  uint64_t chunk_size;
   // volume现有的chunk数
   uint32_t size;
   // volume容量

@@ -5123,10 +5123,10 @@ void PrimaryLogPG::execute_ctx(OpContext *ctx)
     reply->add_flags(CEPH_OSD_FLAG_ACK | CEPH_OSD_FLAG_ONDISK);
     dout(10) << " sending reply on " << *m << " " << reply << dendl;
   
-  if (is_aggregate_enabled()) {
+  if (is_aggregate_enabled() && ctx->op && ctx->op->is_write_volume_op()) {
     // 写入和删除完成后都需要更新元数据
-    // 更新内存中的volume_meta_cache和volume_not_full
-    m_aggregate_buffer->update_meta_cache(ctx->obc->obs.oi.soid, ctx->ops);
+    // 更新内存中的volume_meta_cache, volume_not_full, ec_cache
+    m_aggregate_buffer->update_cache(ctx->obc->obs.oi.soid, ctx->ops);
   }
   if (is_aggregate_enabled() && ctx->op && ctx->op->is_write_volume_op()) {
     m_aggregate_buffer->send_reply(reply, ignore_out_data);

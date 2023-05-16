@@ -11,6 +11,7 @@
 #include "PrimaryLogPG.h"
 #include "AggregateVolume.h"
 #include "osd_types.h"
+#include "ExtentCache.h"
 
 #include "OpRequest.h"
 #include "OSD.h"
@@ -135,10 +136,19 @@ public:
   void insert_to_meta_cache(std::shared_ptr<volume_t> meta_ptr);
 
   /**
-   * @brief volume对象写盘完成后，将其元信息更新到内存的缓存中
+   * @brief volume对象写盘完成后，将其元信息以及数据块更新到内存的缓存中
    * 
   */
-  void update_meta_cache(const hobject_t& soid, std::vector<OSDOp> *ops);
+  void update_cache(const hobject_t& soid, std::vector<OSDOp> *ops);
+
+  // ECBackend调用该函数，将remote_read过程中读取到的数据块缓存到AggregateBuffer中
+  void cache_data_chunk(extent_map& data);
+
+  // 判断volume对象的数据块是否缓存
+  bool is_object_cached(const hobject_t& soid);
+
+  // EC write过程中，读取已缓存的volume对象数据块，加速RMW过程
+  void ec_cache_read(extent_map& read_result);
 
    /**
    * @brief 预留函数，用于根据请求到来的历史信息预测此时的IO模式，判断是否提前计算EC并缓存
@@ -208,7 +218,7 @@ private:
 
   std::map<hobject_t, ClsParmContext*> cls_ctx_map;
   // TODO: 缓存EC块
-  std::pair<volume_t, std::vector< bufferlist >> ec_buffer;
+  std::pair<std::shared_ptr<volume_t>, std::vector< bufferlist >> ec_cache;
 };
 
 

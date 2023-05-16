@@ -16,7 +16,7 @@ static ostream& _prefix(std::ostream *_dout, const Volume *buf) {
   return *_dout << "aggregate volume. ******* "; 
 }
 
-Volume::Volume(CephContext* _cct, uint32_t _cap, uint32_t _chunk_size, const spg_t& _pg_id)
+Volume::Volume(CephContext* _cct, uint32_t _cap, const spg_t& _pg_id)
   : volume_info(_cap, _pg_id),
     vol_op(nullptr),
     cct(_cct)
@@ -41,13 +41,12 @@ void Volume::init(uint64_t _cap, uint64_t _chunk_size)
 {
   volume_info.set_cap(_cap);
   volume_info.reset_chunk_bitmap();
+  volume_info.set_chunk_size(_chunk_size);
   // 预分配Chunk
   for (uint8_t i = 0; i < _cap; i++) {
-    Chunk* c = new Chunk(cct, i, get_spg(), _chunk_size, this);
+    Chunk* c = new Chunk(cct, i, get_spg(), this);
     chunks.push_back(c);
   }
-
-  // TODO: 预分配EC Chunk，这里需要获取ec pool的配置，m的值
 }
 
 
@@ -64,7 +63,7 @@ int Volume::add_chunk(OpRequestRef op, MOSDOp* m)
   // new Chunk
   Chunk* new_chunk = chunks[free_chunk_index];
   // init chunk & return its metadata
-  chunk_t chunk_meta = new_chunk->set_from_op(op, m, free_chunk_index);
+  chunk_t chunk_meta = new_chunk->set_from_op(op, m, free_chunk_index, volume_info.get_chunk_size());
   if (chunk_meta == chunk_t()) {
     dout(4) << " add_chunk failed" << " set_from_op failed " << dendl;
     return -1;
