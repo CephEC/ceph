@@ -165,7 +165,7 @@ private:
   ceph::condition_variable flush_cond;
   Context* flush_callback;
   SafeTimer flush_timer;
-  bool is_flushing = false;
+  std::atomic<bool> is_flushing = false;
   double flush_time_out;
 
   // class FlushContext: public Context

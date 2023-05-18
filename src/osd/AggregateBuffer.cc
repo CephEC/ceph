@@ -107,16 +107,9 @@ int AggregateBuffer::write(OpRequestRef op, MOSDOp* m)
   }
 
   // volume满，未处于flushing状态，则等待flush（一般不会为真）
-  if (volume_buffer.full()) {
-    if (!is_flushing) {
-      int r = flush();
-      if (r < 0) {
-        dout(4) << __func__ << " call flush failed" << dendl;
-        return AGGREGATE_FAILED;
-      }
-    }
+  if (volume_buffer.full() || is_flushing.load()) {
     waiting_for_aggregate.push_back(op);
-    return AGGREGATE_PENDING_OP;  
+    return AGGREGATE_PENDING_OP;
   }
 
   if (!is_bind_volume()) bind(m->get_hobj().get_head());
@@ -192,7 +185,7 @@ int AggregateBuffer::flush()
   if (!volume_buffer.empty()) {
     flush_lock.lock();
     // when start to flush, lock
-    is_flushing = true;
+    is_flushing.store(true);
     volume_t vol_info = volume_buffer.get_volume_info();
 
     // TODO: judge if cache ec chunk
@@ -242,7 +235,8 @@ void AggregateBuffer::requeue_waiting_for_aggregate_op() {
 }
 
 void AggregateBuffer::update_cache(const hobject_t& soid, std::vector<OSDOp> *ops) {
-  dout(4) << __func__ << " try to update meta cache ops = " << *ops << dendl;
+  dout(4) << __func__ << " try to update meta cache, object = " << soid << " ops = " << *ops << dendl;
+  std::shared_ptr<volume_t> meta_ptr;
   for (auto i = ops->rbegin(); i != ops->rend(); i++) {
     auto &osd_op = *i;
     if (osd_op.op.op == CEPH_OSD_OP_DELETE) {
@@ -259,7 +253,7 @@ void AggregateBuffer::update_cache(const hobject_t& soid, std::vector<OSDOp> *op
       // 如果volume_meta之前存在volume_meta_cache中，先清除它们，再写入
       remove_volume_meta(soid);
       bp.copy(osd_op.op.xattr.value_len, bl);
-      auto meta_ptr = std::make_shared<volume_t>(
+      meta_ptr = std::make_shared<volume_t>(
         pg->get_pgbackend()->get_ec_data_chunk_count(),
         pg->get_pgid());
       auto p = bl.cbegin();
@@ -271,21 +265,23 @@ void AggregateBuffer::update_cache(const hobject_t& soid, std::vector<OSDOp> *op
           // ec_cache中已经缓存了该volume的数据块，那么下一轮聚合优先填充该volume
           volume_not_full.push_front(meta_ptr);
         } else {
-          volume_not_full.push_back(meta_ptr);
+          volume_not_full.push_back(meta_ptr);  // 一定对应删除操作
         }
-        ec_cache.first = volume_meta_cache[soid]; // 更新映射关系
-        dout(4) << __func__ << " spg_t = " << volume_buffer.get_spg() << " add volume(oid = " <<
-          meta_ptr->get_oid() << ") into volume_not_full" << dendl;
+        ec_cache.first = meta_ptr; // 更新映射关系
+        dout(4) << __func__ << " spg_t = " << volume_buffer.get_spg() << " add volume( " <<
+          *meta_ptr << ") into volume_not_full" << dendl;
       }
     } else if (osd_op.op.op == CEPH_OSD_OP_WRITE) {
-      if (volume_meta_cache[soid]->full()) {
+      ceph_assert(meta_ptr);
+      if (meta_ptr->full()) {
         for (uint32_t i = 0; i < ec_cache.second.capacity(); i++) {
           ec_cache.second[i].clear();
         }
         ec_cache.first.reset();
       } else {
+        // 将本轮聚合的数据缓存在内存中
         ceph_assert(ec_cache.first->get_oid() == soid);
-        int chunk_size = volume_buffer.get_volume_info().get_chunk_size();
+        uint64_t chunk_size = volume_buffer.get_volume_info().get_chunk_size();
         ceph_assert(osd_op.op.extent.length == chunk_size);
         uint64_t chunk_id = osd_op.op.extent.offset / chunk_size;
         ceph_assert(ec_cache.second[chunk_id].length() == 0);
@@ -318,7 +314,7 @@ void AggregateBuffer::clear() {
   }
   volume_buffer.clear();
   is_bind = false;
-  is_flushing = false;
+  is_flushing.store(false);
 }
 
 /************ timer *************/
