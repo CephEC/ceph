@@ -45,12 +45,6 @@ void AggregateBuffer::init(uint64_t _volume_cap, uint64_t _chunk_size,
   }
   // 初始化ec_cache
   ec_cache.second.resize(_volume_cap);
-  /*
-  for (uint32_t i = 0; i < _volume_cap; i++) {
-    bufferlist bl;
-    ec_cache.second[i] = bl;
-  }
-  */
 }
 
 void AggregateBuffer::bind(const hobject_t &first_oid) {
@@ -137,7 +131,7 @@ int AggregateBuffer::write(OpRequestRef op, MOSDOp* m)
 
 }
 
-bool AggregateBuffer::is_object_cached(const hobject_t& soid) {
+bool AggregateBuffer::is_volume_cached(const hobject_t& soid) {
   if (!ec_cache.first) return false;
   if (soid != ec_cache.first->get_oid()) return false;
   auto chunk_bitmap = ec_cache.first->get_chunk_bitmap();
@@ -150,15 +144,23 @@ bool AggregateBuffer::is_object_cached(const hobject_t& soid) {
   return true;
 }
 
+// 针对"未缓存数据块的volume对象"做填充写时，需要将之前已落盘的数据块读入主OSD
+// 于此同时，将这些数据块缓存起来，加速下一轮填充写
+// 但注意，针对覆盖写的场景，无需缓存数据块
 void AggregateBuffer::cache_data_chunk(extent_map& data) {
-  ceph_assert(!ec_cache.first);
+  if (ec_cache.first) return;
+  dout(4) << "cache_data_chunk, data = " << data << dendl;
   for (auto &&extent: data) {
     uint64_t off = extent.get_off();
     uint64_t len = extent.get_len();
+    uint64_t end = off + len;
     uint64_t chunk_size = volume_buffer.get_volume_info().get_chunk_size();
-    ceph_assert(len == chunk_size);
-    ceph_assert(off % chunk_size == 0);
-    ec_cache.second[off / chunk_size] = extent.get_val();
+    ceph_assert(off == 0);
+    ceph_assert(len % chunk_size == 0);
+    while (off <end) {
+      ec_cache.second[off / chunk_size].substr_of(extent.get_val(), off, chunk_size);
+      off += chunk_size;
+    }
   }
 }
 
@@ -260,20 +262,22 @@ void AggregateBuffer::update_cache(const hobject_t& soid, std::vector<OSDOp> *op
       insert_to_meta_cache(meta_ptr);
       if (!meta_ptr->full()) {
         // 未满的volume添加到volume_not_full
-        if (ec_cache.first && meta_ptr->get_oid() == ec_cache.first->get_oid()) {
+        if (!ec_cache.first || (meta_ptr->get_oid() == ec_cache.first->get_oid())) {
           // ec_cache中已经缓存了该volume的数据块，那么下一轮聚合优先填充该volume
           volume_not_full.push_front(meta_ptr);
+          ec_cache.first = meta_ptr; // 更新映射关系
         } else {
-          volume_not_full.push_back(meta_ptr);  // 一定对应删除操作
+          volume_not_full.push_back(meta_ptr);  // 一定对应删除操作(删除单个RGW对象,只需要更新volume元数据)
         }
-        ec_cache.first = meta_ptr; // 更新映射关系
         dout(4) << __func__ << " spg_t = " << volume_buffer.get_spg() << " add volume( " <<
           *meta_ptr << ") into volume_not_full" << dendl;
       }
     } else if (osd_op.op.op == CEPH_OSD_OP_WRITE) {
       ceph_assert(meta_ptr);
+      // 聚合逻辑下,所有request中一定包含一个WRITE OP和一个SETXATTR OP
       if (meta_ptr->full()) {
         for (uint32_t i = 0; i < ec_cache.second.capacity(); i++) {
+          dout(4) << __func__ << " clear ec_cache " << i << dendl;
           ec_cache.second[i].clear();
         }
         ec_cache.first.reset();

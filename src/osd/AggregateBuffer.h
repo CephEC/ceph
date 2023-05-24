@@ -147,7 +147,7 @@ public:
   void cache_data_chunk(extent_map& data);
 
   // 判断volume对象的数据块是否缓存
-  bool is_object_cached(const hobject_t& soid);
+  bool is_volume_cached(const hobject_t& soid);
 
   // EC write过程中，读取已缓存的volume对象数据块，加速RMW过程
   void ec_cache_read(extent_map& read_result);

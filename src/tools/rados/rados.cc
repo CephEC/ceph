@@ -121,7 +121,7 @@ void usage(ostream& out)
 "   rollback <obj-name> <snap-name>  roll back object to snap <snap-name>\n"
 "\n"
 "   listsnaps <obj-name>             list the snapshots of this object\n"
-"   bench <seconds> write|seq|rand|partial_read [-t concurrent_operations] [--no-cleanup] [--run-name run_name] [--no-hints] [--reuse-bench] [--bench-latency-file] [--read-length]\n"
+"   bench <seconds> write|seq|rand|partial_read [-t concurrent_operations] [--no-cleanup] [--run-name run_name] [--no-hints] [--reuse-bench] [--bench-latency-file] [--read-length] [--bench-meta-file]\n"
 "                                    default is 16 concurrent IOs and 4 MB ops\n"
 "                                    default is to clean up after write benchmark\n"
 "                                    default run-name is 'benchmark_last_metadata'\n"
@@ -1888,6 +1888,7 @@ static int rados_tool_common(const std::map < std::string, std::string > &opts,
   int call_arg2 = 0;
   const char *out_file = NULL;
   const char *bench_latency_file = NULL;
+  const char *bench_meta_file = NULL;
   int read_length = 0;
   const char *pool_name = NULL;
   const char *target_pool_name = NULL;
@@ -1954,6 +1955,10 @@ static int rados_tool_common(const std::map < std::string, std::string > &opts,
   i = opts.find("bench_latency_file");
   if (i != opts.end()) {
     bench_latency_file = i->second.c_str();
+  }
+  i = opts.find("bench_meta_file");
+  if (i != opts.end()) {
+    bench_meta_file = i->second.c_str();
   }
   i = opts.find("read_length");
   if (i != opts.end()) {
@@ -3409,7 +3414,7 @@ static int rados_tool_common(const std::map < std::string, std::string > &opts,
     cout << "hints = " << (int)hints << std::endl;
     ret = bencher.aio_bench(operation, seconds,
 			    concurrent_ios, op_size, object_size,
-			    max_objects, cleanup, hints, run_name, reuse_bench, bench_latency_file, read_length, no_verify);
+			    max_objects, cleanup, hints, run_name, reuse_bench, bench_latency_file, read_length, no_verify, bench_meta_file);
     if (ret != 0)
       cerr << "error during benchmark: " << cpp_strerror(ret) << std::endl;
     if (formatter && output)
@@ -4309,6 +4314,8 @@ int main(int argc, const char **argv)
       opts["bench_latency_file"] = val;
     } else if (ceph_argparse_witharg(args, i, &val, "--read-length", (char*)NULL)) {
       opts["read_length"] = val;
+    } else if (ceph_argparse_witharg(args, i, &val, "--bench-meta-file", (char*)NULL)) {
+      opts["bench_meta_file"] = val;
     } else {
       if (val[0] == '-')
         usage_exit();
