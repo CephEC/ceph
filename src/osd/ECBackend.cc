@@ -2303,7 +2303,7 @@ bool ECBackend::try_state_to_reads()
       // 直接获取已缓存的EC数据块，越过Read过程
       auto aggregate_buffer = (dynamic_cast<PrimaryLogPG*>(get_parent()))->get_aggregate_buffer();
       if (is_aggregate_enabled() && 
-          aggregate_buffer->is_object_cached(hpair.first)) {
+          aggregate_buffer->is_volume_cached(hpair.first)) {
         op->remote_read.erase(hpair.first);
         aggregate_buffer->ec_cache_read(op->remote_read_result[hpair.first]);
       }

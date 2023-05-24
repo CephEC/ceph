@@ -272,7 +272,7 @@ int ObjBencher::aio_bench(
   bool cleanup, bool hints,
   const std::string& run_name, bool reuse_bench, 
   const char* bench_latency_file,
-  int read_length, bool no_verify) {
+  int read_length, bool no_verify, const char* bench_meta_file) {
 
   if (concurrentios <= 0)
     return -EINVAL;
@@ -286,8 +286,21 @@ int ObjBencher::aio_bench(
   // default metadata object is used if user does not specify one
   const std::string run_name_meta = (run_name.empty() ? BENCH_LASTRUN_METADATA : run_name);
 
+  std::ifstream fin;
   //get data from previous write run, if available
-  if (operation != OP_WRITE || reuse_bench) {
+  if (bench_meta_file) {
+    fin.open(bench_meta_file, std::ios::in | std::ios::out | std::ios::binary);
+    if (!fin.is_open()) {
+      out(cout) << "failed to open bench_meta_file" << std::endl;
+      return -EINVAL;
+    }
+    uint64_t prev_op_size, prev_object_size;
+    fin >> prev_op_size;
+    fin >> prev_object_size;
+    fin >> num_ops;
+    fin >> num_objects;
+    fin >> prev_pid;
+  } else if (operation != OP_WRITE || reuse_bench) {
     uint64_t prev_op_size, prev_object_size;
     r = fetch_bench_metadata(run_name_meta, &prev_op_size, &prev_object_size,
 			     &num_ops, &num_objects, &prev_pid);
@@ -327,11 +340,11 @@ int ObjBencher::aio_bench(
     formatter->open_object_section("bench");
 
   if (OP_WRITE == operation) {
-    r = write_bench(secondsToRun, concurrentios, run_name_meta, max_objects, prev_pid, bench_latency_file);
+    r = write_bench(secondsToRun, concurrentios, run_name_meta, max_objects, prev_pid, fin, bench_latency_file);
     if (r != 0) goto out;
   }
   else if (OP_SEQ_READ == operation) {
-    r = seq_read_bench(secondsToRun, num_ops, num_objects, concurrentios, prev_pid, bench_latency_file, no_verify);
+    r = seq_read_bench(secondsToRun, num_ops, num_objects, concurrentios, prev_pid, fin, bench_latency_file, no_verify);
     if (r != 0) goto out;
   }
   else if (OP_RAND_READ == operation) {
@@ -339,11 +352,11 @@ int ObjBencher::aio_bench(
     if (r != 0) goto out;
   }
   else if (OP_PARTIAL_READ == operation) {
-    r = partial_read_bench(secondsToRun, num_ops, num_objects, concurrentios, prev_pid, read_length, bench_latency_file, no_verify);
+    r = partial_read_bench(secondsToRun, num_ops, num_objects, concurrentios, prev_pid, fin, read_length, bench_latency_file, no_verify);
     if (r != 0) goto out;  
   }
 
-  if (OP_WRITE == operation && cleanup) {
+  if (!bench_meta_file && OP_WRITE == operation && cleanup) {
     r = fetch_bench_metadata(run_name_meta, &op_size, &object_size,
                             &num_ops, &num_objects, &prev_pid);
     if (r < 0) {
@@ -367,6 +380,9 @@ int ObjBencher::aio_bench(
   }
 
  out:
+  if (fin.is_open()) {
+    fin.close();
+  }
   if (formatter) {
     formatter->close_section(); // bench
     formatter->flush(*outstream);
@@ -425,7 +441,8 @@ int ObjBencher::fetch_bench_metadata(const std::string& metadata_file,
 
 int ObjBencher::write_bench(int secondsToRun,
 			    int concurrentios, const string& run_name_meta,
-			    unsigned max_objects, int prev_pid, const char* bench_latency_file) {
+			    unsigned max_objects, int prev_pid, std::ifstream& fin,
+          const char* bench_latency_file) {
   if (concurrentios <= 0)
     return -EINVAL;
 
@@ -479,7 +496,11 @@ int ObjBencher::write_bench(int secondsToRun,
 
   //set up writes so I can start them together
   for (int i = 0; i<concurrentios; ++i) {
-    name[i] = generate_object_name_fast(i / writes_per_object);
+    if (fin.is_open()) {
+      fin >> name[i];
+    } else {
+      name[i] = generate_object_name_fast(i / writes_per_object);
+    }
     contents[i] = std::make_unique<bufferlist>();
     snprintf(data.object_contents, data.op_size, "I'm the %16dth op!", i);
     contents[i]->append(data.object_contents, data.op_size);
@@ -577,7 +598,11 @@ int ObjBencher::write_bench(int secondsToRun,
     //write new stuff to backend
 
     //create new contents and name on the heap, and fill them
-    newName = generate_object_name_fast(data.started / writes_per_object);
+    if (fin.is_open()) {
+      fin >> newName;
+    } else {
+      newName = generate_object_name_fast(data.started / writes_per_object);
+    }
     newContents = contents[slot].get();
     snprintf(newContents->c_str(), data.op_size, "I'm the %16dth op!", data.started);
     // we wrote to buffer, going around internal crc cache, so invalidate it now.
@@ -693,7 +718,8 @@ int ObjBencher::write_bench(int secondsToRun,
 
 int ObjBencher::seq_read_bench(
   int seconds_to_run, int num_ops, int num_objects,
-  int concurrentios, int pid, const char* bench_latency_file,  bool no_verify) {
+  int concurrentios, int pid, std::ifstream& fin,
+  const char* bench_latency_file,  bool no_verify) {
 
   lock_cond lc(&lock);
 
@@ -732,7 +758,11 @@ int ObjBencher::seq_read_bench(
 
   //set up initial reads
   for (int i = 0; i < concurrentios; ++i) {
-    name[i] = generate_object_name_fast(i / reads_per_object, pid);
+    if (fin.is_open()) {
+      fin >> name[i];
+    } else {
+      name[i] = generate_object_name_fast(i / reads_per_object, pid);
+    }
     contents[i] = std::make_unique<bufferlist>();
   }
 
@@ -813,7 +843,11 @@ int ObjBencher::seq_read_bench(
     bool start_new_read = (seconds_to_run && mono_clock::now() < finish_time) &&
                           num_ops > data.started;
     if (start_new_read) {
-      newName = generate_object_name_fast(data.started / reads_per_object, pid);
+      if (fin.is_open()) {
+        fin >> newName;
+      } else {
+        newName = generate_object_name_fast(data.started / reads_per_object, pid);
+      }
       index[slot] = data.started;
     }
 
@@ -920,7 +954,8 @@ int ObjBencher::seq_read_bench(
 
 int ObjBencher::partial_read_bench(
   int seconds_to_run, int num_ops, int num_objects,
-  int concurrentios, int pid, int read_length, const char* bench_latency_file, bool no_verify) {
+  int concurrentios, int pid, std::ifstream& fin,
+  int read_length, const char* bench_latency_file, bool no_verify) {
 
   lock_cond lc(&lock);
 
@@ -962,7 +997,11 @@ int ObjBencher::partial_read_bench(
 
   //set up initial reads
   for (int i = 0; i < concurrentios; ++i) {
-    name[i] = generate_object_name_fast(i / reads_per_object, pid);
+    if (fin.is_open()) {
+      fin >> name[i];
+    } else {
+      name[i] = generate_object_name_fast(i / reads_per_object, pid);
+    }
     contents[i] = std::make_unique<bufferlist>();
   }
 
@@ -1064,7 +1103,12 @@ int ObjBencher::partial_read_bench(
     //start new read and check data if requested
 
     rand_id = rand() % num_ops;
-    newName = generate_object_name_fast(rand_id / reads_per_object, pid);
+    
+    if (fin.is_open()) {
+      fin >> newName;
+    } else {
+      newName = generate_object_name_fast(rand_id / reads_per_object, pid);
+    }
     index[slot] = rand_id;
 
     // invalidate internal crc cache
@@ -1147,7 +1191,8 @@ int ObjBencher::partial_read_bench(
 
 int ObjBencher::rand_read_bench(
   int seconds_to_run, int num_ops, int num_objects,
-  int concurrentios, int pid, const char* bench_latency_file, bool no_verify) {
+  int concurrentios, int pid,
+  const char* bench_latency_file, bool no_verify) {
 
   lock_cond lc(&lock);
 

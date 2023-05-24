@@ -79,10 +79,10 @@ protected:
   int fetch_bench_metadata(const std::string& metadata_file, uint64_t* op_size,
 			   uint64_t* object_size, int* num_ops, int* num_objects, int* prev_pid);
   int write_data_to_file(bufferlist &write_data, const std::string& metadata_file);
-  int write_bench(int secondsToRun, int concurrentios, const std::string& run_name_meta, unsigned max_objects, int prev_pid, const char* bench_latency_file=NULL);
-  int seq_read_bench(int secondsToRun, int num_ops, int num_objects, int concurrentios, int writePid, const char* bench_latency_file=NULL, bool no_verify=false);
+  int write_bench(int secondsToRun, int concurrentios, const std::string& run_name_meta, unsigned max_objects, int prev_pid, std::ifstream& fin, const char* bench_latency_file=NULL);
+  int seq_read_bench(int secondsToRun, int num_ops, int num_objects, int concurrentios, int writePid, std::ifstream& fin, const char* bench_latency_file=NULL, bool no_verify=false);
   int rand_read_bench(int secondsToRun, int num_ops, int num_objects, int concurrentios, int writePid, const char* bench_latency_file=NULL, bool no_verify=false);
-  int partial_read_bench(int secondsToRun, int num_ops, int num_objects, int concurrentios, int writePid, int read_length = 0, const char* bench_latency_file=NULL, bool no_verify=false);
+  int partial_read_bench(int secondsToRun, int num_ops, int num_objects, int concurrentios, int writePid, std::ifstream& fin, int read_length = 0, const char* bench_latency_file=NULL, bool no_verify=false);
 
   int clean_up(int num_objects, int prevPid, int concurrentios);
   bool more_objects_matching_prefix(const std::string& prefix, std::list<Object>* name);
@@ -116,7 +116,7 @@ public:
     int operation, int secondsToRun,
     int concurrentios, uint64_t op_size, uint64_t object_size, unsigned max_objects,
     bool cleanup, bool hints, const std::string& run_name, bool reuse_bench, const char* bench_latency_file=NULL,
-    int read_length = 0, bool no_verify=false);
+    int read_length = 0, bool no_verify=false, const char* bench_meta_file = NULL);
   int clean_up(const std::string& prefix, int concurrentios, const std::string& run_name);
 
   void set_show_time(bool dt) {
