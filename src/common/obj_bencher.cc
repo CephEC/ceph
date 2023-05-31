@@ -289,17 +289,19 @@ int ObjBencher::aio_bench(
   std::ifstream fin;
   //get data from previous write run, if available
   if (bench_meta_file) {
+    uint64_t prev_op_size, prev_object_size;
     fin.open(bench_meta_file, std::ios::in | std::ios::out | std::ios::binary);
     if (!fin.is_open()) {
       out(cout) << "failed to open bench_meta_file" << std::endl;
       return -EINVAL;
     }
-    uint64_t prev_op_size, prev_object_size;
     fin >> prev_op_size;
     fin >> prev_object_size;
     fin >> num_ops;
     fin >> num_objects;
     fin >> prev_pid;
+    object_size = prev_object_size;   
+    op_size = prev_op_size; 
   } else if (operation != OP_WRITE || reuse_bench) {
     uint64_t prev_op_size, prev_object_size;
     r = fetch_bench_metadata(run_name_meta, &prev_op_size, &prev_object_size,
@@ -312,10 +314,10 @@ int ObjBencher::aio_bench(
           cerr << "Must write data before running a read benchmark!" << std::endl;
       }
       return r;
-    }
+    }     
     object_size = prev_object_size;   
-    op_size = prev_op_size;           
-  }
+    op_size = prev_op_size;    
+  }  
 
   char* contentsChars = new char[op_size];
   lock.lock();

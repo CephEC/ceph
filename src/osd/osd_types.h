@@ -1754,11 +1754,16 @@ public:
   }
 
   bool requires_aligned_append() const {
-    return is_erasure() && !has_flag(FLAG_EC_OVERWRITES);
+    // TODO(zhengfuyu):这一块要改回来，
+    // 正常使用需要向指定pool注入参数ceph osd pool set my_ec_pool allow_ec_overwrites true
+    return false;
+    // return is_erasure() && !has_flag(FLAG_EC_OVERWRITES);
   }
   uint64_t required_alignment() const { return stripe_width; }
 
   bool allows_ecoverwrites() const {
+    // TODO(zhengfuyu):这一块要改回来，
+    // 正常使用需要向指定pool注入参数ceph osd pool set my_ec_pool allow_ec_overwrites true
     return true;
     // return has_flag(FLAG_EC_OVERWRITES);
   }
@@ -6898,16 +6903,15 @@ public:
    * @brief 生成volume元数据的Op（SETXATTR）
    *
    */
-  OSDOp generate_write_meta_op() {
-    OSDOp op{CEPH_OSD_OP_SETXATTR};
+  void generate_write_meta_op(OSDOp& op) {
+    op.op.op = CEPH_OSD_OP_SETXATTR;
     std::string name("volume_meta");
     bufferlist bl;
     encode(bl);
     op.op.xattr.name_len = name.size();
-    op.op.xattr.value_len = bl.length();
     op.indata.append(name.c_str(), op.op.xattr.name_len);
     op.indata.append(bl);
-    return op;
+    op.op.xattr.value_len = bl.length();
   }
 
 
