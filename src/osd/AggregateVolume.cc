@@ -128,7 +128,8 @@ MOSDOp* Volume::generate_op()
     
   // 将volume_t元数据编码封装为一个写扩展属性的OSDOp
   // 这个OSDOp放置在MOSDOp中OSDOp数组的最末端，便于在on_commit回调中找到它
-  OSDOp write_meta_op = volume_info.generate_write_meta_op();
+  OSDOp write_meta_op;
+  volume_info.generate_write_meta_op(write_meta_op);
   (volume_m->ops).push_back(write_meta_op);
 
   // 如果不encode，转化为Message会被截断
