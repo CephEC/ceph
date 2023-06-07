@@ -566,6 +566,35 @@ if(WITH_CEPHFS OR WITH_RADOSGW)
   find_package(Lua 5.3 REQUIRED)
 endif()
 
+# add OpenCV dependency for customized cls operator
+find_package(OpenCV 4 QUIET)
+
+if((NOT OpenCV_FOUND) OR USE_INTERNAL_OPENCV)
+  set(USE_INTERNAL_OPENCV ON CACHE BOOL "Whether to use builtin opencv")
+  message("System OpenCV not found or disabled, fallback to building builtin OpenCV...")
+  cmake_host_system_information(RESULT NPROC QUERY NUMBER_OF_LOGICAL_CORES)
+  execute_process(
+    COMMAND cmake -S ${CMAKE_SOURCE_DIR}/src/opencv -B ${CMAKE_BINARY_DIR}/opencv
+    RESULT_VARIABLE OPENCV_CONFIGURE_RETVAL
+    OUTPUT_QUIET
+  )
+  execute_process(
+    COMMAND cmake --build ${CMAKE_BINARY_DIR}/opencv --parallel ${NPROC}
+    RESULT_VARIABLE OPENCV_BUILD_RETVAL
+    OUTPUT_QUIET
+  )
+  if((NOT (OPENCV_CONFIGURE_RETVAL STREQUAL "0")) OR (NOT (OPENCV_BUILD_RETVAL STREQUAL "0")))
+    message(FATAL_ERROR "OpenCV build failed; check error log or modify CMake file to show stdout.")
+  endif()
+  find_package(OpenCV 4 REQUIRED PATHS ${CMAKE_BINARY_DIR}/opencv NO_DEFAULT_PATH)
+else()
+  set(USE_INTERNAL_OPENCV OFF CACHE BOOL "Whether to use builtin opencv")
+  message("Found OpenCV installation at ${OpenCV_DIR}")
+endif()
+
+# rados object classes
+add_subdirectory(cls)
+
 # RADOS client/library
 add_subdirectory(osdc)
 
