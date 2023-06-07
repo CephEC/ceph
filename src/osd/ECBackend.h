@@ -190,13 +190,14 @@ public:
     Context *on_complete,
     bool fast_read = false) override;
 
-/*
+  // 当RGW对象所在的数据块无法访问时，需要将其所在的volume对象在primary OSD处恢复出来
+  // 然后再针对恢复出的数据块进行Cls操作
   void object_degrade_call_async(
     const hobject_t &hoid,
     const std::pair<boost::tuple<uint64_t, uint64_t, uint32_t>,
               std::pair<ClsParmContext*, OSDOp*> > &call_ctx,
     Context *on_complete);
-*/
+
 
   // 对RGW对象的读请求转译为对volume对象的部分读之后
   // 在ECBackend确定所需读取的volume数据块在哪个OSD，
