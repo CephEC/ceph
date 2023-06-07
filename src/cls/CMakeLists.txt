@@ -386,3 +386,7 @@ set_target_properties(cls_opencv_thumbnail PROPERTIES
 target_include_directories(cls_opencv_thumbnail SYSTEM BEFORE PRIVATE ${OpenCV_INCLUDE})
 target_link_libraries(cls_opencv_thumbnail ${OpenCV_LIBS})
 install(TARGETS cls_opencv_thumbnail DESTINATION ${cls_dir})
+
+add_executable(cls_opencv_thumbnail_client opencv_thumbnail/cls_opencv_thumbnail_client.cc)
+target_link_libraries(cls_opencv_thumbnail_client librados ceph-common)
+install(TARGETS cls_opencv_thumbnail_client DESTINATION ${CMAKE_INSTALL_BINDIR}/rados-classes)
