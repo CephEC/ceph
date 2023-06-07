@@ -350,3 +350,13 @@ set_target_properties(cls_test_remote_reads PROPERTIES
   INSTALL_RPATH ""
   CXX_VISIBILITY_PRESET hidden)
 install(TARGETS cls_test_remote_reads DESTINATION ${cls_dir})
+
+#cls_opencv_thumbnail
+set(cls_opencv_thumbnail_srcs opencv_thumbnail/cls_opencv_thumbnail.cc)
+add_library(cls_opencv_thumbnail SHARED ${cls_opencv_thumbnail_srcs})
+set_target_properties(cls_opencv_thumbnail PROPERTIES
+  VERSION "1.0.0"
+  SOVERSION "1"
+  INSTALL_RPATH ""
+  CXX_VISIBILITY_PRESET hidden)
+install(TARGETS cls_opencv_thumbnail DESTINATION ${cls_dir})
