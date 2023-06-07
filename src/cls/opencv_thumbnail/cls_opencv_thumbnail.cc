@@ -1,6 +1,8 @@
 #include "include/rados/objclass.h"
 #include "objclass/objclass.h"
 
+#include <opencv2/opencv.hpp>
+
 CLS_VER(1, 0)
 CLS_NAME(opencv_thumbnail)
 

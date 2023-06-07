@@ -351,6 +351,9 @@ set_target_properties(cls_test_remote_reads PROPERTIES
   CXX_VISIBILITY_PRESET hidden)
 install(TARGETS cls_test_remote_reads DESTINATION ${cls_dir})
 
+# cmake find_package GLOBAL is introduced in 3.24; thus we need to find the package once more here
+find_package(OpenCV 4 REQUIRED)
+
 #cls_opencv_thumbnail
 set(cls_opencv_thumbnail_srcs opencv_thumbnail/cls_opencv_thumbnail.cc)
 add_library(cls_opencv_thumbnail SHARED ${cls_opencv_thumbnail_srcs})
@@ -359,4 +362,6 @@ set_target_properties(cls_opencv_thumbnail PROPERTIES
   SOVERSION "1"
   INSTALL_RPATH ""
   CXX_VISIBILITY_PRESET hidden)
+target_include_directories(cls_opencv_thumbnail SYSTEM BEFORE PRIVATE ${OpenCV_INCLUDE})
+target_link_libraries(cls_opencv_thumbnail ${OpenCV_LIBS})
 install(TARGETS cls_opencv_thumbnail DESTINATION ${cls_dir})
