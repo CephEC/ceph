@@ -319,7 +319,7 @@ struct OnRecoveryReadComplete :
       in.first);
   }
 };
-/*
+
 struct OnDegradeCallComplete : public Context {
   CephContext *cct;
   ECBackend *ec;
@@ -351,7 +351,6 @@ struct OnDegradeCallComplete : public Context {
       bp.copy(cls_parm_ctx->method_len, mname);
       bp.copy(cls_parm_ctx->indata_len, indata);
     } catch (ceph::buffer::error& e) {
-      dout(10) << "call unable to decode class + method + indata" << dendl;
       r = -EINVAL;
     }
     r = ClassHandler::get_instance().open_class(cname, &cls);
@@ -363,21 +362,17 @@ struct OnDegradeCallComplete : public Context {
     // 为了契合cls exec接口的函数声明,对数据做一下移动
     cls_parm_ctx->parm_data = std::move(indata);
 
-    dout(10) << "call method " << cname << "." << mname << dendl;
 
     r = method->exec((cls_method_context_t)(cls_parm_ctx),
                       read_data,
                       (call_ctx.second.second)->outdata);
-
-    dout(10) << "method called response length=" << (call_ctx.second.second)->outdata.length() 
-      << " r = " << r << dendl;
     if (on_complete) {
       on_complete.release()->complete(r);
     }
   }
   ~OnDegradeCallComplete() override {}
 };
-*/
+
 
 struct RecoveryMessages {
   map<hobject_t,
@@ -2766,7 +2761,7 @@ void ECBackend::objects_read_async(
 	   to_read,
 	   on_complete)));
 }
-/*
+
 void ECBackend::object_degrade_call_async(
   const hobject_t &hoid,
   const pair<boost::tuple<uint64_t, uint64_t, uint32_t>,
@@ -2786,7 +2781,7 @@ void ECBackend::object_degrade_call_async(
                                                on_complete,
                                                read_data));
 }
-*/
+
 
 int ECBackend::object_locate(MOSDOp* m, pg_shard_t &target_shard) {
   ceph_assert(is_aggregate_enabled());
@@ -2870,14 +2865,13 @@ void ECBackend::object_call_async(
     // 如果存在数据分片无法正常读取，则需要额外读取编码分片来恢复数据
     ceph_assert(r == 0);
   }
-  /*
+
   if (shards.size() == get_ec_data_chunk_count()) {
     // 数据块丢失，需要恢复整个条带
     // 选择将整个条带读入Primary OSD再进行Cls操作
     object_degrade_call_async(hoid, call_ctx, on_complete);
     return;
   }
-  */
 
   struct cb {
     ECBackend *ec;

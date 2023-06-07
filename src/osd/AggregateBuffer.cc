@@ -262,6 +262,10 @@ void AggregateBuffer::update_cache(const hobject_t& soid, std::vector<OSDOp> *op
       insert_to_meta_cache(meta_ptr);
       if (!meta_ptr->full()) {
         // 未满的volume添加到volume_not_full
+        if (ec_cache.first) {
+          dout(4) << __func__ << " update_cache spg_t = " << volume_buffer.get_spg() 
+              << " ec_cache object = " << ec_cache.first->get_oid() << dendl; 
+        }
         if (!ec_cache.first || (meta_ptr->get_oid() == ec_cache.first->get_oid())) {
           // ec_cache中已经缓存了该volume的数据块，那么下一轮聚合优先填充该volume
           volume_not_full.push_front(meta_ptr);
