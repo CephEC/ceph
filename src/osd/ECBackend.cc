@@ -2317,6 +2317,7 @@ bool ECBackend::try_state_to_reads()
   for (auto &&i: results) {
     op->remote_read_result.emplace(i.first, i.second.second);
 
+    /*
     // 这部分逻辑主要针对 删除操作产生的非完全填充volume对象
     // 后续第一次填充这些volume对象时，ec_cache中没有缓存volume对象中 已落盘的数据块数据
     // 那么就需要执行一次完整的"R"MW, 把已落盘但未缓存的数据块 缓存到ec_cache中
@@ -2324,6 +2325,7 @@ bool ECBackend::try_state_to_reads()
       (dynamic_cast<PrimaryLogPG*>(get_parent()))->
         get_aggregate_buffer()->cache_data_chunk(i.second.second);
     }
+    */
 	}
 	check_ops();
       });
