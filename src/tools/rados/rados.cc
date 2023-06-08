@@ -51,6 +51,7 @@
 #include <optional>
 
 #include "cls/lock/cls_lock_client.h"
+#include "cls/opencv_thumbnail/cls_opencv_thumbnail_client.hh"
 #include "include/compat.h"
 #include "include/util.h"
 #include "common/hobject.h"
@@ -2804,6 +2805,45 @@ static int rados_tool_common(const std::map < std::string, std::string > &opts,
     ret = io_ctx.exec(*obj_name, class_name, method_name, in, out);
     if (ret < 0) {
       cerr << "error cls call " << pool_name << "/" << class_name << "/" << method_name << ": " << cpp_strerror(ret) << std::endl;
+      return 1;
+    }
+    cout << "cls process end, out.length = " << out.length() << std::endl;
+    int fd = TEMP_FAILURE_RETRY(::open(out_file, O_WRONLY|O_CREAT|O_TRUNC|O_BINARY, 0644));
+    if (fd < 0) {
+      int err = errno;
+      cerr << "failed to open file: " << cpp_strerror(err) << std::endl;
+      return -err;
+    }
+    ret = out.write_fd(fd);
+    timePassed = mono_clock::now() - start_time;
+    cout << "Cls complete and total get time: " << timePassed.count() << std::endl;
+    if (ret < 0) {
+      cerr << "error writing to file: " << cpp_strerror(ret) << std::endl;
+    }
+    if (fd != 1)
+      VOID_TEMP_FAILURE_RETRY(::close(fd));
+  } else if (strcmp(nargs[0], "cls_thumbnail") == 0) {
+    if(nargs.size() < 5) {
+      cerr << "cls_thumbnail usage: <obj> [ratio|fixed] <param_x> <param_y>" << std::endl;
+      return -EINVAL;
+    }
+
+    if (!obj_name) {
+      obj_name = nargs[1];
+    }
+
+    bufferlist out;
+    std::chrono::duration<double> timePassed;
+    mono_time start_time = mono_clock::now();
+    
+    if(strcmp(nargs[2], "ratio") == 0) {
+      ret = rados::cls::opencv_thumbnail::downscale_ratio(&io_ctx, *obj_name, std::stof(nargs[3]), std::stof(nargs[4]), out);
+    } else if(strcmp(nargs[0], "fixed") == 0) {
+      ret = rados::cls::opencv_thumbnail::downscale_fixed(&io_ctx, *obj_name, std::stoi(nargs[3]), std::stoi(nargs[4]), out);
+    }
+
+    if (ret < 0) {
+      cerr << "error cls opencv_thumbnail::downscale call :" << cpp_strerror(ret) << std::endl;
       return 1;
     }
     cout << "cls process end, out.length = " << out.length() << std::endl;
