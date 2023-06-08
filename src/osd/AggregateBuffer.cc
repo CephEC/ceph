@@ -14,24 +14,12 @@ static ostream& _prefix(std::ostream *_dout, const AggregateBuffer *buf) {
 
 
 AggregateBuffer::AggregateBuffer(CephContext* _cct, const spg_t& _pgid, PrimaryLogPG* _pg) :
-  // volume_buffer(_cct->_conf.get_val<std::uint64_t>("osd_aggregate_buffer_capacity"),
-               // _cct->_conf.get_val<std::uint64_t>("osd_aggregate_buffer_chunk_size"),
-                // _pgid),
   volume_buffer(_cct, 0, _pgid),
   flush_callback(NULL),
   flush_timer(_cct, timer_lock),
   flush_time_out(0),
   cct(_cct), 
-  pg(_pg) {
-    // init volume
-    // volume_buffer = new Volume(_cct->_conf.get_val<std::uint64_t>("osd_aggregate_buffer_capacity"),
-    //                            _cct->_conf.get_val<std::uint64_t>("osd_aggregate_buffer_chunk_size"),
-    //                             _pgid);
-
-    // init timer
-    // flush_time_out = 5;
-    // flush_time_out = _cct->_conf.get_val<double>("osd_aggregate_buffer_flush_timeout");
-  };
+  pg(_pg) {};
 
 void AggregateBuffer::init(uint64_t _volume_cap, uint64_t _chunk_size, 
   bool _flush_timer_enabled, double _time_out)
@@ -164,6 +152,14 @@ void AggregateBuffer::cache_data_chunk(extent_map& data) {
   }
 }
 
+void AggregateBuffer::clear_ec_cache() {
+  for (uint32_t i = 0; i < ec_cache.second.capacity(); i++) {
+    dout(4) << __func__ << " update_cache clear ec_cache " << i << dendl;
+    ec_cache.second[i].clear();
+  }
+  ec_cache.first.reset();
+}
+
 void AggregateBuffer::ec_cache_read(extent_map& read_result) {
   // TODO: 单个数据块内仅缓存有效数据
   for (uint32_t i = 0; i < ec_cache.second.size(); i++) {
@@ -260,42 +256,37 @@ void AggregateBuffer::update_cache(const hobject_t& soid, std::vector<OSDOp> *op
       auto p = bl.cbegin();
       decode(*meta_ptr, p);
       insert_to_meta_cache(meta_ptr);
-      if (!meta_ptr->full()) {
+      if (meta_ptr->full()) {
+        clear_ec_cache();
+      } else {
         // 未满的volume添加到volume_not_full
-        if (ec_cache.first) {
-          dout(4) << __func__ << " update_cache spg_t = " << volume_buffer.get_spg() 
-              << " ec_cache object = " << ec_cache.first->get_oid() << dendl; 
-        }
         if (!ec_cache.first || (meta_ptr->get_oid() == ec_cache.first->get_oid())) {
           // ec_cache中已经缓存了该volume的数据块，那么下一轮聚合优先填充该volume
           volume_not_full.push_front(meta_ptr);
-          ec_cache.first = meta_ptr; // 更新映射关系
         } else {
           volume_not_full.push_back(meta_ptr);  // 一定对应删除操作(删除单个RGW对象,只需要更新volume元数据)
         }
+        ec_cache.first = meta_ptr;
         dout(4) << __func__ << " update_cache spg_t = " << volume_buffer.get_spg() << " add volume( " <<
           *meta_ptr << ") into volume_not_full" << dendl;
       }
     } else if (osd_op.op.op == CEPH_OSD_OP_WRITE) {
-      if (!meta_ptr) continue;
       // 聚合逻辑下,所有request中一定包含一个WRITE OP和一个SETXATTR OP
-      if (meta_ptr->full()) {
-        for (uint32_t i = 0; i < ec_cache.second.capacity(); i++) {
-          dout(4) << __func__ << " update_cache clear ec_cache " << i << dendl;
-          ec_cache.second[i].clear();
-        }
-        ec_cache.first.reset();
-      } else {
-        // 将本轮聚合的数据缓存在内存中
-        ceph_assert(ec_cache.first->get_oid() == soid);
-        uint64_t chunk_size = volume_buffer.get_volume_info().get_chunk_size();
-        ceph_assert(osd_op.op.extent.length == chunk_size);
-        uint64_t chunk_id = osd_op.op.extent.offset / chunk_size;
-        ceph_assert(ec_cache.second[chunk_id].length() == 0);
-        ec_cache.second[chunk_id].append(std::move(osd_op.indata));
-        ceph_assert(ec_cache.second[chunk_id].length() == chunk_size);
-      }
+      if (!meta_ptr || meta_ptr->full()) continue;
+      // 将本轮聚合的数据缓存在内存中
+      ceph_assert(ec_cache.first->get_oid() == soid);
+      uint64_t chunk_size = volume_buffer.get_volume_info().get_chunk_size();
+      ceph_assert(osd_op.op.extent.length == chunk_size);
+      uint64_t chunk_id = osd_op.op.extent.offset / chunk_size;
+      ceph_assert(ec_cache.second[chunk_id].length() == 0);
+      ec_cache.second[chunk_id].append(std::move(osd_op.indata));
+      ceph_assert(ec_cache.second[chunk_id].length() == chunk_size);
     }
+  }
+  if (!is_volume_cached(soid)) {
+    // 判断ec_cache的volume_t元数据和实际缓存的数据块数据
+    // 如果数据块没有完全缓存，那么就直接清空ec_cache
+    clear_ec_cache();
   }
 }
 

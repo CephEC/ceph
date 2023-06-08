@@ -143,6 +143,8 @@ public:
   */
   void update_cache(const hobject_t& soid, std::vector<OSDOp> *ops);
 
+  void clear_ec_cache();
+
   // ECBackend调用该函数，将remote_read过程中读取到的数据块缓存到AggregateBuffer中
   void cache_data_chunk(extent_map& data);
 
