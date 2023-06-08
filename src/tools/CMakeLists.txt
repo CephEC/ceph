@@ -16,6 +16,9 @@ else()
 endif()
 install(TARGETS rados DESTINATION bin)
 
+# the downscale cls operator library
+target_link_libraries(rados cls_opencv_thumbnail_client)
+
 if(NOT WIN32)
   set(neorados_srcs
       neorados.cc)
