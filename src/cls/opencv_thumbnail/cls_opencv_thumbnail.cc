@@ -1,5 +1,5 @@
+#include "osd/osd_types.h"
 #include "include/rados/objclass.h"
-#include "objclass/objclass.h"
 
 #include <vector>
 
@@ -27,8 +27,8 @@ using cv::imencode;
 // cls链路：
 // 1. 客户端发起请求，为cls请求准备自定义的子op，通过exec方法作为ObjectOperation的data发到服务器端
 // 2. 服务端接到Message之后，解码发现是cls op，交给class handler处理
-// 3. class handler调用对应的cls算子，之前客户端传过来的data作为**参数**而不是被处理的数据，交给对应的cls方法
-// 4. cls算子decode data，获取客户端指定的参数，在这里再自行选择要读写的数据（没有指定oid的话，如何保证连接的osd上一定有想处理的数据？）
+// 3. class handler调用对应的cls算子，之前客户端传过来的data作为被处理的数据，交给对应的cls方法（原生方案是在cls里读取数据，这里修改成了读好再调用cls）
+// 4. cls算子decode param，获取客户端指定的参数，进行对应处理
 
 // the implementation accepts an in-memory file, reshape it according to 
 static void downscale_impl(bufferlist *in, bufferlist *out, opencv_thumbnail_op_t &op) {
@@ -56,11 +56,10 @@ static void downscale_impl(bufferlist *in, bufferlist *out, opencv_thumbnail_op_
 
 static int downscale(cls_method_context_t hctx, bufferlist *in, bufferlist *out) {
   opencv_thumbnail_op_t op;
-  decode(op, *in);
+  decode(op, reinterpret_cast<ClsParmContext*>(hctx)->parm_data);
 
-  // TODO 从osd读取对象，交给cls处理
-
-  downscale_impl(nullptr, out, op);
+  // in modified EC cls, in is target object data instead of cls data
+  downscale_impl(in, out, op);
 
   return 0;
 }
