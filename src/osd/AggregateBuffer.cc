@@ -82,7 +82,7 @@ bool AggregateBuffer::need_translate_op(MOSDOp* m)
 
 int AggregateBuffer::write(OpRequestRef op, MOSDOp* m)
 {
-  if (op_translate(m) == 0) {
+  if (op_translate(op) == 0) {
     // RGW对象覆盖写，不需要聚合
     return AGGREGATE_CONTINUE;
   }
@@ -193,8 +193,10 @@ int AggregateBuffer::flush()
     volume_op = pg->osd->osd->create_request(m);
     volume_op->set_requeued();
     volume_op->set_write_volume();
-
+    volume_op->set_cephec_storage_optimize();
+    
     pg->requeue_op(volume_op);
+    inflight_volume_meta = volume_buffer.get_volume_info();
 
     flush_lock.unlock();
     dout(4) << " aggregate finish, try to write volume, op = " << *m 
@@ -364,7 +366,8 @@ OSDOp generate_zero_op(uint64_t off, uint64_t len) {
   return op;
 }
 
-int AggregateBuffer::op_translate(MOSDOp* m) {
+int AggregateBuffer::op_translate(OpRequestRef &op) {
+  MOSDOp *m = static_cast<MOSDOp *>(op->get_nonconst_req());
   auto rgw_oid = m->get_hobj();
   auto it = volume_meta_cache.find(m->get_hobj());
   if (it == volume_meta_cache.end()) {
@@ -373,30 +376,31 @@ int AggregateBuffer::op_translate(MOSDOp* m) {
     return -ENOENT;
   }
   // 这里采用深拷贝,内存中的volume_meta等待删除（或是写入）完成的回调请求来更新
-  auto volume_meta = *(volume_meta_cache[rgw_oid]);
-  auto chunk_meta = volume_meta.get_chunk(rgw_oid);
+  inflight_volume_meta = *(volume_meta_cache[rgw_oid]);
+  auto chunk_meta = inflight_volume_meta.get_chunk(rgw_oid);
   // 将操作的对象oid由RGW对象oid替换为volume对象oid
-  m->set_hobj(volume_meta.get_oid());
+  m->set_hobj(inflight_volume_meta.get_oid());
   for (uint64_t i = 0; i < m->ops.size(); i++) {
     auto &osd_op = m->ops[i];
-    uint64_t vol_offset = uint8_t(chunk_meta.get_chunk_id()) * volume_meta.get_chunk_size();
+    uint64_t vol_offset = uint8_t(chunk_meta.get_chunk_id()) * inflight_volume_meta.get_chunk_size();
     uint64_t vol_length = osd_op.op.extent.length > chunk_meta.get_offset() ?
       chunk_meta.get_offset() : osd_op.op.extent.length;
     if (osd_op.op.op == CEPH_OSD_OP_DELETE) {
       ceph_assert(m->ops.size() == 1);
-      if (!volume_meta.is_only_valid_object(rgw_oid)) {
+      if (!inflight_volume_meta.is_only_valid_object(rgw_oid)) {
         // volume中还有其他有效对象,更新元数据,并且生成zero请求挖洞
-        m->ops.push_back(generate_zero_op(vol_offset, volume_meta.get_chunk_size()));
-        volume_meta.remove_chunk(rgw_oid);
-        volume_meta.generate_write_meta_op(m->ops[i]);
+        m->ops.push_back(generate_zero_op(vol_offset, inflight_volume_meta.get_chunk_size()));
+        inflight_volume_meta.remove_chunk(rgw_oid);
+        inflight_volume_meta.generate_write_meta_op(m->ops[i]);
+        op->set_cephec_storage_optimize();
         dout(4) << __func__ << " want delete object(oid = "
           << rgw_oid << "), but just update volume_meta. op = " << *m << dendl;
       } else {
         // volume中全部都是无效数据，直接删除整个volume对象
         dout(4) << __func__ << " want delete object(oid = " << rgw_oid 
-          << "), but delete volume(oid = " << volume_meta.get_oid() << ")" << dendl;
+          << "), but delete volume(oid = " << inflight_volume_meta.get_oid() << ")" << dendl;
       }
-      if (ec_cache.first && volume_meta.get_oid() == ec_cache.first->get_oid()) {
+      if (ec_cache.first && inflight_volume_meta.get_oid() == ec_cache.first->get_oid()) {
         // 如果删除的对象在ec_cache中被缓存，刷新ec_cache
         for (uint32_t i = 0; i < ec_cache.second.capacity(); i++) {
           dout(4) << __func__ << " op_translate clear ec_cache " << i << dendl;
@@ -423,22 +427,22 @@ int AggregateBuffer::op_translate(MOSDOp* m) {
                              osd_op.op.cls.argc,
                              osd_op.op.cls.indata_len,
                              osd_op.indata);
-        cls_ctx_map[volume_meta.get_oid()] = cls_parm_ctx;
+        cls_ctx_map[inflight_volume_meta.get_oid()] = cls_parm_ctx;
       }
       // 如果是read请求，那就只需要执行下面这段公用的off,len转译代码就行
       // if (osd_op.op.op == CEPH_OSD_OP_READ) {}
 
       // READ, CALL, WRITEFULL公用的转译逻辑
       // 将待访问RGW对象的oid,off,len替换为volume对象的oid,off,len
-      if (osd_op.op.extent.offset == volume_meta.get_chunk_size()) {
+      if (osd_op.op.extent.offset == inflight_volume_meta.get_chunk_size()) {
         // offset超出RGW对象本身的大小，本次不读取任何数据
-        osd_op.op.extent.offset = volume_meta.get_cap() * volume_meta.get_chunk_size();
+        osd_op.op.extent.offset = inflight_volume_meta.get_cap() * inflight_volume_meta.get_chunk_size();
       } else {
         osd_op.op.extent.offset = vol_offset;
         osd_op.op.extent.length = vol_length;
       }
       dout(4) << __func__ << " translate access object(oid = " << rgw_oid << ") to access_volume(oid = "
-        << volume_meta.get_oid() << " off =  " << osd_op.op.extent.offset
+        << inflight_volume_meta.get_oid() << " off =  " << osd_op.op.extent.offset
         << " len = " << osd_op.op.extent.length << ")" << dendl;
     }
   }

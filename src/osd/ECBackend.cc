@@ -1167,7 +1167,7 @@ void ECBackend::handle_sub_write(
     span = tracing::osd::tracer.add_span(__func__, msg->osd_parent_span);
   }
   trace.event("handle_sub_write");
-
+  dout(10) << __func__ << " ECSubWrite, object = " << op.soid << " t = " << op.t << dendl;
   if (!get_parent()->pgb_is_primary())
     get_parent()->update_stats(op.stats);
   ObjectStore::Transaction localt;
@@ -2378,19 +2378,19 @@ bool ECBackend::try_reads_to_commit()
   if (op->plan.t) {
     std::optional<map<int, size_t>> compress_off = std::nullopt;
     if(auto client_op = dynamic_cast<OpRequest*>(op->client_op.get());
-      client_op != nullptr && client_op->is_write_volume_op()) {
+      client_op != nullptr && client_op->need_cephec_storage_optimize()) {
       
       auto pg = dynamic_cast<PrimaryLogPG*>(get_parent());
       ceph_assert(pg != nullptr && pg->is_aggregate_enabled());
 
       compress_off = map<int, size_t>();
-      auto& volume = pg->get_aggregate_buffer()->get_active_volume();
+      auto &volume_info = pg->get_aggregate_buffer()->get_inflight_volume();
+      auto chunks = volume_info.get_all_chunks();
       const std::vector<int> &chunk_mapping = ec_impl->get_chunk_mapping();
 
       [[maybe_unused]] bool oid_match = false;
 
       size_t max_data_length = 0;
-      auto chunks = volume.get_volume_info().get_all_chunks();
       for(const auto& chunk: chunks) {
         int chunk_id = chunk->get_chunk_id().id;
         if(chunk_id < chunk_mapping.size()) chunk_id = chunk_mapping[chunk_id];
@@ -2428,7 +2428,7 @@ bool ECBackend::try_reads_to_commit()
       }
 
       if(!oid_match)
-        dout(20) << __func__ << " warning: object " << op->hoid << " not found in volume " << volume.get_volume_info().get_oid() << dendl;
+        dout(20) << __func__ << " warning: object " << op->hoid << " not found in volume " << volume_info.get_oid() << dendl;
     }
     ECTransaction::generate_transactions(
       op->plan,

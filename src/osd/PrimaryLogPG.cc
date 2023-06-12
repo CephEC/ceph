@@ -2576,7 +2576,7 @@ void PrimaryLogPG::do_op(OpRequestRef &op)
       // 读请求和Cls请求都会进入转译
       // ceph内部存在一些非聚合的对象，在volume_meta_cache无法找到它们的映射关系
       // 当volume_meta_cache中不存在对象映射时，不要直接返回对象不存在，而是将请求原封不动继续下发
-      int r = m_aggregate_buffer->op_translate(m);
+      int r = m_aggregate_buffer->op_translate(op);
       if (r < 0) {
         // 这里的r只可能是ENOENT,如果后续出现其他错误码,要同步修改错误处理逻辑
         if (!recovery_state.have_missing()) {
