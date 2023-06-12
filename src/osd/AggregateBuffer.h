@@ -78,6 +78,8 @@ public:
 
   Volume& get_active_volume() { return volume_buffer; }
 
+  volume_t& get_inflight_volume() { return inflight_volume_meta; }
+
   /**
    * volume对象写盘完成后，将waiting_for_aggregate_op中的RGW写请求重新投入OSD队列再次执行
   */
@@ -117,7 +119,7 @@ public:
    * @param m
    * @return int
    */
-   int op_translate(MOSDOp* m);
+   int op_translate(OpRequestRef &op);
 
   /**
    * @brief 把waiting_for_reply
@@ -205,6 +207,8 @@ public:
   std::list<OpRequestRef> waiting_for_aggregate;
   std::list<OpRequestRef> waiting_for_reply;
   OpRequestRef volume_op;
+  volume_t inflight_volume_meta; 
+  // 与当前正在执行的请求相关联的volume元数据， 主要在ECBackEnd处做空间优化的时候被使用
 private:
   CephContext* cct;
   PrimaryLogPG *pg;
