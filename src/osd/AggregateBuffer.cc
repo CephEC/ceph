@@ -383,8 +383,6 @@ int AggregateBuffer::op_translate(OpRequestRef &op) {
   for (uint64_t i = 0; i < m->ops.size(); i++) {
     auto &osd_op = m->ops[i];
     uint64_t vol_offset = uint8_t(chunk_meta.get_chunk_id()) * inflight_volume_meta.get_chunk_size();
-    uint64_t vol_length = osd_op.op.extent.length > chunk_meta.get_offset() ?
-      chunk_meta.get_offset() : osd_op.op.extent.length;
     if (osd_op.op.op == CEPH_OSD_OP_DELETE) {
       ceph_assert(m->ops.size() == 1);
       if (!inflight_volume_meta.is_only_valid_object(rgw_oid)) {
@@ -428,6 +426,7 @@ int AggregateBuffer::op_translate(OpRequestRef &op) {
                              osd_op.op.cls.indata_len,
                              osd_op.indata);
         cls_ctx_map[inflight_volume_meta.get_oid()] = cls_parm_ctx;
+        osd_op.op.extent.length = chunk_meta.get_offset();
       }
       // 如果是read请求，那就只需要执行下面这段公用的off,len转译代码就行
       // if (osd_op.op.op == CEPH_OSD_OP_READ) {}
@@ -439,7 +438,8 @@ int AggregateBuffer::op_translate(OpRequestRef &op) {
         osd_op.op.extent.offset = inflight_volume_meta.get_cap() * inflight_volume_meta.get_chunk_size();
       } else {
         osd_op.op.extent.offset = vol_offset;
-        osd_op.op.extent.length = vol_length;
+        osd_op.op.extent.length = osd_op.op.extent.length > chunk_meta.get_offset() ?
+          chunk_meta.get_offset() : osd_op.op.extent.length;
       }
       dout(4) << __func__ << " translate access object(oid = " << rgw_oid << ") to access_volume(oid = "
         << inflight_volume_meta.get_oid() << " off =  " << osd_op.op.extent.offset
