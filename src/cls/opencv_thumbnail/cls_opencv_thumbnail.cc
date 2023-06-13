@@ -54,7 +54,7 @@ static void downscale_impl(bufferlist *in, bufferlist *out, opencv_thumbnail_op_
 
   out->append(reinterpret_cast<char*>(file_out.data()), file_out.size());
 
-  cls_log(4, "in %s: mode %s, in data size %u, out data size %u", __func__, op.is_ratio_shape ? "ratio" : "fixed", in->length(), out->length());
+  cls_log(20, "in %s: mode %s, in data size %u, out data size %u", __func__, op.is_ratio_shape ? "ratio" : "fixed", in->length(), out->length());
 }
 
 static int downscale(cls_method_context_t hctx, bufferlist *in, bufferlist *out) {
