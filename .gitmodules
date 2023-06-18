@@ -72,3 +72,6 @@
 [submodule "src/utf8proc"]
 	path = src/utf8proc
 	url = https://github.com/JuliaStrings/utf8proc
+[submodule "src/json"]
+  path = src/json
+  url = https://github.com/nlohmann/json.git

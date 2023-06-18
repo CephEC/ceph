@@ -3276,9 +3276,9 @@ void Objecter::_send_op(Op *op)
     m->clear_payload();  // reencode
   }
 
-  ldout(cct, 15) << "_send_op " << op->tid << " to "
+  std::cout << "_send_op " << op->tid << " to "
 		 << op->target.actual_pgid << " on osd." << op->session->osd
-		 << dendl;
+		 << std::endl;
 
   ConnectionRef con = op->session->con;
   ceph_assert(con);
