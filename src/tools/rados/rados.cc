@@ -3350,9 +3350,9 @@ static int rados_tool_common(const std::map < std::string, std::string > &opts,
     decode(res, out);
     for(int i=0;i<res.size();i++){
         for(int j=0;j<res[i].size();j++){
-            cout<<res[i][j]<<" ";
+            cout << res[i][j] <<" ";
         }
-        cout<<endl;
+        cout << std::endl;
     }
     cout << "Done!" << std::endl;
   }

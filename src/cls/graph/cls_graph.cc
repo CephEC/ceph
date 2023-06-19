@@ -118,7 +118,7 @@ static int graph_sampling(cls_method_context_t hctx, bufferlist *in, bufferlist 
 	    err.what());
     return -EINVAL;
   }
-	auto sampling_result = multihop_sampling2(op.sample_nums, op.src_nodes, read_bl);
+	auto sampling_result = multihop_sampling2(op.src_nodes, op.sample_nums, read_bl);
 	encode(sampling_result, *out);
   return 0;
 }
