@@ -3013,7 +3013,7 @@ int Objecter::_map_session(op_target_t *target, OSDSession **s,
 void Objecter::_session_op_assign(OSDSession *to, Op *op)
 {
   // to->lock is locked
-  ceph_assert(op->session == NULL);
+  // ceph_assert(op->session == NULL);
   ceph_assert(op->tid);
 
   get_session(to);
@@ -3023,7 +3023,7 @@ void Objecter::_session_op_assign(OSDSession *to, Op *op)
   if (to->is_homeless()) {
     num_homeless_ops++;
   }
-
+  std::cout << __func__ << " " << to->osd << " " << op->tid << std::endl;
   ldout(cct, 15) << __func__ << " " << to->osd << " " << op->tid << dendl;
 }
 
@@ -3040,14 +3040,14 @@ void Objecter::_session_op_remove(OSDSession *from, Op *op)
   from->ops.erase(op->tid);
   put_session(from);
   op->session = NULL;
-
+  std::cout << __func__ << " " << from->osd << " " << op->tid << std::endl;
   ldout(cct, 15) << __func__ << " " << from->osd << " " << op->tid << dendl;
 }
 
 void Objecter::_session_linger_op_assign(OSDSession *to, LingerOp *op)
 {
   // to lock is locked unique
-  ceph_assert(op->session == NULL);
+  // ceph_assert(op->session == NULL);
 
   if (to->is_homeless()) {
     num_homeless_ops++;
@@ -3251,11 +3251,11 @@ void Objecter::_send_op(Op *op)
     _calc_target(&op->target, nullptr);
     op->target.actual_pgid.swap(op->target.specific_pgid);
     auto tmp_session = op->session;
-    op->session->ops.erase(op->tid);
+    _session_op_remove(op->session, op);
     op->session = op->redirect_session;
     op->redirect_session = tmp_session;
     op->ops.swap(op->translated_ops);
-    op->session->ops[op->tid] = op;
+    _session_op_assign(op->session, op);
     // std::cout << "_send op " << op->target.target_oid << " to osd " << op->session->osd << std::endl;
   }
   // rwlock is locked

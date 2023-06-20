@@ -988,8 +988,6 @@ int ObjBencher::partial_read_bench(
   }
 
   unsigned reads_per_object = 1;
-  if (data.op_size)
-    reads_per_object = data.object_size / data.op_size;
 
   srand (time(NULL));
 
