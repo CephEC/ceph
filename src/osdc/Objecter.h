@@ -1899,7 +1899,6 @@ public:
 
   struct Op : public RefCountedObject {
     OSDSession *session = nullptr;
-    OSDSession *redirect_session = nullptr;
     int incarnation = 0;
 
     op_target_t target;
@@ -1908,7 +1907,7 @@ public:
     uint64_t features = CEPH_FEATURES_SUPPORTED_DEFAULT; // explicitly specified op features
 
     osdc_opvec ops;
-    osdc_opvec translated_ops; // cephEC读优化中被使用
+    osdc_opvec translated_ops; // cephEC读优化中被使用(即被转译后的ops)
 
     snapid_t snapid = CEPH_NOSNAP;
     SnapContext snapc;
@@ -2718,6 +2717,8 @@ private:
   void emit_blocklist_events(const OSDMap::Incremental &inc);
   void emit_blocklist_events(const OSDMap &old_osd_map,
                              const OSDMap &new_osd_map);
+
+  void redirect_to_replicateOSD(MOSDOpReply *m, Op *op, shunique_lock<ceph::shared_mutex>& sul);
 
   // low-level
   void _op_submit(Op *op, ceph::shunique_lock<ceph::shared_mutex>& lc,
