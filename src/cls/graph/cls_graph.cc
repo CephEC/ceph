@@ -99,9 +99,23 @@ std::vector<std::vector<int>> multihop_sampling2(const std::vector<int>& src_nod
 	return sampling_result;
 }
 
+std::string encode_two_dimentional_vector(const std::vector<std::vector<int>>& vec) {
+    json j(vec);
+    return j.dump();
+}
+
+std::pair<std::vector<int>, std::vector<int>> decode_and_unpack(const std::string& encoded_data) {
+    std::string json_data(encoded_data);
+    json data = json::parse(json_data);
+
+    std::vector<int> array1 = data["array1"];
+    std::vector<int> array2 = data["array2"];
+
+    return {array1, array2};
+}
+
 static int graph_sampling(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
 {
-	graph_op_t op;
 	uint64_t size;
 	bufferlist read_bl;
 	int r = cls_cxx_stat(hctx, &size, NULL);
@@ -111,15 +125,16 @@ static int graph_sampling(cls_method_context_t hctx, bufferlist *in, bufferlist 
   if (r < 0)
     return r;
   try {
-    auto iter = in->cbegin();
-    decode(op, iter);
+    auto parm = decode_and_unpack(in->c_str());
+		// parm.first -> src_nodes   parm.first-> sample_nums
   } catch (const ceph::buffer::error& err) {
     CLS_ERR("ERROR: %s: failed to decode request: %s", __PRETTY_FUNCTION__,
 	    err.what());
     return -EINVAL;
   }
-	auto sampling_result = multihop_sampling2(op.src_nodes, op.sample_nums, read_bl);
-	encode(sampling_result, *out);
+	auto sampling_result = multihop_sampling2(parm.first, parm.second, read_bl);
+	auto encoded_res = encode_two_dimentional_vector();
+	out->append(encoded_res);
   return 0;
 }
 
