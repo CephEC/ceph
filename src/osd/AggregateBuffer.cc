@@ -72,7 +72,8 @@ bool AggregateBuffer::need_translate_op(MOSDOp* m)
         iter->op.op == CEPH_OSD_OP_SPARSE_READ ||
         iter->op.op == CEPH_OSD_OP_SYNC_READ ||
         iter->op.op == CEPH_OSD_OP_CALL ||
-        iter->op.op == CEPH_OSD_OP_DELETE) {
+        iter->op.op == CEPH_OSD_OP_DELETE ||
+        iter->op.op == CEPH_OSD_OP_STAT) {
       ret = true;
       break;
     }
@@ -383,6 +384,11 @@ int AggregateBuffer::op_translate(OpRequestRef &op) {
   for (uint64_t i = 0; i < m->ops.size(); i++) {
     auto &osd_op = m->ops[i];
     uint64_t vol_offset = uint8_t(chunk_meta.get_chunk_id()) * inflight_volume_meta.get_chunk_size();
+    if (osd_op.op.op == CEPH_OSD_OP_STAT) {
+      encode(chunk_meta.get_offset(), osd_op.outdata);
+      encode(chunk_meta.get_mtine(), osd_op.outdata);
+
+    }
     if (osd_op.op.op == CEPH_OSD_OP_DELETE) {
       ceph_assert(m->ops.size() == 1);
       if (!inflight_volume_meta.is_only_valid_object(rgw_oid)) {

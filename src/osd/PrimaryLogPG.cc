@@ -6450,7 +6450,11 @@ int PrimaryLogPG::do_osd_ops(OpContext *ctx, vector<OSDOp>& ops)
     case CEPH_OSD_OP_STAT:
       // note: stat does not require RD
       {
-	tracepoint(osd, do_osd_op_pre_stat, soid.oid.name.c_str(), soid.snap.val);
+        // 在cephEC配置下，所以STAT命令会在do_op中被拦截，然后由AggregateBuffer负责处理
+        if (is_aggregate_enabled() && is_primary()) {
+          break;
+        }
+        tracepoint(osd, do_osd_op_pre_stat, soid.oid.name.c_str(), soid.snap.val);
 
 	if (obs.exists && !oi.is_whiteout()) {
 	  encode(oi.size, osd_op.outdata);

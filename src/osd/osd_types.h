@@ -6743,13 +6743,12 @@ public:
 
   chunk_t() : chunk_id(chunk_id_t()), chunk_state(EMPTY),
               chunk_fill_offset(0), pg_id(spg_t()),
-              soid(hobject_t()), is_erasure(false) {}
+              soid(hobject_t()) {}
   
   chunk_t(uint8_t _id, const spg_t& _pg_id, bool _is_erasure = false) : 
           chunk_id(_id), chunk_state(EMPTY),
           chunk_fill_offset(0), pg_id(_pg_id), 
-          soid(hobject_t()), is_erasure(false) {}
-
+          soid(hobject_t()) {}
 
   void set_from_op(uint8_t _chunk_id, uint64_t _offset, const hobject_t& _soid)  
   {
@@ -6757,17 +6756,19 @@ public:
     chunk_fill_offset = _offset;
     soid = _soid;
     chunk_state = VALID;
+    mtime = ceph_clock_now();
   }
 
   chunk_id_t get_chunk_id() const { return chunk_id; }
   spg_t get_spg() const { return pg_id; }
   uint64_t get_offset() const { return chunk_fill_offset; }
-  bool get_type() const { return is_erasure; }
 
-  void set_seq(uint8_t seq) { chunk_id = chunk_id_t(seq); }
+  void set_seq(uint8_t _seq) { chunk_id = chunk_id_t(_seq); }
   uint8_t get_seq() const { return uint8_t(chunk_id); }
   void set_empty() { chunk_state = EMPTY; }
   void set_oid(hobject_t& _oid) { soid = _oid; }
+  void set_mtime(utime_t _mtime)  { mtime = _mtime; }
+  utime_t get_mtine() { return mtime; }
 
    bool is_empty() { return chunk_state == EMPTY; }
    bool is_valid() { return chunk_state == VALID; }
@@ -6785,7 +6786,7 @@ public:
     encode(chunk_id, bl);
     encode(chunk_state, bl);
     encode(chunk_fill_offset, bl);
-    encode(is_erasure, bl);
+    encode(mtime, bl);
     encode(soid, bl);
     ENCODE_FINISH(bl);
   }
@@ -6795,7 +6796,7 @@ public:
     decode(chunk_id, bl);
     decode(chunk_state, bl);
     decode(chunk_fill_offset, bl);
-    decode(is_erasure, bl);
+    decode(mtime, bl);
     decode(soid, bl);
     DECODE_FINISH(bl);
   }
@@ -6805,17 +6806,17 @@ public:
     this->chunk_fill_offset = rhs.chunk_fill_offset;
     this->pg_id = rhs.pg_id;
     this->soid = rhs.soid;
-    this->is_erasure = rhs.is_erasure;
+    this->mtime = rhs.mtime;
     return *this;
   }
 
   bool operator==(const chunk_t& rhs) const {
     return get_chunk_id() == rhs.get_chunk_id() && chunk_state == rhs.chunk_state &&
-      chunk_fill_offset == rhs.chunk_fill_offset && is_erasure == rhs.is_erasure && soid == rhs.soid;
+      chunk_fill_offset == rhs.chunk_fill_offset && mtime == rhs.mtime && soid == rhs.soid;
   }
   bool operator!=(const chunk_t& rhs) const {
     return get_chunk_id() != rhs.get_chunk_id() || chunk_state != rhs.chunk_state ||
-      chunk_fill_offset != rhs.chunk_fill_offset || is_erasure != rhs.is_erasure || soid != rhs.soid;
+      chunk_fill_offset != rhs.chunk_fill_offset || mtime != rhs.mtime || soid != rhs.soid;
   }
   friend std::ostream& operator<<(std::ostream& out, const chunk_t& o) {
     out << "chunk_id = " << int8_t(o.chunk_id) << std::endl;
@@ -6823,7 +6824,7 @@ public:
     out << "chunk_fill_offset = " << o.chunk_fill_offset << std::endl;
     out << "pg_id = " << o.pg_id << std::endl;
     out << "soid = " << o.soid << std::endl;
-    out << "is_erasure = " << o.is_erasure << std::endl;
+    out << "mtime = " << o.mtime << std::endl;
     return out;
   }
   void dump(ceph::Formatter *f) const {
@@ -6840,8 +6841,8 @@ private:
   spg_t pg_id;
   // object元数据
   hobject_t soid;
-  // ec chunk?
-  bool is_erasure;
+  // 写入时间
+  utime_t mtime;
 };
 WRITE_CLASS_ENCODER(chunk_t)
 
