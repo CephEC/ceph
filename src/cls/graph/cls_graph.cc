@@ -124,16 +124,10 @@ static int graph_sampling(cls_method_context_t hctx, bufferlist *in, bufferlist 
 	r = cls_cxx_read(hctx, 0, size, &read_bl);
   if (r < 0)
     return r;
-  try {
-    auto parm = decode_and_unpack(in->c_str());
-		// parm.first -> src_nodes   parm.first-> sample_nums
-  } catch (const ceph::buffer::error& err) {
-    CLS_ERR("ERROR: %s: failed to decode request: %s", __PRETTY_FUNCTION__,
-	    err.what());
-    return -EINVAL;
-  }
+  auto parm = decode_and_unpack(in->c_str());
+	// parm.first -> src_nodes   parm.first-> sample_nums
 	auto sampling_result = multihop_sampling2(parm.first, parm.second, read_bl);
-	auto encoded_res = encode_two_dimentional_vector();
+	auto encoded_res = encode_two_dimentional_vector(sampling_result);
 	out->append(encoded_res);
   return 0;
 }
