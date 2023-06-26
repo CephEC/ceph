@@ -1503,7 +1503,7 @@ public:
     return m_aggregate_buffer.get();
   }
 
-  bool is_aggregate_enabled() { return aggregate_enabled; }
+  bool is_aggregate_enabled() { return aggregate_enabled && pool.info.is_erasure(); }
 
   void do_request(
     OpRequestRef& op,

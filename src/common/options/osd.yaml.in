@@ -605,7 +605,7 @@ options:
     you set this to a value below what clients expect, they will receive an error
     when attempting to write to the cluster.
   fmt_desc: The maximum size of a write in megabytes.
-  default: 1200
+  default: 2000
   min: 4
   with_legacy: true
 - name: osd_max_pgls
@@ -1314,5 +1314,9 @@ options:
   level: advanced
   default: 1
   with_legacy: true
-
+- name: osd_cephec_class_list
+  type: str
+  level: advanced
+  default: opencv_thumbnail
+  with_legacy: true
  
