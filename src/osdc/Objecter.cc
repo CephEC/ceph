@@ -3276,7 +3276,12 @@ void Objecter::_send_op(Op *op)
     m->set_spg(op->target.actual_pgid);
     m->clear_payload();  // reencode
   }
-
+  /*
+  std::cout << "_send_op " << op->tid << " to "
+		 << op->target.actual_pgid << " on osd." << op->session->osd 
+     << " time " << mono_clock::now()
+		 << std::endl;
+  */
   ldout(cct, 15) << "_send_op " << op->tid << " to "
 		 << op->target.actual_pgid << " on osd." << op->session->osd
 		 << dendl;

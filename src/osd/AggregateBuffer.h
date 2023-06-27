@@ -19,6 +19,7 @@
 #include "common/Cond.h"
 #include "common/Finisher.h"
 #include "common/Thread.h"
+#include "osd/ClassHandler.h"
 
 /* return code for aggregate buffer */
 #define AGGREGATE_FAILED -1

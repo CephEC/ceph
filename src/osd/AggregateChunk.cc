@@ -53,6 +53,20 @@ chunk_t Chunk::set_from_op(OpRequestRef _op, MOSDOp* _m, const uint8_t& seq, uin
 
       osd_op.op.extent.offset = chunk_info.get_seq() * chunk_size;
       osd_op.op.extent.length = chunk_size;
+    } else if (osd_op.op.op == CEPH_OSD_OP_SETXATTR) {
+      std::string key;
+      auto bp = osd_op.indata.cbegin();
+      bp.copy(osd_op.op.xattr.name_len, key);
+
+      bufferlist value;
+      bp.copy(osd_op.op.xattr.value_len, value);
+
+      key = oid.get_key() + "_" + key;
+      osd_op.op.xattr.name_len = key.size();
+
+      osd_op.indata.clear();
+      osd_op.indata.append(key);
+      osd_op.indata.append(value);
     }
     ops.push_back(osd_op);
   }

@@ -97,14 +97,14 @@ public:
     }
   };
 
+  static bool in_class_list(const std::string& cname,
+      const std::string& list);
+
 private:
   std::map<std::string, ClassData> classes;
 
   ClassData *_get_class(const std::string& cname, bool check_allowed);
   int _load_class(ClassData *cls);
-
-  static bool in_class_list(const std::string& cname,
-      const std::string& list);
 
   ceph::mutex mutex = ceph::make_mutex("ClassHandler");
 
