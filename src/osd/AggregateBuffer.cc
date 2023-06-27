@@ -54,7 +54,8 @@ bool AggregateBuffer::need_aggregate_op(MOSDOp* m)
 
   for (iter = m->ops.begin(); iter != m->ops.end(); ++iter) {
     if (iter->op.op == CEPH_OSD_OP_WRITEFULL ||
-        iter->op.op == CEPH_OSD_OP_WRITE) {
+        iter->op.op == CEPH_OSD_OP_WRITE ||
+        iter->op.op == CEPH_OSD_OP_SETXATTR) {
       ret = true;
       break;
     }
@@ -73,7 +74,8 @@ bool AggregateBuffer::need_translate_op(MOSDOp* m)
         iter->op.op == CEPH_OSD_OP_SYNC_READ ||
         iter->op.op == CEPH_OSD_OP_CALL ||
         iter->op.op == CEPH_OSD_OP_DELETE ||
-        iter->op.op == CEPH_OSD_OP_STAT) {
+        iter->op.op == CEPH_OSD_OP_STAT ||
+        iter->op.op == CEPH_OSD_OP_GETXATTR) {
       ret = true;
       break;
     }
@@ -83,7 +85,7 @@ bool AggregateBuffer::need_translate_op(MOSDOp* m)
 
 int AggregateBuffer::write(OpRequestRef op, MOSDOp* m)
 {
-  if (op_translate(op) == 0) {
+  if (op_translate(op) == AGGREGATE_CONTINUE) {
     // RGW对象覆盖写，不需要聚合
     return AGGREGATE_CONTINUE;
   }
@@ -195,6 +197,7 @@ int AggregateBuffer::flush()
     volume_op->set_requeued();
     volume_op->set_write_volume();
     volume_op->set_cephec_storage_optimize();
+    volume_op->set_cephec_translated_op();
     
     pg->requeue_op(volume_op);
     inflight_volume_meta = volume_buffer.get_volume_info();
@@ -371,6 +374,7 @@ int AggregateBuffer::op_translate(OpRequestRef &op) {
   MOSDOp *m = static_cast<MOSDOp *>(op->get_nonconst_req());
   auto rgw_oid = m->get_hobj();
   auto it = volume_meta_cache.find(m->get_hobj());
+  int r = 0;
   if (it == volume_meta_cache.end()) {
     // rados对象不存在
     dout(4) << __func__ << " object(oid = " << rgw_oid << ") not exists" << dendl;
@@ -384,11 +388,26 @@ int AggregateBuffer::op_translate(OpRequestRef &op) {
   for (uint64_t i = 0; i < m->ops.size(); i++) {
     auto &osd_op = m->ops[i];
     uint64_t vol_offset = uint8_t(chunk_meta.get_chunk_id()) * inflight_volume_meta.get_chunk_size();
+    
+    if (osd_op.op.op == CEPH_OSD_OP_ZERO) { continue; }
+    if (osd_op.op.op == CEPH_OSD_OP_GETXATTR) {
+      // 为了区分同一个volume内不同rgw对象的xattr,需要在xattr.key中追加对象的oid
+      auto bp = osd_op.indata.cbegin();
+      std::string key;
+      bp.copy(osd_op.op.xattr.name_len, key);
+      key = chunk_meta.get_oid().get_key() + "_" + key;
+      osd_op.indata.clear();
+      osd_op.op.xattr.name_len = key.size();
+      osd_op.indata.append(key);
+      continue;
+    }
+
     if (osd_op.op.op == CEPH_OSD_OP_STAT) {
       encode(chunk_meta.get_offset(), osd_op.outdata);
       encode(chunk_meta.get_mtine(), osd_op.outdata);
-
+      continue;
     }
+
     if (osd_op.op.op == CEPH_OSD_OP_DELETE) {
       ceph_assert(m->ops.size() == 1);
       if (!inflight_volume_meta.is_only_valid_object(rgw_oid)) {
@@ -416,21 +435,38 @@ int AggregateBuffer::op_translate(OpRequestRef &op) {
       // 回调时从内存中将该volume的信息清除
       continue;
     }
-    if (osd_op.op.op == CEPH_OSD_OP_ZERO) { continue; }
+
     {
       if (osd_op.op.op == CEPH_OSD_OP_WRITEFULL) {
         // 为RGW对象覆盖写提供请求转译
         osd_op.op.op = CEPH_OSD_OP_WRITE;
+        r = AGGREGATE_CONTINUE;
       }
       if (osd_op.op.op == CEPH_OSD_OP_CALL) {
+        std::string cname;
+        try
+        {
+          osd_op.indata.begin().copy(osd_op.op.cls.class_len, cname);
+        } catch (ceph::buffer::error &e)
+        {
+          dout(10) << "call unable to decode class" << dendl;
+          dout(30) << "in dump: ";
+          osd_op.indata.hexdump(*_dout);
+          *_dout << dendl;
+          ceph_assert(false);
+        }
+        // 只转译新构建的Cls算子（因为原生的cls算子和基于cephEC的cls算子的参数解析方式不同，所以需要区分）
+        if (!ClassHandler::get_instance().in_class_list(cname, cct->_conf->osd_cephec_class_list)) {
+          continue;
+        }
         // 为EC pool中的Cls请求提供转译
         osd_op.op.op = CEPH_OSD_OP_EC_CALL;
         ClsParmContext *cls_parm_ctx = 
           new ClsParmContext(osd_op.op.cls.class_len,
-                             osd_op.op.cls.method_len,
-                             osd_op.op.cls.argc,
-                             osd_op.op.cls.indata_len,
-                             osd_op.indata);
+                            osd_op.op.cls.method_len,
+                            osd_op.op.cls.argc,
+                            osd_op.op.cls.indata_len,
+                            osd_op.indata);
         cls_ctx_map[inflight_volume_meta.get_oid()] = cls_parm_ctx;
         osd_op.op.extent.length = chunk_meta.get_offset();
       }
@@ -452,5 +488,6 @@ int AggregateBuffer::op_translate(OpRequestRef &op) {
         << " len = " << osd_op.op.extent.length << ")" << dendl;
     }
   }
-  return 0;
+  op->set_cephec_translated_op();
+  return r;
 }

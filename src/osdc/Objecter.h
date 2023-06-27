@@ -77,7 +77,7 @@ struct CB_EnumerateReply;
 
 inline constexpr std::size_t osdc_opvec_len = 2;
 using osdc_opvec = boost::container::small_vector<OSDOp, osdc_opvec_len>;
-
+using ceph::mono_clock;
 // -----------------------------------------
 
 struct ObjectOperation {
