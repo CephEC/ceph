@@ -2287,7 +2287,10 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
   // 如果发现要写入的volume丢失数据或是正在修复中，那么就选择另外一个volume写入
 
   // TODO(zhengfuyu): 这一块代码有点乱，后续可以根据OSDOp的Op code来更加准确地调用AggregateBuffer的相关接口
-  if (is_aggregate_enabled() && !op->is_write_volume_op() && op->get_reqid().name.is_client()) {
+  if (is_primary() &&
+      is_aggregate_enabled() && 
+      !op->is_write_volume_op() && 
+      op->get_reqid().name.is_client()) {
     if (m_aggregate_buffer->need_aggregate_op(m)) {
       dout(10) << "write op " << op << " in buffer." << dendl;
       int r = m_aggregate_buffer->write(op, m);

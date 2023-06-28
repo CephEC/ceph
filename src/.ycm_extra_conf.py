@@ -26,7 +26,6 @@ flags = [
         '-isystem',
         './osdc',
         '-isystem',
-        './aggregate_test'
         ]
 
 """
