@@ -175,16 +175,6 @@ private:
   std::atomic<bool> is_flushing = false;
   double flush_time_out;
 
-  // class FlushContext: public Context
-  // {
-    // AggregateBuffer* buffer;
-  // public:
-    // explicit FlushContext(AggregateBuffer *_buffer): buffer(_buffer) {}
-    // void finish(int r) { 
-      // buffer->flush();
-    // }
-  // };
-
   template<typename T>
   class C_FlushContext : public LambdaContext<T> {
     public:

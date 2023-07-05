@@ -89,8 +89,6 @@ MOSDOp* Volume::_prepare_volume_op(MOSDOp *m)
   // 优先级
   if (m->get_priority())
     volume_m->set_priority(m->get_priority());
-  // else
-  //   volume_m->set_priority(cct->_conf->osd_client_op_priority);
 
   if (m->get_reqid() != osd_reqid_t()) {
     volume_m->set_reqid(m->get_reqid());
@@ -99,19 +97,13 @@ MOSDOp* Volume::_prepare_volume_op(MOSDOp *m)
   volume_m->set_header(m->get_header());
   volume_m->set_footer(m->get_footer());
 
-  // throttler?
-
   return volume_m;
   
 }
 
-
-
-// 倾向于用最后一个op的信息隐藏前面的op，保留了最新的OSDMap？
-// 生成一个新op吧，不然很混乱
 MOSDOp* Volume::generate_op()
 {
-  // TODO: 生成新op然后将数据部分接在op的后面，并且要修改op的部分flag
+  // 生成新op然后将数据部分接在op的后面，并且要修改op的部分flag
   MOSDOp* newest_m = nullptr;
   MOSDOp* volume_m = nullptr;
   for (auto iter = chunks.begin(); iter != chunks.end(); iter++) {
@@ -132,10 +124,6 @@ MOSDOp* Volume::generate_op()
   volume_info.generate_write_meta_op(write_meta_op);
   (volume_m->ops).push_back(write_meta_op);
 
-  // 如果不encode，转化为Message会被截断
-  // encode的开销？
   volume_m->encode_payload(volume_m->get_features());
-  // volume_m->set_final_decode_needed(true);
-  // volume_m->set_partial_decode_needed(true);
   return volume_m;
 }

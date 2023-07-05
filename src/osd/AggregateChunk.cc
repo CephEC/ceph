@@ -35,8 +35,8 @@ chunk_t Chunk::set_from_op(OpRequestRef _op, MOSDOp* _m, const uint8_t& seq, uin
       << " max_chunk_size = " << chunk_size << dendl;
     return chunk_t();
   }
-    
-  chunk_info.set_from_op(seq, data_len, oid);
+  // 将对象填充到oid中
+  chunk_info.set_from_op(seq, 0, oid);
 
   dout(20) << __func__ << ": ops.size=" << _m->ops.size() << dendl;
 
@@ -46,6 +46,7 @@ chunk_t Chunk::set_from_op(OpRequestRef _op, MOSDOp* _m, const uint8_t& seq, uin
       // 将WRITEFULL改成WRITE，同时调整offset和length
       osd_op.op.op = CEPH_OSD_OP_WRITE;
       
+      chunk_info.set_from_op(seq, osd_op.indata.length(), oid);
       dout(20) << __func__ << ": bufferlist before zerofilling " << osd_op.indata << dendl;
       size_t zero_to_fill = chunk_size - osd_op.indata.length();
       osd_op.indata.append_zero(zero_to_fill);

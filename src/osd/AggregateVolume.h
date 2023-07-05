@@ -51,7 +51,7 @@ public:
   int add_chunk(OpRequestRef op, MOSDOp* m);
 
   void remove_chunk(hobject_t soid);
-  
+
   void clear(); 
 
   void flush();

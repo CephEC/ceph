@@ -6763,6 +6763,7 @@ public:
   spg_t get_spg() const { return pg_id; }
   uint64_t get_offset() const { return chunk_fill_offset; }
 
+  void set_offset(uint64_t _offset) { chunk_fill_offset = _offset; }
   void set_seq(uint8_t _seq) { chunk_id = chunk_id_t(_seq); }
   uint8_t get_seq() const { return uint8_t(chunk_id); }
   void set_empty() { chunk_state = EMPTY; }
@@ -6773,7 +6774,6 @@ public:
    bool is_empty() { return chunk_state == EMPTY; }
    bool is_valid() { return chunk_state == VALID; }
    bool is_invalid() { return chunk_state == INVALID; }
-   uint64_t offset() { return chunk_fill_offset; }
    hobject_t get_oid() const { return soid; }
 
   void clear() {
@@ -6915,6 +6915,18 @@ public:
     op.op.xattr.value_len = bl.length();
   }
 
+  OSDOp generate_write_meta_op() {
+    OSDOp op{};
+    op.op.op = CEPH_OSD_OP_SETXATTR;
+    std::string name("volume_meta");
+    bufferlist bl;
+    encode(bl);
+    op.op.xattr.name_len = name.size();
+    op.indata.append(name.c_str(), op.op.xattr.name_len);
+    op.indata.append(bl);
+    op.op.xattr.value_len = bl.length();
+    return op;
+  }
 
   std::vector<const hobject_t*> get_all_soid() {
     std::vector<const hobject_t*> out;
@@ -6959,6 +6971,14 @@ public:
     }
     size--;
   }
+  // 指定soid的对象出现覆盖写，改变chunk内部数据的有效长度
+  void update_chunk(hobject_t soid, uint64_t chunk_fill_offset)
+  {
+    auto o = chunks.find(soid);
+    ceph_assert(o != chunks.end());
+    o.second.set_offset(chunk_fill_offset);
+  }
+
   // 清空volume map, cap和pgid由pool配置决定，osd运行期间不改变
   void clear()
   {
