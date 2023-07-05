@@ -1284,29 +1284,11 @@ options:
   level: dev
   default: true
   with_legacy: true
-- name: osd_aggregate_buffer_enabled
-  desc: 
-  type: bool
-  level: advanced
-  default: true 
-  with_legacy: true
 - name: osd_aggregate_flush_timer_enabled
   desc: enable flush timer in aggregate buffer
   type: bool
   level: advanced
-  default: true
-  with_legacy: true
-- name: osd_aggregate_buffer_capacity
-  desc: The number of chunks that the buffer/volume can manage
-  type: int
-  level: advanced
-  default: 4 
-  with_legacy: true
-- name: osd_aggregate_buffer_chunk_size
-  desc: Max OpRequest size that a chunk can manage
-  type: size
-  level: advanced
-  default: 128_M 
+  default: false
   with_legacy: true
 - name: osd_aggregate_buffer_flush_timeout
   desc: Volume flush timeout in seconds

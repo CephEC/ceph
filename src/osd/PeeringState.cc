@@ -5129,6 +5129,7 @@ PeeringState::WaitRemoteBackfillReserved::WaitRemoteBackfillReserved(my_context 
   DECLARE_LOCALS;
 
   ps->state_set(PG_STATE_BACKFILL_WAIT);
+  pl->publish_stats_to_osd();
   post_event(RemoteBackfillReserved());
 }
 

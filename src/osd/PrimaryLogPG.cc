@@ -1772,7 +1772,7 @@ PrimaryLogPG::PrimaryLogPG(OSDService *o, OSDMapRef curmap,
   pgbackend(
     PGBackend::build_pg_backend(
       _pool.info, ec_profile, this, coll_t(p), ch, o->store, cct,
-      (o-cct->_conf->osd_aggregate_buffer_enabled && _pool.info.type == pg_pool_t::TYPE_ERASURE))),
+      (o-cct->_conf->enable_cephEC && _pool.info.type == pg_pool_t::TYPE_ERASURE))),
   object_contexts(o->cct, o->cct->_conf->osd_pg_object_context_cache_count),
   new_backfill(false),
   temp_seq(0),
@@ -1786,7 +1786,7 @@ PrimaryLogPG::PrimaryLogPG(OSDService *o, OSDMapRef curmap,
   m_aggregate_buffer = std::make_shared<AggregateBuffer>(o->cct, p, this);
   m_scrubber = make_unique<PrimaryLogScrub>(this);
   aggregate_enabled = 
-    (o-cct->_conf->osd_aggregate_buffer_enabled && _pool.info.type == pg_pool_t::TYPE_ERASURE);
+    (o-cct->_conf->enable_cephEC && _pool.info.type == pg_pool_t::TYPE_ERASURE);
 }
 
 PrimaryLogPG::~PrimaryLogPG()

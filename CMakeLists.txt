@@ -20,6 +20,8 @@ endif()
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake/modules/")
 
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
 if(NOT CMAKE_BUILD_TYPE AND EXISTS "${CMAKE_SOURCE_DIR}/.git")
   set(default_build_type "Debug")
   set(CMAKE_BUILD_TYPE "${default_build_type}" CACHE

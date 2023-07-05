@@ -3553,7 +3553,8 @@ void Objecter::handle_osd_op_reply(MOSDOpReply *m)
 			 CEPH_OSD_FLAG_IGNORE_OVERLAY);
     // 只有在cephEC配置下才会使用到redirect_osd和redirect_shard
     int redirect_osd = m->get_redirect().get_redirect_osd();
-    if (cct->_conf->enable_cephEC_redirect_read &&
+    if (cct->_conf->enable_cephEC &&
+        cct->_conf->enable_EC_redirect_read &&
         redirect_osd != -1) {
       // 请求重定向到实际存储对象数据的OSD上
       redirect_to_replicateOSD(m, op, sul);

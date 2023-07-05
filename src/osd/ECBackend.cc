@@ -3030,7 +3030,21 @@ struct CallClientContexts :
     ceph_assert(res.returned.size() == to_read.size());
     ceph_assert(res.errors.empty());
     // TODO(zhengfuyu) 类型不匹配，可能出现溢出错误
-    if (res.returned.front().get<2>().size() == ec->get_ec_data_chunk_count()) {
+    if (res.returned.front().get<2>().size() == 1 &&
+        ec->is_aggregate_enabled()) {
+      // cephEC的正常读取链路
+      dout_impl(ec->cct, dout_subsys, 20) _prefix(_dout, ec) << __func__ << ": entering partial read logic"
+          << ", oid=" << hoid.oid << ", read extent count=" << res.returned.size() << dendl;
+      for (auto &read_range : res.returned) {
+        dout_impl(ec->cct, dout_subsys, 20) _prefix(_dout, ec) << __func__ << ": in partial read, processing extent " << read_range << dendl;
+        auto target_data_chunk = read_range.get<2>();
+        result.insert(read_range.get<0>(),  // off
+                      read_range.get<1>(),  // len
+                      read_range.get<2>().begin()->second); // bufferlist
+      }
+      res.returned.clear();
+    } else {
+      // 原生EC的读取链路
       for (auto &&read: to_read) {
           // k个数据块+编码块，需要解码数据
           pair<uint64_t, uint64_t> adjusted =
@@ -3062,18 +3076,6 @@ struct CallClientContexts :
           result.insert(read.get<0>(), trimmed.length(), std::move(trimmed));
           res.returned.pop_front();
       }
-    } else {
-        // cephEC的正常读取链路
-        dout_impl(ec->cct, dout_subsys, 20) _prefix(_dout, ec) << __func__ << ": entering partial read logic"
-            << ", oid=" << hoid.oid << ", read extent count=" << res.returned.size() << dendl;
-        for (auto &read_range : res.returned) {
-          dout_impl(ec->cct, dout_subsys, 20) _prefix(_dout, ec) << __func__ << ": in partial read, processing extent " << read_range << dendl;
-          auto target_data_chunk = read_range.get<2>();
-          result.insert(read_range.get<0>(),  // off
-                        read_range.get<1>(),  // len
-                        read_range.get<2>().begin()->second); // bufferlist
-        }
-        res.returned.clear();
     }
 out:
     status->complete_object(hoid, res.r, std::move(result));
@@ -3115,10 +3117,9 @@ void ECBackend::objects_read_and_reconstruct(
         }
       }
       get_want_to_read_shards_cephEC(logical_data_chunk_set, &want_to_read);
-    } else {
+    } else if (want_to_read.size() == 0) {
       // 正常情况下就是得到一个含k个编号的数组
-      //（在个别情况下不同分片内的数据可能重排序，所以分片的编号也会变化）
-      // 看get_chunk_mapping的注释，解释的很清晰
+      // 只执行一次即可。
       get_want_to_read_shards(&want_to_read);
     }
     if (is_aggregate_enabled() &&

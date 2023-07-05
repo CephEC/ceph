@@ -1958,7 +1958,7 @@ private:
   */
   typedef std::shared_ptr<AggregateBuffer> AggregateBufferRef;
   AggregateBufferRef m_aggregate_buffer;
-  bool aggregate_enabled = true;
+  bool aggregate_enabled = false;
   bool aggregate_initialized = false;
   std::list<OpRequestRef> waiting_for_all_object_recovery;
 };
