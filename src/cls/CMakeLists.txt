@@ -363,7 +363,7 @@ set_target_properties(cls_opencv_thumbnail PROPERTIES
   INSTALL_RPATH ""
   CXX_VISIBILITY_PRESET hidden)
 target_include_directories(cls_opencv_thumbnail SYSTEM BEFORE PRIVATE ${OpenCV_INCLUDE})
-target_link_libraries(cls_opencv_thumbnail ${OpenCV_LIBS})
+target_link_libraries(cls_opencv_thumbnail ceph-common)
 install(TARGETS cls_opencv_thumbnail DESTINATION ${cls_dir})
 
 add_library(cls_opencv_thumbnail_client STATIC opencv_thumbnail/cls_opencv_thumbnail_client.cc)

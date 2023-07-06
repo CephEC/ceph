@@ -107,6 +107,11 @@ public:
   bool need_translate_op(MOSDOp* m);
 
   /**
+   * @brief 将rgw对象的off和len,转译为volume对象的off和len
+   */
+  void object_off_to_volume_off(OSDOp &osd_op, chunk_t chunk_meta);
+
+  /**
    * @brief 对象写入buffer，在add_chunk中执行对象元数据的创建操作
    *
    * @param op
@@ -123,10 +128,9 @@ public:
    int op_translate(OpRequestRef &op);
 
   /**
-   * @brief 把waiting_for_reply
+   * @brief 把waiting_for_reply中的请求回复给client
    * 
   */
-
   void send_reply(MOSDOpReply* reply, bool ignore_out_data);
 
   /**

@@ -6976,7 +6976,7 @@ public:
   {
     auto o = chunks.find(soid);
     ceph_assert(o != chunks.end());
-    o.second.set_offset(chunk_fill_offset);
+    o->second.set_offset(chunk_fill_offset);
   }
 
   // 清空volume map, cap和pgid由pool配置决定，osd运行期间不改变

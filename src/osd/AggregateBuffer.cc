@@ -366,7 +366,7 @@ OSDOp generate_zero_op(uint64_t off, uint64_t len) {
   return op;
 }
 
-void object_off_to_volume_off(OSDOp &osd_op, chunk_t chunk_meta) {
+void AggregateBuffer::object_off_to_volume_off(OSDOp &osd_op, chunk_t chunk_meta) {
   uint64_t vol_offset = uint8_t(chunk_meta.get_chunk_id()) * inflight_volume_meta.get_chunk_size();
   if (osd_op.op.extent.offset == inflight_volume_meta.get_chunk_size()) {
     // offset超出RGW对象本身的大小，本次不读取任何数据
@@ -393,12 +393,13 @@ int AggregateBuffer::op_translate(OpRequestRef &op) {
   auto chunk_meta = inflight_volume_meta.get_chunk(rgw_oid);
   // 将操作的对象oid由RGW对象oid替换为volume对象oid
   m->set_hobj(inflight_volume_meta.get_oid());
-  for (uint64_t i = m->ops.size() - 1; i >= 0; i--) {
+  for (int64_t i = m->ops.size() - 1; i >= 0; i--) {
     auto &osd_op = m->ops[i];
     uint64_t vol_offset = uint8_t(chunk_meta.get_chunk_id()) * inflight_volume_meta.get_chunk_size();
     
     switch (osd_op.op.op) {
     case CEPH_OSD_OP_GETXATTR:
+    {
       // 为了区分同一个volume内不同rgw对象的xattr,需要在xattr.key中追加对象的oid
       auto bp = osd_op.indata.cbegin();
       std::string key;
@@ -408,8 +409,10 @@ int AggregateBuffer::op_translate(OpRequestRef &op) {
       osd_op.op.xattr.name_len = key.size();
       osd_op.indata.append(key);
       break;
+    }
 
     case CEPH_OSD_OP_SETXATTR:
+    {
       std::string key;
       auto bp = osd_op.indata.cbegin();
       bp.copy(osd_op.op.xattr.name_len, key);
@@ -417,7 +420,7 @@ int AggregateBuffer::op_translate(OpRequestRef &op) {
       bufferlist value;
       bp.copy(osd_op.op.xattr.value_len, value);
 
-      key = oid.get_key() + "_" + key;
+      key = rgw_oid.get_key() + "_" + key;
       osd_op.op.xattr.name_len = key.size();
 
       osd_op.indata.clear();
@@ -425,13 +428,15 @@ int AggregateBuffer::op_translate(OpRequestRef &op) {
       osd_op.indata.append(value);
       r = AGGREGATE_CONTINUE;
       break;
-
+    }
     case CEPH_OSD_OP_STAT:
+    {
       encode(chunk_meta.get_offset(), osd_op.outdata);
       encode(chunk_meta.get_mtine(), osd_op.outdata);
       break;
-
+    }
     case CEPH_OSD_OP_DELETE:
+    {
       ceph_assert(m->ops.size() == 1);
       if (!inflight_volume_meta.is_only_valid_object(rgw_oid)) {
         // volume中还有其他有效对象,更新元数据,并且生成zero请求挖洞
@@ -455,8 +460,10 @@ int AggregateBuffer::op_translate(OpRequestRef &op) {
         ec_cache.first.reset();
       }
       break;
+    }
 
     case CEPH_OSD_OP_WRITEFULL:
+    {
       // 为RGW对象覆盖写提供请求转译
       osd_op.op.op = CEPH_OSD_OP_WRITE;
       ceph_assert(osd_op.op.extent.offset == 0);
@@ -466,8 +473,10 @@ int AggregateBuffer::op_translate(OpRequestRef &op) {
       m->ops.push_back(inflight_volume_meta.generate_write_meta_op());
       r = AGGREGATE_CONTINUE;
       break;
+    }
 
     case CEPH_OSD_OP_CALL:
+    {
       std::string cname;
       try
       {
@@ -496,9 +505,10 @@ int AggregateBuffer::op_translate(OpRequestRef &op) {
       osd_op.op.extent.length = chunk_meta.get_offset();
       object_off_to_volume_off(osd_op, chunk_meta);
       break;
-
+    }
+    
     case CEPH_OSD_OP_ZERO:
-    default:
+    default:;
     }
     dout(4) << __func__ << " translate access object(oid = " << rgw_oid << ") to access_volume(oid = "
       << inflight_volume_meta.get_oid() << " off =  " << osd_op.op.extent.offset
