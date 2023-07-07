@@ -74,6 +74,7 @@ if((NOT OpenCV_FOUND) OR USE_INTERNAL_OPENCV)
   cmake_host_system_information(RESULT NPROC QUERY NUMBER_OF_LOGICAL_CORES)
   execute_process(
     COMMAND cmake -S ${CMAKE_SOURCE_DIR}/src/opencv -B ${CMAKE_BINARY_DIR}/opencv
+    -DBUILD_SHARED_LIBS=OFF
     RESULT_VARIABLE OPENCV_CONFIGURE_RETVAL
     OUTPUT_QUIET
   )
@@ -546,7 +547,6 @@ add_library(common STATIC ${ceph_common_objs})
 target_link_libraries(common ${ceph_common_deps})
 add_dependencies(common legacy-option-headers ${jaeger_base})
 
-list(APPEND ceph_common_deps ${OpenCV_LIBS})
 add_library(ceph-common SHARED ${ceph_common_objs})
 target_link_libraries(ceph-common ${ceph_common_deps})
 add_dependencies(ceph-common legacy-option-headers ${jaeger_base})

@@ -404,7 +404,7 @@ int AggregateBuffer::op_translate(OpRequestRef &op) {
       auto bp = osd_op.indata.cbegin();
       std::string key;
       bp.copy(osd_op.op.xattr.name_len, key);
-      key = chunk_meta.get_oid().get_key() + "_" + key;
+      key = chunk_meta.get_oid().oid.name + "_" + key;
       osd_op.indata.clear();
       osd_op.op.xattr.name_len = key.size();
       osd_op.indata.append(key);
@@ -420,7 +420,7 @@ int AggregateBuffer::op_translate(OpRequestRef &op) {
       bufferlist value;
       bp.copy(osd_op.op.xattr.value_len, value);
 
-      key = rgw_oid.get_key() + "_" + key;
+      key = rgw_oid.oid.name + "_" + key;
       osd_op.op.xattr.name_len = key.size();
 
       osd_op.indata.clear();

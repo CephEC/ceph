@@ -62,7 +62,7 @@ chunk_t Chunk::set_from_op(OpRequestRef _op, MOSDOp* _m, const uint8_t& seq, uin
       bufferlist value;
       bp.copy(osd_op.op.xattr.value_len, value);
 
-      key = oid.get_key() + "_" + key;
+      key = oid.oid.name + "_" + key;
       osd_op.op.xattr.name_len = key.size();
 
       osd_op.indata.clear();
