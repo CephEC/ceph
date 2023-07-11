@@ -2840,7 +2840,7 @@ void PrimaryLogPG::record_write_error(OpRequestRef op, const hobject_t &soid,
       ldpp_dout(pg, 20) << "finished " << __func__ << " r=" << r << dendl;
       auto m = op->get_req<MOSDOp>();
       MOSDOpReply *reply = orig_reply.detach();
-      if (pg->is_aggregate_enabled() && op->is_write_volume_op()) {
+      if (pg->is_aggregate_enabled() && pg->get_aggregate_buffer()->should_reply_buffered_op()) {
         pg->get_aggregate_buffer()->send_reply(reply, true);
       } else {
         ldpp_dout(pg, 10) << " sending commit on " << *m << " " << reply << dendl;
@@ -4538,7 +4538,7 @@ void PrimaryLogPG::execute_ctx(OpContext *ctx)
     // 更新内存中的volume_meta_cache, volume_not_full, ec_cache
     m_aggregate_buffer->update_cache(ctx->obc->obs.oi.soid, ctx->ops);
   }
-  if (is_aggregate_enabled() && ctx->op && ctx->op->is_write_volume_op()) {
+  if (is_aggregate_enabled() && m_aggregate_buffer->should_reply_buffered_op()) {
     m_aggregate_buffer->send_reply(reply, ignore_out_data);
     m_aggregate_buffer->requeue_waiting_for_aggregate_op();
   } else {
@@ -4555,7 +4555,6 @@ void PrimaryLogPG::execute_ctx(OpContext *ctx)
       if (is_aggregate_enabled() 
 		      && ctx->op
 		      && ctx->op->is_write_volume_op()) {
-        // 流程中还有很多类似的地方需要处理
         dout(4) << " aggregate reply send" << dendl;
         do_osd_op_effects_split(ctx);   
       } else {
@@ -6642,9 +6641,27 @@ int PrimaryLogPG::do_osd_ops(OpContext *ctx, vector<OSDOp>& ops)
 	result = getattrs_maybe_cache(
 	  ctx->obc,
 	  &out);
-
         bufferlist bl;
-        encode(out, bl);
+        if (is_aggregate_enabled()) {
+          map<string, bufferlist,less<>> real_out;
+          // 从所有volume扩展属性中找到指定rgw对象的扩展属性
+          std::string rgw_object_name;
+          ceph_assert(osd_op.op.xattr.name_len > 0);
+          auto bp = osd_op.indata.cbegin();
+          bp.copy(osd_op.op.xattr.name_len, rgw_object_name);
+          dout(5) << "CEPH_OSD_OP_GETXATTRS, after ret = " << out << dendl;
+          for (auto it = out.begin(); it != out.end(); it++) {
+            if (it->first.compare(0, rgw_object_name.length(), rgw_object_name) == 0) {
+              auto key_size = it->first.size();
+              auto key = it->first.substr(rgw_object_name.length(), key_size + 1);
+              real_out[key] = std::move(it->second);
+            }
+          }
+          dout(5) << "CEPH_OSD_OP_GETXATTRS, before ret = " << out << dendl;
+          encode(real_out, bl);
+        } else {
+          encode(out, bl);
+        }
 	ctx->delta_stats.num_rd_kb += shift_round_up(bl.length(), 10);
         ctx->delta_stats.num_rd++;
         osd_op.outdata.claim_append(bl);

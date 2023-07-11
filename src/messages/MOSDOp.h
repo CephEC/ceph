@@ -195,6 +195,30 @@ public:
     reqid.inc = inc;
   }
 
+  MOSDOp(MOSDOp * m)
+    : MOSDFastDispatchOp(*m),
+      client_inc(m->client_inc),
+      osdmap_epoch(m->osdmap_epoch),
+      flags(m->flags),
+      retry_attempt(m->retry_attempt),
+      hobj(m->hobj),
+      pgid(m->pgid),
+      p(m->p),
+      partial_decode_needed(m->partial_decode_needed.load()),
+      final_decode_needed(m->final_decode_needed.load()) {
+    features = m->features;
+    bdata_encode = m->bdata_encode;
+    set_tid(m->get_tid());
+    reqid.inc = m->reqid.inc;
+    reqid.name = m->reqid.name;
+    reqid.tid = m->reqid.tid;
+    snap_seq = m->snap_seq;
+    for (auto osd_op : m->ops) {
+      ops.push_back(osd_op);
+    }
+    set_mtime(m->mtime);
+  }
+
   MOSDOp(int inc, long tid, const hobject_t& ho, const spg_t& _pgid,
 	 epoch_t _osdmap_epoch,
 	 int _flags, uint64_t feat)

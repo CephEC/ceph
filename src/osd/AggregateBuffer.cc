@@ -76,7 +76,8 @@ bool AggregateBuffer::need_translate_op(MOSDOp* m)
         iter->op.op == CEPH_OSD_OP_DELETE ||
         iter->op.op == CEPH_OSD_OP_STAT ||
         iter->op.op == CEPH_OSD_OP_GETXATTR ||
-        iter->op.op == CEPH_OSD_OP_SETXATTR) {
+        iter->op.op == CEPH_OSD_OP_SETXATTR ||
+        iter->op.op == CEPH_OSD_OP_GETXATTRS) {
       ret = true;
       break;
     }
@@ -339,7 +340,7 @@ void AggregateBuffer::reset_flush_timeout()
   flush_callback =  new C_FlushContext{this, [this](int) {
     dout(4) << " time out, start to flush. " << dendl; 
     flush();	  
-  }};  
+  }};
   {
     std::lock_guard l(timer_lock);    
       if(flush_timer.add_event_after(flush_time_out, flush_callback)) {
@@ -411,6 +412,17 @@ int AggregateBuffer::op_translate(OpRequestRef &op) {
       break;
     }
 
+    case CEPH_OSD_OP_GETXATTRS:
+    {
+      // 要获取rgw对象的所有扩展属性
+      // 但是由于rgw对象的所有扩展属性都 增加了前缀并合并到volume对象中了
+      // 所以我们需要获取volume对象的所有扩展属性，然后根据扩展属性的前缀筛选得到目标数据
+      osd_op.indata.clear();
+      osd_op.op.xattr.name_len = rgw_oid.oid.name.length();
+      osd_op.indata.append(rgw_oid.oid.name);
+      break;
+    }
+
     case CEPH_OSD_OP_SETXATTR:
     {
       std::string key;
@@ -426,6 +438,7 @@ int AggregateBuffer::op_translate(OpRequestRef &op) {
       osd_op.indata.clear();
       osd_op.indata.append(key);
       osd_op.indata.append(value);
+
       r = AGGREGATE_CONTINUE;
       break;
     }
@@ -438,6 +451,12 @@ int AggregateBuffer::op_translate(OpRequestRef &op) {
     case CEPH_OSD_OP_DELETE:
     {
       ceph_assert(m->ops.size() == 1);
+      /*
+      // op_translate这里可能会将delete转为setxattr,直接将转译后的请求回复给client会报warning
+      auto untranslated_delete_m = new MOSDOp(m);
+      auto untranslated_delete_op = pg->osd->osd->create_request(untranslated_delete_m);
+      waiting_for_reply.push_back(untranslated_delete_op);
+      */
       if (!inflight_volume_meta.is_only_valid_object(rgw_oid)) {
         // volume中还有其他有效对象,更新元数据,并且生成zero请求挖洞
         m->ops.push_back(generate_zero_op(vol_offset, inflight_volume_meta.get_chunk_size()));
@@ -506,7 +525,11 @@ int AggregateBuffer::op_translate(OpRequestRef &op) {
       object_off_to_volume_off(osd_op, chunk_meta);
       break;
     }
-    
+    case CEPH_OSD_OP_READ:
+    {
+      object_off_to_volume_off(osd_op, chunk_meta);
+      break;
+    }
     case CEPH_OSD_OP_ZERO:
     default:;
     }

@@ -77,6 +77,8 @@ public:
     return cls_ctx_map[soid];
   }
 
+  bool should_reply_buffered_op() { return !waiting_for_reply.empty(); }
+
   Volume& get_active_volume() { return volume_buffer; }
 
   volume_t& get_inflight_volume() { return inflight_volume_meta; }
