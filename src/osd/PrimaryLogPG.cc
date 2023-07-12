@@ -6653,11 +6653,11 @@ int PrimaryLogPG::do_osd_ops(OpContext *ctx, vector<OSDOp>& ops)
           for (auto it = out.begin(); it != out.end(); it++) {
             if (it->first.compare(0, rgw_object_name.length(), rgw_object_name) == 0) {
               auto key_size = it->first.size();
-              auto key = it->first.substr(rgw_object_name.length(), key_size + 1);
+              auto key = it->first.substr(rgw_object_name.length() + 1, key_size);
               real_out[key] = std::move(it->second);
             }
           }
-          dout(5) << "CEPH_OSD_OP_GETXATTRS, before ret = " << out << dendl;
+          dout(5) << "CEPH_OSD_OP_GETXATTRS, before ret = " << real_out << dendl;
           encode(real_out, bl);
         } else {
           encode(out, bl);
