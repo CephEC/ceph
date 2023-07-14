@@ -63,6 +63,7 @@ public:
    * 如果volume_not_full为空，那么创建一个新的volume绑定到volume_buffer(新volume的oid直接取当前写入的RGW对象的Oid)
    */
   void bind(const hobject_t &first_oid);
+  
   bool is_bind_volume() { return is_bind; }
 
   void finish_cls(const hobject_t& soid) {

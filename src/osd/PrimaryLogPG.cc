@@ -1772,7 +1772,7 @@ PrimaryLogPG::PrimaryLogPG(OSDService *o, OSDMapRef curmap,
   pgbackend(
     PGBackend::build_pg_backend(
       _pool.info, ec_profile, this, coll_t(p), ch, o->store, cct,
-      (o-cct->_conf->enable_cephEC && _pool.info.type == pg_pool_t::TYPE_ERASURE))),
+      (o->cct->_conf->enable_aggregateEC && _pool.info.type == pg_pool_t::TYPE_ERASURE))),
   object_contexts(o->cct, o->cct->_conf->osd_pg_object_context_cache_count),
   new_backfill(false),
   temp_seq(0),
@@ -1785,8 +1785,11 @@ PrimaryLogPG::PrimaryLogPG(OSDService *o, OSDMapRef curmap,
 
   m_aggregate_buffer = std::make_shared<AggregateBuffer>(o->cct, p, this);
   m_scrubber = make_unique<PrimaryLogScrub>(this);
-  aggregate_enabled = 
-    (o-cct->_conf->enable_cephEC && _pool.info.type == pg_pool_t::TYPE_ERASURE);
+  enable_aggregateEC = 
+    (o->cct->_conf->enable_aggregateEC && _pool.info.type == pg_pool_t::TYPE_ERASURE);
+  dout(5) << "init primaryLogPG aggregate_enabled = " << enable_aggregateEC
+          << " conf->enable_aggregateEC = " << o-cct->_conf->enable_aggregateEC
+          << " _pool.info.type == pg_pool_t::TYPE_ERASURE =" << (_pool.info.type == pg_pool_t::TYPE_ERASURE) << dendl;
 }
 
 PrimaryLogPG::~PrimaryLogPG()
@@ -2289,7 +2292,7 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
   // TODO(zhengfuyu): 这一块代码有点乱，后续可以根据OSDOp的Op code来更加准确地调用AggregateBuffer的相关接口
   if (is_primary() &&
       is_aggregate_enabled() && 
-      !op->is_write_volume_op() && 
+      (!op->is_write_volume_op() || !op->is_cephec_translated_op()) &&
       op->get_reqid().name.is_client()) {
     if (m_aggregate_buffer->need_aggregate_op(m)) {
       dout(10) << "write op " << op << " in buffer." << dendl;
@@ -2344,7 +2347,7 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
     }
   }
   // // ceph会把丢失的object整合成一个map,这里就是检索map判断本次操作的对象是否丢失了
-  // cephEC中可能需要改动对 已丢失对象 的管理方式，还需要细看ceph当前是如何感知对象丢失，以及恢复对象的流程
+  // aggregateEC中可能需要改动对 已丢失对象 的管理方式，还需要细看ceph当前是如何感知对象丢失，以及恢复对象的流程
   // missing object?
   if (is_unreadable_object(head)) {
     if (!is_primary()) {
@@ -2381,7 +2384,7 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
     // 目标对象正在进行scrub操作(检查PG内对象的正确性，如果是副本池，那么就需要比对primary osd和replicate osd中的数据
     // (好像只是用计算hash的方式来比对？传输成本应该不高),需要将当前操作延迟一下
     // 如果是EC池呢？ 难道需要读回数据块再计算一轮EC块，然后两边校验吗？（成本是不是有点高）
-    // cephEC场景下，写场景只写入新对象而不修改旧对象,所以这个条件判断不用考虑
+    // aggregateEC场景下，写场景只写入新对象而不修改旧对象,所以这个条件判断不用考虑
     if (m_scrubber->is_scrub_active() && m_scrubber->write_blocked_by_scrub(head)) {
       dout(20) << __func__ << ": waiting for scrub" << dendl;
       waiting_for_scrub.push_back(op);
@@ -2393,7 +2396,7 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
     }
 
     // 该对象正在进行快照的复制，所以需要等待快照完成
-    // cephEC场景下，写场景只写入新对象而不修改旧对象,所以这个条件判断不用考虑
+    // aggregateEC场景下，写场景只写入新对象而不修改旧对象,所以这个条件判断不用考虑
     // blocked on snap?
     if (auto blocked_iter = objects_blocked_on_degraded_snap.find(head);
 	blocked_iter != std::end(objects_blocked_on_degraded_snap)) {
@@ -2493,7 +2496,7 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
   }
 
   // https://bean-li.github.io/ceph-objectcontext/
-  // cephEC中，对于每个client传入的对象，不会为它一一对应一个obc
+  // aggregateEC中，对于每个client传入的对象，不会为它一一对应一个obc
   // 而是为一个Volume对应一个obc。
   // obc的一个主要作用就是完成对象的读写互斥
   // obc在磁盘中以扩展属性的形式保存（待验证）
@@ -2602,7 +2605,7 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
   }
 
   // 比对obc中记录的对象元信息（pool,key,hash等）和本次op中记录的对象元信息
-  // cephEC:这块逻辑可能得删掉,obc针对的是volume,op中记录的是user rgw对象,两个内容肯定不一样
+  // aggregateEC:这块逻辑可能得删掉,obc针对的是volume,op中记录的是user rgw对象,两个内容肯定不一样
   // make sure locator is consistent
   object_locator_t oloc(obc->obs.oi.soid);
   if (m->get_object_locator() != oloc) {
@@ -6452,7 +6455,7 @@ int PrimaryLogPG::do_osd_ops(OpContext *ctx, vector<OSDOp>& ops)
     case CEPH_OSD_OP_STAT:
       // note: stat does not require RD
       {
-        // 在cephEC配置下，所以STAT命令会在do_op中被拦截，然后由AggregateBuffer负责处理
+        // 在aggregateEC配置下，所以STAT命令会在do_op中被拦截，然后由AggregateBuffer负责处理
         if (is_aggregate_enabled() && is_primary()) {
           break;
         }

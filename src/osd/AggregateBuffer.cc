@@ -77,7 +77,8 @@ bool AggregateBuffer::need_translate_op(MOSDOp* m)
         iter->op.op == CEPH_OSD_OP_STAT ||
         iter->op.op == CEPH_OSD_OP_GETXATTR ||
         iter->op.op == CEPH_OSD_OP_SETXATTR ||
-        iter->op.op == CEPH_OSD_OP_GETXATTRS) {
+        iter->op.op == CEPH_OSD_OP_GETXATTRS ||
+        iter->op.op == CEPH_OSD_OP_CMPXATTR) {
       ret = true;
       break;
     }
@@ -399,6 +400,7 @@ int AggregateBuffer::op_translate(OpRequestRef &op) {
     uint64_t vol_offset = uint8_t(chunk_meta.get_chunk_id()) * inflight_volume_meta.get_chunk_size();
     
     switch (osd_op.op.op) {
+    case CEPH_OSD_OP_CMPXATTR:
     case CEPH_OSD_OP_GETXATTR:
     {
       // 为了区分同一个volume内不同rgw对象的xattr,需要在xattr.key中追加对象的oid
@@ -457,6 +459,7 @@ int AggregateBuffer::op_translate(OpRequestRef &op) {
       auto untranslated_delete_op = pg->osd->osd->create_request(untranslated_delete_m);
       waiting_for_reply.push_back(untranslated_delete_op);
       */
+
       if (!inflight_volume_meta.is_only_valid_object(rgw_oid)) {
         // volume中还有其他有效对象,更新元数据,并且生成zero请求挖洞
         m->ops.push_back(generate_zero_op(vol_offset, inflight_volume_meta.get_chunk_size()));
@@ -508,7 +511,7 @@ int AggregateBuffer::op_translate(OpRequestRef &op) {
         *_dout << dendl;
         ceph_assert(false);
       }
-      // 只转译新构建的Cls算子（因为原生的cls算子和基于cephEC的cls算子的参数解析方式不同，所以需要区分）
+      // 只转译新构建的Cls算子（因为原生的cls算子和基于aggregateEC的cls算子的参数解析方式不同，所以需要区分）
       if (!ClassHandler::get_instance().in_class_list(cname, cct->_conf->osd_cephec_class_list)) {
         continue;
       }

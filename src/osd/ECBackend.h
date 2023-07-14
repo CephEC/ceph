@@ -251,7 +251,7 @@ private:
     }
   }
 
-  void get_want_to_read_shards_cephEC(
+  void get_want_to_read_shards_aggregateEC(
     std::set<int>& logical_data_chunk_set,
     std::set<int> *want_to_read) {
     const std::vector<int> &chunk_mapping = ec_impl->get_chunk_mapping();
@@ -751,7 +751,7 @@ public:
 				    const std::map<std::string, ceph::buffer::ptr, std::less<>> *attr = NULL);
   
   bool aggregate_enabled = false;
-  bool cephEC_redirect_read = false;
+  bool aggregateEC_redirect_read = false;
 public:
   ECBackend(
     PGBackend::Listener *pg,
@@ -762,11 +762,11 @@ public:
     ceph::ErasureCodeInterfaceRef ec_impl,
     uint64_t stripe_width,
     bool _aggregate_enabled = false,
-    bool _cephEC_redirect_read = false);
+    bool _aggregateEC_redirect_read = false);
 
   bool is_aggregate_enabled() { return aggregate_enabled; }
 
-  bool cephEC_redirect_read_enabled() { return cephEC_redirect_read; }
+  bool aggregateEC_redirect_read_enabled() { return aggregateEC_redirect_read; }
   
   /// Returns to_read replicas sufficient to reconstruct want
   int get_min_avail_to_read_shards(

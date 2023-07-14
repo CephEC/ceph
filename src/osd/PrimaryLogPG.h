@@ -1503,7 +1503,7 @@ public:
     return m_aggregate_buffer.get();
   }
 
-  bool is_aggregate_enabled() { return aggregate_enabled && pool.info.is_erasure(); }
+  bool is_aggregate_enabled() { return enable_aggregateEC && pool.info.is_erasure(); }
 
   void do_request(
     OpRequestRef& op,
@@ -1958,7 +1958,7 @@ private:
   */
   typedef std::shared_ptr<AggregateBuffer> AggregateBufferRef;
   AggregateBufferRef m_aggregate_buffer;
-  bool aggregate_enabled = false;
+  bool enable_aggregateEC = false;
   bool aggregate_initialized = false;
   std::list<OpRequestRef> waiting_for_all_object_recovery;
 };

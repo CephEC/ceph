@@ -1784,7 +1784,7 @@ public:
     pg_t pgid; ///< last (raw) pg we mapped to
     spg_t actual_pgid; ///< last (actual) spg_t we mapped to
 
-    spg_t specific_pgid; // cephEC重定向
+    spg_t specific_pgid; // aggregateEC重定向
 
     unsigned pg_num = 0; ///< last pg_num we mapped to
     unsigned pg_num_mask = 0; ///< last pg_num_mask we mapped to
@@ -1806,7 +1806,7 @@ public:
     bool paused = false;
 
     int osd = -1;      ///< the final target osd, or -1
-    int specific_osd = -1;  // cephEC重定向volume读请求到replicate OSD时会使用到
+    int specific_osd = -1;  // aggregateEC重定向volume读请求到replicate OSD时会使用到
 
     epoch_t last_force_resend = 0;
 
@@ -1907,7 +1907,7 @@ public:
     uint64_t features = CEPH_FEATURES_SUPPORTED_DEFAULT; // explicitly specified op features
 
     osdc_opvec ops;
-    osdc_opvec translated_ops; // cephEC读优化中被使用(即被转译后的ops)
+    osdc_opvec translated_ops; // aggregateEC读优化中被使用(即被转译后的ops)
 
     snapid_t snapid = CEPH_NOSNAP;
     SnapContext snapc;

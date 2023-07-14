@@ -265,14 +265,14 @@ ECBackend::ECBackend(
   ErasureCodeInterfaceRef ec_impl,
   uint64_t stripe_width,
   bool _aggregate_enabled,
-  bool _cephEC_redirect_read)
+  bool _aggregateEC_redirect_read)
   : PGBackend(cct, pg, store, coll, ch),
     ec_impl(ec_impl),
     sinfo(ec_impl->get_data_chunk_count(), stripe_width) {
   ceph_assert((ec_impl->get_data_chunk_count() *
 	  ec_impl->get_chunk_size(stripe_width)) == stripe_width);
     aggregate_enabled = _aggregate_enabled;
-    cephEC_redirect_read = _cephEC_redirect_read;
+    aggregateEC_redirect_read = _aggregateEC_redirect_read;
 }
 
 PGBackend::RecoveryHandle *ECBackend::open_recovery_op()
@@ -1496,7 +1496,7 @@ void ECBackend::handle_sub_read_reply(
       rop.to_read.find(i->first)->second.to_read.begin();
       // rop.to_read.find(i->first)->second得到read_request_t (在objects_read_and_reconstruct中构建的)
       // req_iter实际上就是一个{以stripe对齐的off, length, flag}的元组链表
-      // 表示我想要读取的stripe数据 (如果是cephEC，那么其中的off和len不是以stripe对齐的)
+      // 表示我想要读取的stripe数据 (如果是aggregateEC，那么其中的off和len不是以stripe对齐的)
     list<
       boost::tuple<
 	uint64_t, uint64_t, map<pg_shard_t, bufferlist> > >::iterator riter =
@@ -2090,7 +2090,7 @@ void ECBackend::do_read_op(ReadOp &op)
 	 ++j) {
       pair<uint64_t, uint64_t> chunk_off_len;
       if (is_aggregate_enabled()) {
-        // cephEC中，Volume对象只对应一条EC条带，所以每个OSD上也只会保存该对象的单个数据块（或者编码块）
+        // aggregateEC中，Volume对象只对应一条EC条带，所以每个OSD上也只会保存该对象的单个数据块（或者编码块）
         // 不需要调用aligned_offset_len_to_chunk计算具体需要读取OSD上的哪些chunk（毕竟只有1个chunk）
         // chunk_off_len的取值有2种情况：
         if (j->get<1>() > sinfo.get_chunk_size()) {
@@ -2632,7 +2632,7 @@ void ECBackend::objects_read_async(
        i != to_read.end();
        ++i) {
     if (is_aggregate_enabled()) {
-      // 这里的offset和length不需要对齐到stripe，因为cephEC中的读操作不以条带为单位
+      // 这里的offset和length不需要对齐到stripe，因为aggregateEC中的读操作不以条带为单位
       /*
       auto adjusted_off = i->first.get<0>();
       auto adjusted_len = i->first.get<1>();
@@ -2789,7 +2789,7 @@ int ECBackend::object_locate(MOSDOp* m, pg_shard_t &target_shard) {
       auto chunk_size = sinfo.get_chunk_size();
       auto logical_data_chunk_id = (iter->op.extent.offset + chunk_size - 1) / chunk_size;
       logical_data_chunk_set.insert(logical_data_chunk_id);
-      get_want_to_read_shards_cephEC(logical_data_chunk_set, &want_to_read);
+      get_want_to_read_shards_aggregateEC(logical_data_chunk_set, &want_to_read);
       int r = get_min_avail_to_read_shards(
         m->get_hobj().get_head(),
         want_to_read,
@@ -2835,13 +2835,13 @@ void ECBackend::object_call_async(
       logical_data_chunk_set.insert(logical_data_chunk_id);
     }
   }
-  get_want_to_read_shards_cephEC(logical_data_chunk_set, &want_to_read);
+  get_want_to_read_shards_aggregateEC(logical_data_chunk_set, &want_to_read);
   if (is_aggregate_enabled() &&
-      cephEC_redirect_read_enabled() &&
+      aggregateEC_redirect_read_enabled() &&
       !is_primary()) {
-    // cephEC balance read过程中，replicate OSD执行get_shard_missing获取不同OSD的对象缺失列表时，会触发assert
+    // aggregateEC balance read过程中，replicate OSD执行get_shard_missing获取不同OSD的对象缺失列表时，会触发assert
     // 可能只有primary OSD才会记录PG内其他OSD的对象缺失信息
-    // 由于cephEC balance read实际上只会读当前replicate OSD的本地数据，所以只需要检查自身的missing_loc就能判断数据是否丢失
+    // aggregateEC balance read实际上只会读当前replicate OSD的本地数据，所以只需要检查自身的missing_loc就能判断数据是否丢失
     // 这一部分的检查工作在do_op中的is_unreadable_object已经完成了
     vector<pair<int, int>> default_subchunks;
     default_subchunks.push_back(make_pair(0, ec_impl->get_sub_chunk_count()));
@@ -3023,7 +3023,7 @@ struct CallClientContexts :
     // TODO(zhengfuyu) 类型不匹配，可能出现溢出错误
     if (res.returned.front().get<2>().size() == 1 &&
         ec->is_aggregate_enabled()) {
-      // cephEC的正常读取链路
+      // aggregateEC的正常读取链路
       dout_impl(ec->cct, dout_subsys, 20) _prefix(_dout, ec) << __func__ << ": entering partial read logic"
           << ", oid=" << hoid.oid << ", read extent count=" << res.returned.size() << dendl;
       for (auto &read_range : res.returned) {
@@ -3093,10 +3093,10 @@ void ECBackend::objects_read_and_reconstruct(
   map<hobject_t, read_request_t> for_read_op;
   for (auto &&to_read: reads) {
     map<pg_shard_t, vector<pair<int, int>>> shards;
-    // cephEC正常情况下，to_read中每个offset都是chunk对齐的
+    // aggregateEC正常情况下，to_read中每个offset都是chunk对齐的
     if (is_aggregate_enabled()) {
       set<int> logical_data_chunk_set;
-      // 即使是在cephEC的配置下，volume覆盖写也会调用objects_read_and_reconstruct
+      // 即使是在aggregateEC的配置下，volume覆盖写也会调用objects_read_and_reconstruct
       // 注意代码的兼容性
       for (auto &read_range : to_read.second) {
         uint32_t first_chunk_id = read_range.get<0>() / sinfo.get_chunk_size();
@@ -3107,18 +3107,18 @@ void ECBackend::objects_read_and_reconstruct(
           }
         }
       }
-      get_want_to_read_shards_cephEC(logical_data_chunk_set, &want_to_read);
+      get_want_to_read_shards_aggregateEC(logical_data_chunk_set, &want_to_read);
     } else if (want_to_read.size() == 0) {
       // 正常情况下就是得到一个含k个编号的数组
       // 只执行一次即可。
       get_want_to_read_shards(&want_to_read);
     }
     if (is_aggregate_enabled() &&
-        cephEC_redirect_read_enabled() &&
+        aggregateEC_redirect_read_enabled() &&
         !is_primary()) {
-      // cephEC balance read过程中，replicate OSD执行get_shard_missing获取不同OSD的对象缺失列表时，会触发assert
+      // aggregateEC balance read过程中，replicate OSD执行get_shard_missing获取不同OSD的对象缺失列表时，会触发assert
       // 可能只有primary OSD才会记录PG内其他OSD的对象缺失信息
-      // 由于cephEC balance read实际上只会读当前replicate OSD的本地数据，所以只需要检查自身的missing_loc就能判断数据是否丢失
+      // 由于aggregateEC balance read实际上只会读当前replicate OSD的本地数据，所以只需要检查自身的missing_loc就能判断数据是否丢失
       // 这一部分的检查工作在do_op中的is_unreadable_object已经完成了
       vector<pair<int, int>> default_subchunks;
       default_subchunks.push_back(make_pair(0, ec_impl->get_sub_chunk_count()));
@@ -3178,7 +3178,7 @@ void ECBackend::objects_read_and_reconstruct(
 	to_read.first,  // 对象id
 	read_request_t(
 	  to_read.second,  // 本次需要读取的{起始stripe的offset，length，flag}
-    //  如果是cephEC配置，则offset和length不会按stripe对齐
+    //  如果是aggregateEC配置，则offset和length不会按stripe对齐
 	  shards,     // 实际读取的分片编号
 	  false,
 	  c)));

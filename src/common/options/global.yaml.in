@@ -6304,15 +6304,15 @@ options:
   default: 0
   services:
   - mgr
-- name: enable_cephEC
+- name: enable_aggregateEC
   desc: 
   type: bool
   level: advanced
   default: true 
   with_legacy: true
-- name: enable_EC_redirect_read
+- name: aggregateEC_redirect_read
   type: bool
   level: advanced
-  desc: redirect translated cephEC read request to replicate OSD
+  desc: redirect translated aggregateEC read request to replicate OSD
   default: true
   with_legacy: true

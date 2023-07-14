@@ -9,7 +9,7 @@ using ceph::bufferlist;
 using ceph::ErasureCodeInterfaceRef;
 using ceph::Formatter;
 
-// 理论上来说，cephEC的正常读流程不需要进入这个函数
+// 理论上来说，aggregateEC的正常读流程不需要进入这个函数
 // 只有数据分片丢失，需要重建整个条带时，才需要进入这里，decode的内部逻辑不需要修改
 int ECUtil::decode(
   const stripe_info_t &sinfo,
