@@ -384,7 +384,7 @@ int AggregateBuffer::op_translate(OpRequestRef &op) {
   MOSDOp *m = static_cast<MOSDOp *>(op->get_nonconst_req());
   auto rgw_oid = m->get_hobj();
   auto it = volume_meta_cache.find(m->get_hobj());
-  int r = 0;
+  int r = AGGREGATE_CONTINUE;
   if (it == volume_meta_cache.end()) {
     // rados对象不存在
     dout(4) << __func__ << " object(oid = " << rgw_oid << ") not exists" << dendl;
@@ -493,7 +493,6 @@ int AggregateBuffer::op_translate(OpRequestRef &op) {
       // 覆盖写后，对象的len可能会变化，那么相应地也要修改volume元数据
       inflight_volume_meta.update_chunk(rgw_oid, osd_op.op.extent.length);
       m->ops.push_back(inflight_volume_meta.generate_write_meta_op());
-      r = AGGREGATE_CONTINUE;
       break;
     }
 
@@ -531,6 +530,7 @@ int AggregateBuffer::op_translate(OpRequestRef &op) {
     case CEPH_OSD_OP_READ:
     {
       object_off_to_volume_off(osd_op, chunk_meta);
+      r = AGGREGATE_REDIRECT;
       break;
     }
     case CEPH_OSD_OP_ZERO:

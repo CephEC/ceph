@@ -2325,7 +2325,7 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
         // 延迟等待恢复完毕后再次执行本次读请求
         waiting_for_all_object_recovery.push_back(op);
         return;
-      } else {
+      } else if (r == AGGREGATE_REDIRECT) {
         // 转译后的请求重定向到对应OSD
         pg_shard_t shard;
         int r = pgbackend->object_locate(m, shard);
@@ -2342,7 +2342,7 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
             " redirect_request " << redir << dendl;
           m->get_connection()->send_message(reply);
           return;
-        }
+        } // else {}
       }
     }
   }

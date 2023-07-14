@@ -28,6 +28,7 @@
 #define AGGREGATE_PENDING_OP 2
 #define AGGREGATE_PENDING_REPLY 4
 #define AGGREGATE_CONTINUE 8
+#define AGGREGATE_REDIRECT 8
 
 class Volume;
 class PrimaryLogPG;
