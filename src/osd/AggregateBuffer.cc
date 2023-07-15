@@ -88,7 +88,7 @@ bool AggregateBuffer::need_translate_op(MOSDOp* m)
 
 int AggregateBuffer::write(OpRequestRef op, MOSDOp* m)
 {
-  if (op_translate(op) == AGGREGATE_CONTINUE) {
+  if (op_translate(op, m->ops) == AGGREGATE_CONTINUE) {
     // RGW对象覆盖写 or 对已存在的对象做setxattr操作,不需要聚合
     return AGGREGATE_CONTINUE;
   }
@@ -287,6 +287,7 @@ void AggregateBuffer::update_cache(const hobject_t& soid, std::vector<OSDOp> *op
       ceph_assert(ec_cache.second[chunk_id].length() == chunk_size);
     }
   }
+  origin_oid = hobject_t();  // 请求已完成，重置origin_oid
   if (!is_volume_cached(soid)) {
     // 判断ec_cache的volume_t元数据和实际缓存的数据块数据
     // 如果数据块没有完全缓存，那么就直接清空ec_cache
@@ -380,27 +381,43 @@ void AggregateBuffer::object_off_to_volume_off(OSDOp &osd_op, chunk_t chunk_meta
   }
 }
 
-int AggregateBuffer::op_translate(OpRequestRef &op) {
+int AggregateBuffer::op_translate(OpRequestRef &op, std::vector<OSDOp> &ops) {
   MOSDOp *m = static_cast<MOSDOp *>(op->get_nonconst_req());
-  auto rgw_oid = m->get_hobj();
-  auto it = volume_meta_cache.find(m->get_hobj());
+  if (origin_oid == hobject_t()) {
+    origin_oid = m->get_hobj();
+  }
+  auto it = volume_meta_cache.find(origin_oid);
   int r = AGGREGATE_CONTINUE;
   if (it == volume_meta_cache.end()) {
     // rados对象不存在
-    dout(4) << __func__ << " object(oid = " << rgw_oid << ") not exists" << dendl;
+    dout(4) << __func__ << " object(oid = " << origin_oid << ") not exists" << dendl;
     return -ENOENT;
   }
   // 这里采用深拷贝,内存中的volume_meta等待删除（或是写入）完成的回调请求来更新
-  inflight_volume_meta = *(volume_meta_cache[rgw_oid]);
-  auto chunk_meta = inflight_volume_meta.get_chunk(rgw_oid);
+  inflight_volume_meta = *(volume_meta_cache[origin_oid]);
+  auto chunk_meta = inflight_volume_meta.get_chunk(origin_oid);
   // 将操作的对象oid由RGW对象oid替换为volume对象oid
   m->set_hobj(inflight_volume_meta.get_oid());
-  for (int64_t i = m->ops.size() - 1; i >= 0; i--) {
-    auto &osd_op = m->ops[i];
+  for (int64_t i = ops.size() - 1; i >= 0; i--) {
+    auto &osd_op = ops[i];
+    
     uint64_t vol_offset = uint8_t(chunk_meta.get_chunk_id()) * inflight_volume_meta.get_chunk_size();
     
     switch (osd_op.op.op) {
     case CEPH_OSD_OP_CMPXATTR:
+    {
+      auto bp = osd_op.indata.cbegin();
+      std::string key;
+	    bufferlist value;
+      bp.copy(osd_op.op.xattr.name_len, key);
+      key = chunk_meta.get_oid().oid.name + "_" + key;
+      bp.copy(osd_op.op.xattr.value_len, value);
+      osd_op.indata.clear();
+      osd_op.op.xattr.name_len = key.size();
+      osd_op.indata.append(key);
+      osd_op.indata.append(value);
+      break;
+    }
     case CEPH_OSD_OP_GETXATTR:
     {
       // 为了区分同一个volume内不同rgw对象的xattr,需要在xattr.key中追加对象的oid
@@ -420,8 +437,8 @@ int AggregateBuffer::op_translate(OpRequestRef &op) {
       // 但是由于rgw对象的所有扩展属性都 增加了前缀并合并到volume对象中了
       // 所以我们需要获取volume对象的所有扩展属性，然后根据扩展属性的前缀筛选得到目标数据
       osd_op.indata.clear();
-      osd_op.op.xattr.name_len = rgw_oid.oid.name.length();
-      osd_op.indata.append(rgw_oid.oid.name);
+      osd_op.op.xattr.name_len = origin_oid.oid.name.length();
+      osd_op.indata.append(origin_oid.oid.name);
       break;
     }
 
@@ -434,7 +451,7 @@ int AggregateBuffer::op_translate(OpRequestRef &op) {
       bufferlist value;
       bp.copy(osd_op.op.xattr.value_len, value);
 
-      key = rgw_oid.oid.name + "_" + key;
+      key = origin_oid.oid.name + "_" + key;
       osd_op.op.xattr.name_len = key.size();
 
       osd_op.indata.clear();
@@ -452,7 +469,7 @@ int AggregateBuffer::op_translate(OpRequestRef &op) {
     }
     case CEPH_OSD_OP_DELETE:
     {
-      ceph_assert(m->ops.size() == 1);
+      ceph_assert(ops.size() == 1);
       /*
       // op_translate这里可能会将delete转为setxattr,直接将转译后的请求回复给client会报warning
       auto untranslated_delete_m = new MOSDOp(m);
@@ -460,17 +477,17 @@ int AggregateBuffer::op_translate(OpRequestRef &op) {
       waiting_for_reply.push_back(untranslated_delete_op);
       */
 
-      if (!inflight_volume_meta.is_only_valid_object(rgw_oid)) {
+      if (!inflight_volume_meta.is_only_valid_object(origin_oid)) {
         // volume中还有其他有效对象,更新元数据,并且生成zero请求挖洞
-        m->ops.push_back(generate_zero_op(vol_offset, inflight_volume_meta.get_chunk_size()));
-        inflight_volume_meta.remove_chunk(rgw_oid);
-        inflight_volume_meta.generate_write_meta_op(m->ops[i]);
+        ops.push_back(generate_zero_op(vol_offset, inflight_volume_meta.get_chunk_size()));
+        inflight_volume_meta.remove_chunk(origin_oid);
+        inflight_volume_meta.generate_write_meta_op(ops[i]);
         op->set_cephec_storage_optimize();
         dout(4) << __func__ << " want delete object(oid = "
-          << rgw_oid << "), but just update volume_meta. op = " << *m << dendl;
+          << origin_oid << "), but just update volume_meta. op = " << *m << dendl;
       } else {
         // volume中全部都是无效数据，直接删除整个volume对象
-        dout(4) << __func__ << " want delete object(oid = " << rgw_oid 
+        dout(4) << __func__ << " want delete object(oid = " << origin_oid 
           << "), but delete volume(oid = " << inflight_volume_meta.get_oid() << ")" << dendl;
       }
       if (ec_cache.first && inflight_volume_meta.get_oid() == ec_cache.first->get_oid()) {
@@ -491,8 +508,8 @@ int AggregateBuffer::op_translate(OpRequestRef &op) {
       ceph_assert(osd_op.op.extent.offset == 0);
       osd_op.op.extent.offset = vol_offset;
       // 覆盖写后，对象的len可能会变化，那么相应地也要修改volume元数据
-      inflight_volume_meta.update_chunk(rgw_oid, osd_op.op.extent.length);
-      m->ops.push_back(inflight_volume_meta.generate_write_meta_op());
+      inflight_volume_meta.update_chunk(origin_oid, osd_op.op.extent.length);
+      ops.push_back(inflight_volume_meta.generate_write_meta_op());
       break;
     }
 
@@ -536,7 +553,7 @@ int AggregateBuffer::op_translate(OpRequestRef &op) {
     case CEPH_OSD_OP_ZERO:
     default:;
     }
-    dout(4) << __func__ << " translate access object(oid = " << rgw_oid << ") to access_volume(oid = "
+    dout(4) << __func__ << " translate access object(oid = " << origin_oid << ") to access_volume(oid = "
       << inflight_volume_meta.get_oid() << " off =  " << osd_op.op.extent.offset
       << " len = " << osd_op.op.extent.length << ")" << dendl;
   }

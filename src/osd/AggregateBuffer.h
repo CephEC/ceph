@@ -28,7 +28,7 @@
 #define AGGREGATE_PENDING_OP 2
 #define AGGREGATE_PENDING_REPLY 4
 #define AGGREGATE_CONTINUE 8
-#define AGGREGATE_REDIRECT 8
+#define AGGREGATE_REDIRECT 16
 
 class Volume;
 class PrimaryLogPG;
@@ -129,7 +129,7 @@ public:
    * @param m
    * @return int
    */
-   int op_translate(OpRequestRef &op);
+   int op_translate(OpRequestRef &op, std::vector<OSDOp> &ops);
 
   /**
    * @brief 把waiting_for_reply中的请求回复给client
@@ -206,6 +206,8 @@ public:
   std::list<OpRequestRef> waiting_for_aggregate;
   std::list<OpRequestRef> waiting_for_reply;
   OpRequestRef volume_op;
+  hobject_t origin_oid;   // 被转译前的原始对象
+
   volume_t inflight_volume_meta; 
   // 与当前正在执行的请求相关联的volume元数据， 主要在ECBackEnd处做空间优化的时候被使用
 private:
