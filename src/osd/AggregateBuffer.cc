@@ -376,8 +376,8 @@ void AggregateBuffer::object_off_to_volume_off(OSDOp &osd_op, chunk_t chunk_meta
     osd_op.op.extent.offset = inflight_volume_meta.get_cap() * inflight_volume_meta.get_chunk_size();
   } else {
     osd_op.op.extent.offset = vol_offset;
-    osd_op.op.extent.length = osd_op.op.extent.length > chunk_meta.get_offset() ?
-      chunk_meta.get_offset() : osd_op.op.extent.length;
+    osd_op.op.extent.length = osd_op.op.extent.offset + osd_op.op.extent.length > chunk_meta.get_offset() ?
+      chunk_meta.get_offset() - osd_op.op.extent.offset : osd_op.op.extent.length;
   }
 }
 
