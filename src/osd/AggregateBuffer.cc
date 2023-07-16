@@ -287,7 +287,6 @@ void AggregateBuffer::update_cache(const hobject_t& soid, std::vector<OSDOp> *op
       ceph_assert(ec_cache.second[chunk_id].length() == chunk_size);
     }
   }
-  origin_oid = hobject_t();  // 请求已完成，重置origin_oid
   if (!is_volume_cached(soid)) {
     // 判断ec_cache的volume_t元数据和实际缓存的数据块数据
     // 如果数据块没有完全缓存，那么就直接清空ec_cache
@@ -375,22 +374,27 @@ void AggregateBuffer::object_off_to_volume_off(OSDOp &osd_op, chunk_t chunk_meta
     // offset超出RGW对象本身的大小，本次不读取任何数据
     osd_op.op.extent.offset = inflight_volume_meta.get_cap() * inflight_volume_meta.get_chunk_size();
   } else {
-    osd_op.op.extent.offset = vol_offset;
     osd_op.op.extent.length = osd_op.op.extent.offset + osd_op.op.extent.length > chunk_meta.get_offset() ?
       chunk_meta.get_offset() - osd_op.op.extent.offset : osd_op.op.extent.length;
+    osd_op.op.extent.offset = vol_offset;
   }
 }
 
 int AggregateBuffer::op_translate(OpRequestRef &op, std::vector<OSDOp> &ops) {
   MOSDOp *m = static_cast<MOSDOp *>(op->get_nonconst_req());
-  if (origin_oid == hobject_t()) {
-    origin_oid = m->get_hobj();
+  auto origin_oid = m->get_hobj();
+  if (origin_oid_map.find(op) != origin_oid_map.end()) {
+    origin_oid = origin_oid_map[op];
+    dout(4) << __func__ << " origin_oid " << origin_oid << dendl;
+  } else {
+    origin_oid_map[op] = origin_oid;
   }
   auto it = volume_meta_cache.find(origin_oid);
   int r = AGGREGATE_CONTINUE;
   if (it == volume_meta_cache.end()) {
     // rados对象不存在
     dout(4) << __func__ << " object(oid = " << origin_oid << ") not exists" << dendl;
+    purge_origin_obj(op);
     return -ENOENT;
   }
   // 这里采用深拷贝,内存中的volume_meta等待删除（或是写入）完成的回调请求来更新

@@ -253,6 +253,7 @@ struct OnCallComplete : public Context {
     PrimaryLogPG::OpContext *ctx) : pg(pg), opcontext(ctx) {}
   void finish(int r) override {
     pg->get_aggregate_buffer()->finish_cls(opcontext->obc->obs.oi.soid);
+    pg->get_aggregate_buffer()->purge_origin_obj(opcontext->op);
     opcontext->finish_call(pg);
   }
   ~OnCallComplete() override {}
@@ -2292,7 +2293,7 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
   // TODO(zhengfuyu): 这一块代码有点乱，后续可以根据OSDOp的Op code来更加准确地调用AggregateBuffer的相关接口
   if (is_primary() &&
       is_aggregate_enabled() && 
-      (!op->is_write_volume_op() || !op->is_cephec_translated_op()) &&
+      (!op->is_write_volume_op() && !op->is_cephec_translated_op()) &&
       op->get_reqid().name.is_client()) {
     if (m_aggregate_buffer->need_aggregate_op(m)) {
       dout(10) << "write op " << op << " in buffer." << dendl;
@@ -2341,6 +2342,7 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
           dout(10) << "redirect volume read request to osd(" << shard.osd << ")" << 
             " redirect_request " << redir << dendl;
           m->get_connection()->send_message(reply);
+          m_aggregate_buffer->purge_origin_obj(op);
           return;
         }
       } // else {}
@@ -2843,6 +2845,9 @@ void PrimaryLogPG::record_write_error(OpRequestRef op, const hobject_t &soid,
       ldpp_dout(pg, 20) << "finished " << __func__ << " r=" << r << dendl;
       auto m = op->get_req<MOSDOp>();
       MOSDOpReply *reply = orig_reply.detach();
+      if (pg->is_aggregate_enabled()) {
+        pg->get_aggregate_buffer()->purge_origin_obj(op);
+      }
       if (pg->is_aggregate_enabled() && pg->get_aggregate_buffer()->should_reply_buffered_op()) {
         pg->get_aggregate_buffer()->send_reply(reply, true);
       } else {
@@ -4540,6 +4545,7 @@ void PrimaryLogPG::execute_ctx(OpContext *ctx)
     // 写入和删除完成后都需要更新元数据
     // 更新内存中的volume_meta_cache, volume_not_full, ec_cache
     m_aggregate_buffer->update_cache(ctx->obc->obs.oi.soid, ctx->ops);
+    m_aggregate_buffer->purge_origin_obj(ctx->op);  // 请求已完成，重置origin_oid
   }
   if (is_aggregate_enabled() && m_aggregate_buffer->should_reply_buffered_op()) {
     m_aggregate_buffer->send_reply(reply, ignore_out_data);
@@ -9405,6 +9411,7 @@ void PrimaryLogPG::complete_read_ctx(int result, OpContext *ctx)
   reply->set_result(result);
   reply->add_flags(CEPH_OSD_FLAG_ACK | CEPH_OSD_FLAG_ONDISK);
   osd->send_message_osd_client(reply, m->get_connection());
+  m_aggregate_buffer->purge_origin_obj(ctx->op);
   close_op_ctx(ctx);
 }
 

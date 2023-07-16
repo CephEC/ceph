@@ -174,6 +174,12 @@ public:
    bool may_batch_writing() { return false; };
    bool is_flush() { return is_flushing; }
 
+  void purge_origin_obj(OpRequestRef op) { 
+    if (origin_oid_map.find(op) != origin_oid_map.end()) {
+      origin_oid_map.erase(op);
+    }
+  }
+
 private:
   ceph::mutex flush_lock = ceph::make_mutex("AggregateBuffer::flush_lock");
   ceph::mutex timer_lock = ceph::make_mutex("AggregateBuffer::timer_lock");
@@ -206,7 +212,6 @@ public:
   std::list<OpRequestRef> waiting_for_aggregate;
   std::list<OpRequestRef> waiting_for_reply;
   OpRequestRef volume_op;
-  hobject_t origin_oid;   // 被转译前的原始对象
 
   volume_t inflight_volume_meta; 
   // 与当前正在执行的请求相关联的volume元数据， 主要在ECBackEnd处做空间优化的时候被使用
@@ -217,6 +222,8 @@ private:
   bool initialized = false;
   bool is_bind = false;
   bool flush_timer_enabled = false;
+
+  std::map<OpRequestRef, hobject_t> origin_oid_map;   // 被转译前的原始对象
 
   // 属于PG的VolumeMeta
   // std::vector<volume_t> volume_meta_cache;
