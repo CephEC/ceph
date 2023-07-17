@@ -2787,7 +2787,7 @@ int ECBackend::object_locate(MOSDOp* m, pg_shard_t &target_shard) {
       set<int> logical_data_chunk_set;
       map<pg_shard_t, vector<pair<int, int>>> shards;
       auto chunk_size = sinfo.get_chunk_size();
-      auto logical_data_chunk_id = (iter->op.extent.offset + chunk_size - 1) / chunk_size;
+      auto logical_data_chunk_id = iter->op.extent.offset / chunk_size;
       logical_data_chunk_set.insert(logical_data_chunk_id);
       get_want_to_read_shards_aggregateEC(logical_data_chunk_set, &want_to_read);
       int r = get_min_avail_to_read_shards(

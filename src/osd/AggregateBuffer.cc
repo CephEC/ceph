@@ -370,13 +370,13 @@ OSDOp generate_zero_op(uint64_t off, uint64_t len) {
 
 void AggregateBuffer::object_off_to_volume_off(OSDOp &osd_op, chunk_t chunk_meta) {
   uint64_t vol_offset = uint8_t(chunk_meta.get_chunk_id()) * inflight_volume_meta.get_chunk_size();
-  if (osd_op.op.extent.offset == inflight_volume_meta.get_chunk_size()) {
+  if (osd_op.op.extent.offset >= chunk_meta.get_offset()) {
     // offset超出RGW对象本身的大小，本次不读取任何数据
     osd_op.op.extent.offset = inflight_volume_meta.get_cap() * inflight_volume_meta.get_chunk_size();
   } else {
     osd_op.op.extent.length = osd_op.op.extent.offset + osd_op.op.extent.length > chunk_meta.get_offset() ?
       chunk_meta.get_offset() - osd_op.op.extent.offset : osd_op.op.extent.length;
-    osd_op.op.extent.offset = vol_offset;
+    osd_op.op.extent.offset = vol_offset + osd_op.op.extent.offset;
   }
 }
 
