@@ -2763,16 +2763,13 @@ void ECBackend::object_degrade_call_async(
   bufferlist read_data;
   list<pair<boost::tuple<uint64_t, uint64_t, unsigned>,
 	    pair<bufferlist*, Context*> > > in;
+  OnDegradeCallComplete * on_degrad_call_complete = new OnDegradeCallComplete(
+    cct, this, hoid, call_ctx, on_complete, read_data);
   in.push_back(make_pair(call_ctx.first,
-                         make_pair(&read_data, nullptr)));
+                         make_pair(&(on_degrad_call_complete->read_data), nullptr)));
   objects_read_async(hoid,
                      in,
-                     new OnDegradeCallComplete(cct,
-                                               this,
-                                               hoid,
-                                               call_ctx,
-                                               on_complete,
-                                               read_data));
+                     on_degrad_call_complete);
 }
 
 
@@ -2862,6 +2859,8 @@ void ECBackend::object_call_async(
   if (shards.size() == get_ec_data_chunk_count()) {
     // 数据块丢失，需要恢复整个条带
     // 选择将整个条带读入Primary OSD再进行Cls操作
+    dout(10) << __func__ << " degrade call aysnc obj = " << hoid
+      << " operate_range = " << call_ctx.first << dendl;
     object_degrade_call_async(hoid, call_ctx, on_complete);
     return;
   }

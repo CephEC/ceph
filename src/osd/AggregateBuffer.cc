@@ -547,7 +547,11 @@ int AggregateBuffer::op_translate(OpRequestRef &op, std::vector<OSDOp> &ops) {
                           osd_op.op.cls.indata_len,
                           osd_op.indata);
       cls_ctx_map[inflight_volume_meta.get_oid()] = cls_parm_ctx;
+      // osd_op.op是union（包含cls字段和extent字段）结构
+      // 为了避免cls字段残留的数据影响后续逻辑
+      // 先对extent字段做初始化
       osd_op.op.extent.length = chunk_meta.get_offset();
+      osd_op.op.extent.offset = 0;
       object_off_to_volume_off(osd_op, chunk_meta);
       break;
     }
