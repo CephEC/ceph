@@ -2285,17 +2285,13 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
 
   [[maybe_unused]] auto span = tracing::osd::tracer.add_span(__func__, op->osd_parent_span);
   // -------------------------------------------------------------------------------
-  // 这里应该就是分界线,在此之上的代码看到的是用户下发的rgw对象，在此之下代码看到的就只有volume对象
-
-  // 这一块检索对象丢失，和对象修复以及scrub的逻辑可以整合到聚合中来?
-  // 如果发现要写入的volume丢失数据或是正在修复中，那么就选择另外一个volume写入
-
-  // TODO(zhengfuyu): 这一块代码有点乱，后续可以根据OSDOp的Op code来更加准确地调用AggregateBuffer的相关接口
+  // 这里是分界线,在此之上的代码看到的是用户下发的rgw对象，在此之下代码看到的就只有volume对象
   if (is_primary() &&
       is_aggregate_enabled() && 
       (!op->is_write_volume_op() && !op->is_cephec_translated_op()) &&
       op->get_reqid().name.is_client()) {
     if (m_aggregate_buffer->need_aggregate_op(m)) {
+      // 聚合RGW对象
       dout(10) << "write op " << op << " in buffer." << dendl;
       int r = m_aggregate_buffer->write(op, m);
       switch (r) {
@@ -2308,13 +2304,11 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
         break;
       default:
         dout(10) << "aggregate failed." << dendl;
-        reply_op_error(op, -EINVAL); // TODO(zhengfuyu):先随便找个错误码应付下
+        reply_op_error(op, -EINVAL);
         return;
       }
     } else if (m_aggregate_buffer->need_translate_op(m)) {
-      // 读请求和Cls请求都会进入转译
-      // ceph内部存在一些非聚合的对象，在volume_meta_cache无法找到它们的映射关系
-      // 当volume_meta_cache中不存在对象映射时，不要直接返回对象不存在，而是将请求原封不动继续下发
+      // 读，删除，元数据处理等请求都会进入转译
       int r = m_aggregate_buffer->op_translate(op, m->ops);
       if (r < 0) {
         // 这里的r只可能是ENOENT,如果后续出现其他错误码,要同步修改错误处理逻辑
@@ -2326,8 +2320,10 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
         // 延迟等待恢复完毕后再次执行本次读请求
         waiting_for_all_object_recovery.push_back(op);
         return;
-      } else if (r == AGGREGATE_REDIRECT) {
-        // 转译后的请求重定向到对应OSD
+      } else if (r == AGGREGATE_REDIRECT &&
+                 is_active() &&
+                 is_clean()) {
+        // 转译后的请求重定向到对应OSD (只有在保证当前pg是active+clean的状态才会走重定向的逻辑)
         pg_shard_t shard;
         int r = pgbackend->object_locate(m, shard);
         // 如果确定数据在当前OSD上，那就不需要重定向
@@ -2348,9 +2344,7 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
       } // else {}
     }
   }
-  // // ceph会把丢失的object整合成一个map,这里就是检索map判断本次操作的对象是否丢失了
-  // aggregateEC中可能需要改动对 已丢失对象 的管理方式，还需要细看ceph当前是如何感知对象丢失，以及恢复对象的流程
-  // missing object?
+  // ceph会把丢失的object整合成一个map,这里就是检索map判断本次操作的对象是否丢失了
   if (is_unreadable_object(head)) {
     if (!is_primary()) {
       reply_op_error(op, -EAGAIN);
@@ -2456,7 +2450,7 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
   const hobject_t& oid =
     m->get_snapid() == CEPH_SNAPDIR ? head : m->get_hobj();
 
-  // 快照相关的错误处理 先不管
+  // 快照相关的错误处理
   // make sure LIST_SNAPS is on CEPH_SNAPDIR and nothing else
   for (vector<OSDOp>::iterator p = m->ops.begin(); p != m->ops.end(); ++p) {
     OSDOp& osd_op = *p;
@@ -2484,7 +2478,7 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
     return;
   }
 
-  // 判断一下是否支持对replicate osd进行读操作
+  // 判断是否支持对replicate osd进行读操作
   if (!is_primary()) {
     if (!recovery_state.can_serve_replica_read(oid)) {
       dout(20) << __func__
