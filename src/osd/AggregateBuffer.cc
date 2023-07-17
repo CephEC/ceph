@@ -282,7 +282,10 @@ void AggregateBuffer::update_cache(const hobject_t& soid, std::vector<OSDOp> *op
       uint64_t chunk_size = volume_buffer.get_volume_info().get_chunk_size();
       ceph_assert(osd_op.op.extent.length == chunk_size);
       uint64_t chunk_id = osd_op.op.extent.offset / chunk_size;
-      ceph_assert(ec_cache.second[chunk_id].length() == 0);
+      if (ec_cache.second[chunk_id].length() != 0) {
+        // 覆盖写的对象刚好缓存在ec_cache中,更新ec_cache
+        ec_cache.second[chunk_id].clear();
+      }
       ec_cache.second[chunk_id].append(std::move(osd_op.indata));
       ceph_assert(ec_cache.second[chunk_id].length() == chunk_size);
     }

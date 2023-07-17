@@ -2322,7 +2322,8 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
         return;
       } else if (r == AGGREGATE_REDIRECT &&
                  is_active() &&
-                 is_clean()) {
+                 is_clean() &&
+                 m->get_retry_attempt() <= cct->_conf->aggregateEC_redirect_read_max_times) {
         // 转译后的请求重定向到对应OSD (只有在保证当前pg是active+clean的状态才会走重定向的逻辑)
         pg_shard_t shard;
         int r = pgbackend->object_locate(m, shard);

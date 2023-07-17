@@ -6316,3 +6316,11 @@ options:
   desc: redirect translated aggregateEC read request to replicate OSD
   default: true
   with_legacy: true
+- name: aggregateEC_redirect_read_max_times
+  type: uint
+  level: advanced
+  desc: When retry times > aggregateEC_redirect_read_max_times, 
+    the primary OSD no longer redirects the request to the replicate OSD. 
+    Instead, it processes read request on the primary OSD.
+  default: 50
+  with_legacy: true
