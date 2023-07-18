@@ -2822,6 +2822,38 @@ static int rados_tool_common(const std::map < std::string, std::string > &opts,
     }
     if (fd != 1)
       VOID_TEMP_FAILURE_RETRY(::close(fd));
+  } else if (strcmp(nargs[0], "cls_openssl_md5") == 0) {
+    if(nargs.size() < 3) {
+      cerr << "cls_openssl_md5 usage: <obj> <outfile>" << std::endl;
+      return -EINVAL;
+    }
+    if (!obj_name) { obj_name = nargs[1]; }
+    if (!out_file) { out_file = nargs[2]; }
+    bufferlist out;
+    std::chrono::duration<double> timePassed;
+    mono_time start_time = mono_clock::now();
+    bufferlist parm;
+    ret = io_ctx.exec(*obj_name, "openssl_md5", "compute", parm, out);
+    if (ret != 0) {
+      cerr << "error cls openssl_md5::compute :" << cpp_strerror(ret) << std::endl;
+      return 1;
+    }
+    cout << "cls process end, out.length = " << out.length() << std::endl;
+    int fd = TEMP_FAILURE_RETRY(::open(out_file, O_WRONLY|O_CREAT|O_TRUNC|O_BINARY, 0644));
+    if (fd < 0) {
+      int err = errno;
+      cerr << "failed to open file: " << cpp_strerror(err) << std::endl;
+      return -err;
+    }
+    ret = out.write_fd(fd);
+    timePassed = mono_clock::now() - start_time;
+    cout << "Cls complete and total get time: " << timePassed.count() << std::endl;
+    if (ret < 0) {
+      cerr << "error writing to file: " << cpp_strerror(ret) << std::endl;
+    }
+    if (fd != 1)
+      VOID_TEMP_FAILURE_RETRY(::close(fd));
+
   } else if (strcmp(nargs[0], "cls_thumbnail") == 0) {
     if(nargs.size() < 6) {
       cerr << "cls_thumbnail usage: <obj> <outfile> [ratio|fixed] <param_x> <param_y>" << std::endl;

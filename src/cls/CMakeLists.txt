@@ -368,3 +368,13 @@ install(TARGETS cls_opencv_thumbnail DESTINATION ${cls_dir})
 
 add_library(cls_opencv_thumbnail_client STATIC opencv_thumbnail/cls_opencv_thumbnail_client.cc)
 target_link_libraries(cls_opencv_thumbnail_client librados ceph-common)
+
+#cls_openssl_md5
+set(cls_openssl_md5_srcs openssl_md5/cls_openssl_md5.cc)
+add_library(cls_openssl_md5 SHARED ${cls_openssl_md5_srcs})
+set_target_properties(cls_openssl_md5 PROPERTIES
+  VERSION "1.0.0"
+  SOVERSION "1"
+  INSTALL_RPATH ""
+  CXX_VISIBILITY_PRESET hidden)
+target_link_libraries(cls_openssl_md5 PRIVATE OpenSSL::Crypto)
