@@ -28,13 +28,6 @@ chunk_t Chunk::set_from_op(OpRequestRef _op, MOSDOp* _m, const uint8_t& seq, uin
     return chunk_t();
   }
     
-  uint64_t data_len = _m->get_data_len();
-  // 检查data_len是否大于配置文件中的chunk_size 
-  if(data_len > chunk_size) {
-    dout(4) << "set_from_op failed, data_len = " << data_len
-      << " max_chunk_size = " << chunk_size << dendl;
-    return chunk_t();
-  }
   // 将对象填充到oid中
   chunk_info.set_from_op(seq, 0, oid);
 
@@ -43,6 +36,12 @@ chunk_t Chunk::set_from_op(OpRequestRef _op, MOSDOp* _m, const uint8_t& seq, uin
   this->op = _op;
   for (OSDOp &osd_op : _m->ops) {
     if (osd_op.op.op == CEPH_OSD_OP_WRITEFULL) {
+      if (osd_op.op.extent.length > chunk_size) {
+        dout(4) << "set_from_op failed, data_len = " << osd_op.op.extent.length
+          << " max_chunk_size = " << chunk_size << dendl;
+        clear();
+        return chunk_t();
+      }
       // 将WRITEFULL改成WRITE，同时调整offset和length
       osd_op.op.op = CEPH_OSD_OP_WRITE;
       
