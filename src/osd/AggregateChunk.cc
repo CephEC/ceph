@@ -35,13 +35,13 @@ chunk_t Chunk::set_from_op(OpRequestRef _op, MOSDOp* _m, const uint8_t& seq, uin
 
   this->op = _op;
   for (OSDOp &osd_op : _m->ops) {
+    if (osd_op.indata.length() > chunk_size) {
+      dout(4) << "set_from_op failed, data_len = " << osd_op.indata.length()
+        << " max_chunk_size = " << chunk_size << dendl;
+      clear();
+      return chunk_t();
+    }
     if (osd_op.op.op == CEPH_OSD_OP_WRITEFULL) {
-      if (osd_op.op.extent.length > chunk_size) {
-        dout(4) << "set_from_op failed, data_len = " << osd_op.op.extent.length
-          << " max_chunk_size = " << chunk_size << dendl;
-        clear();
-        return chunk_t();
-      }
       // 将WRITEFULL改成WRITE，同时调整offset和length
       osd_op.op.op = CEPH_OSD_OP_WRITE;
       
@@ -67,6 +67,8 @@ chunk_t Chunk::set_from_op(OpRequestRef _op, MOSDOp* _m, const uint8_t& seq, uin
       osd_op.indata.clear();
       osd_op.indata.append(key);
       osd_op.indata.append(value);
+    } else if (osd_op.op.op == CEPH_OSD_OP_CREATE) {
+      continue;
     }
     ops.push_back(osd_op);
   }

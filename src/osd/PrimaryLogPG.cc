@@ -2332,7 +2332,7 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
           // m->set_flag(CEPH_OSD_FLAG_BALANCE_READS);
           int flags = m->get_flags() & (CEPH_OSD_FLAG_ACK | CEPH_OSD_FLAG_ONDISK);
           // m->set_spg(spg_t(whoami_spg_t().pgid, shard.shard));
-          MOSDOpReply *reply = new MOSDOpReply(m, -ENOENT, get_osdmap_epoch(),
+          MOSDOpReply *reply = new MOSDOpReply(m, -EAGAIN, get_osdmap_epoch(),
                                               flags, false);
           request_redirect_t redir(m->get_object_locator(), m->get_hobj().oid.name, shard.osd, shard.shard);
           reply->set_redirect(redir);

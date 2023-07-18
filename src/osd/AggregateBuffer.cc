@@ -55,7 +55,8 @@ bool AggregateBuffer::need_aggregate_op(MOSDOp* m)
   for (iter = m->ops.begin(); iter != m->ops.end(); ++iter) {
     if (iter->op.op == CEPH_OSD_OP_WRITEFULL ||
         iter->op.op == CEPH_OSD_OP_WRITE ||
-        iter->op.op == CEPH_OSD_OP_SETXATTR) {
+        iter->op.op == CEPH_OSD_OP_SETXATTR ||
+        iter->op.op == CEPH_OSD_OP_CREATE) {
       ret = true;
       break;
     }
