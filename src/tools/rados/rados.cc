@@ -1882,10 +1882,6 @@ static int rados_tool_common(const std::map < std::string, std::string > &opts,
 {
   int ret;
   bool create_pool = false;
-  const char *class_name = NULL;
-  const char *method_name = NULL;
-  std::string call_arg1;
-  int call_arg2 = 0;
   const char *out_file = NULL;
   const char *bench_latency_file = NULL;
   const char *bench_meta_file = NULL;
