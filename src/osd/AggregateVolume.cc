@@ -31,9 +31,8 @@ void Volume::clear()
 {
   for (auto i: chunks) {
     i->clear();
-  }  
-  // TODO: 处理vol_op
-  volume_info.clear(); 
+  }
+  volume_info.clear();
 }
 
 void Volume::init(uint64_t _cap, uint64_t _chunk_size)

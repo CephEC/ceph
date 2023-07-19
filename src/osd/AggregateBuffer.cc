@@ -119,7 +119,6 @@ int AggregateBuffer::write(OpRequestRef op, MOSDOp* m)
     flush();
   }
   return AGGREGATE_PENDING_REPLY;
-
 }
 
 bool AggregateBuffer::is_volume_cached(const hobject_t& soid) {
@@ -133,26 +132,6 @@ bool AggregateBuffer::is_volume_cached(const hobject_t& soid) {
     }
   }
   return true;
-}
-
-// 针对"未缓存数据块的volume对象"做填充写时，需要将之前已落盘的数据块读入主OSD
-// 于此同时，将这些数据块缓存起来，加速下一轮填充写
-// 但注意，针对覆盖写的场景，无需缓存数据块
-void AggregateBuffer::cache_data_chunk(extent_map& data) {
-  if (ec_cache.first) return;
-  dout(4) << "cache_data_chunk, data = " << data << dendl;
-  for (auto &&extent: data) {
-    uint64_t off = extent.get_off();
-    uint64_t len = extent.get_len();
-    uint64_t end = off + len;
-    uint64_t chunk_size = volume_buffer.get_volume_info().get_chunk_size();
-    ceph_assert(off == 0);
-    ceph_assert(len % chunk_size == 0);
-    while (off <end) {
-      ec_cache.second[off / chunk_size].substr_of(extent.get_val(), off, chunk_size);
-      off += chunk_size;
-    }
-  }
 }
 
 void AggregateBuffer::clear_ec_cache() {
@@ -182,6 +161,7 @@ void AggregateBuffer::ec_cache_read(extent_map& read_result) {
 
 int AggregateBuffer::flush()
 {
+  if (!pg) return 0;
   if (!volume_buffer.empty()) {
     flush_lock.lock();
     // when start to flush, lock
@@ -209,7 +189,7 @@ int AggregateBuffer::flush()
   } else {
     dout(4) << " timeout, but volume is empty. " << dendl;
     flush_callback = NULL;
-    return NOT_TARGET;
+    return 0;
   }
 }
 
@@ -257,8 +237,8 @@ void AggregateBuffer::update_cache(const hobject_t& soid, std::vector<OSDOp> *op
       remove_volume_meta(soid);
       bp.copy(osd_op.op.xattr.value_len, bl);
       meta_ptr = std::make_shared<volume_t>(
-        pg->get_pgbackend()->get_ec_data_chunk_count(),
-        pg->get_pgid());
+        volume_buffer.get_cap(),
+        volume_buffer.get_spg());
       auto p = bl.cbegin();
       decode(*meta_ptr, p);
       insert_to_meta_cache(meta_ptr);
@@ -413,12 +393,13 @@ int AggregateBuffer::op_translate(OpRequestRef &op, std::vector<OSDOp> &ops) {
     
     switch (osd_op.op.op) {
     case CEPH_OSD_OP_CMPXATTR:
+    case CEPH_OSD_OP_SETXATTR:
     {
       auto bp = osd_op.indata.cbegin();
       std::string key;
 	    bufferlist value;
       bp.copy(osd_op.op.xattr.name_len, key);
-      key = chunk_meta.get_oid().oid.name + "_" + key;
+      key = origin_oid.oid.name + "_" + key;
       bp.copy(osd_op.op.xattr.value_len, value);
       osd_op.indata.clear();
       osd_op.op.xattr.name_len = key.size();
@@ -432,7 +413,7 @@ int AggregateBuffer::op_translate(OpRequestRef &op, std::vector<OSDOp> &ops) {
       auto bp = osd_op.indata.cbegin();
       std::string key;
       bp.copy(osd_op.op.xattr.name_len, key);
-      key = chunk_meta.get_oid().oid.name + "_" + key;
+      key = origin_oid.oid.name + "_" + key;
       osd_op.indata.clear();
       osd_op.op.xattr.name_len = key.size();
       osd_op.indata.append(key);
@@ -449,26 +430,6 @@ int AggregateBuffer::op_translate(OpRequestRef &op, std::vector<OSDOp> &ops) {
       osd_op.indata.append(origin_oid.oid.name);
       break;
     }
-
-    case CEPH_OSD_OP_SETXATTR:
-    {
-      std::string key;
-      auto bp = osd_op.indata.cbegin();
-      bp.copy(osd_op.op.xattr.name_len, key);
-
-      bufferlist value;
-      bp.copy(osd_op.op.xattr.value_len, value);
-
-      key = origin_oid.oid.name + "_" + key;
-      osd_op.op.xattr.name_len = key.size();
-
-      osd_op.indata.clear();
-      osd_op.indata.append(key);
-      osd_op.indata.append(value);
-
-      r = AGGREGATE_CONTINUE;
-      break;
-    }
     case CEPH_OSD_OP_STAT:
     {
       encode(chunk_meta.get_offset(), osd_op.outdata);
@@ -478,13 +439,6 @@ int AggregateBuffer::op_translate(OpRequestRef &op, std::vector<OSDOp> &ops) {
     case CEPH_OSD_OP_DELETE:
     {
       ceph_assert(ops.size() == 1);
-      /*
-      // op_translate这里可能会将delete转为setxattr,直接将转译后的请求回复给client会报warning
-      auto untranslated_delete_m = new MOSDOp(m);
-      auto untranslated_delete_op = pg->osd->osd->create_request(untranslated_delete_m);
-      waiting_for_reply.push_back(untranslated_delete_op);
-      */
-
       if (!inflight_volume_meta.is_only_valid_object(origin_oid)) {
         // volume中还有其他有效对象,更新元数据,并且生成zero请求挖洞
         ops.push_back(generate_zero_op(vol_offset, inflight_volume_meta.get_chunk_size()));
@@ -509,12 +463,14 @@ int AggregateBuffer::op_translate(OpRequestRef &op, std::vector<OSDOp> &ops) {
       break;
     }
 
+    case CEPH_OSD_OP_WRITE:
     case CEPH_OSD_OP_WRITEFULL:
     {
       // 为RGW对象覆盖写提供请求转译
       osd_op.op.op = CEPH_OSD_OP_WRITE;
-      ceph_assert(osd_op.op.extent.offset == 0);
-      osd_op.op.extent.offset = vol_offset;
+      osd_op.op.extent.offset = vol_offset + osd_op.op.extent.offset;
+      ceph_assert(osd_op.op.extent.offset + osd_op.op.extent.length <= 
+        inflight_volume_meta.get_chunk_size());
       // 覆盖写后，对象的len可能会变化，那么相应地也要修改volume元数据
       inflight_volume_meta.update_chunk(origin_oid, osd_op.op.extent.length);
       ops.push_back(inflight_volume_meta.generate_write_meta_op());

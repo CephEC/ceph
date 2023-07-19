@@ -27,7 +27,7 @@ chunk_t Chunk::set_from_op(OpRequestRef _op, MOSDOp* _m, const uint8_t& seq, uin
       << " chunk_pg_id = " << pg_id.pgid << dendl;
     return chunk_t();
   }
-    
+
   // 将对象填充到oid中
   chunk_info.set_from_op(seq, 0, oid);
 
@@ -41,7 +41,8 @@ chunk_t Chunk::set_from_op(OpRequestRef _op, MOSDOp* _m, const uint8_t& seq, uin
       clear();
       return chunk_t();
     }
-    if (osd_op.op.op == CEPH_OSD_OP_WRITEFULL) {
+    if (osd_op.op.op == CEPH_OSD_OP_WRITEFULL ||
+        osd_op.op.op == CEPH_OSD_OP_WRITE) {
       // 将WRITEFULL改成WRITE，同时调整offset和length
       osd_op.op.op = CEPH_OSD_OP_WRITE;
       

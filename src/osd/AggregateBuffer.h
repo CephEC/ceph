@@ -156,23 +156,17 @@ public:
 
   void clear_ec_cache();
 
-  // ECBackend调用该函数，将remote_read过程中读取到的数据块缓存到AggregateBuffer中
-  void cache_data_chunk(extent_map& data);
-
   // 判断volume对象的数据块是否缓存
   bool is_volume_cached(const hobject_t& soid);
 
   // EC write过程中，读取已缓存的volume对象数据块，加速RMW过程
   void ec_cache_read(extent_map& read_result);
 
-   /**
-   * @brief 预留函数，用于根据请求到来的历史信息预测此时的IO模式，判断是否提前计算EC并缓存
-   * 调用位置：volume flush函数中
-   *
-   * @return bool
-   */
-   bool may_batch_writing() { return false; };
-   bool is_flush() { return is_flushing; }
+  bool is_flush() { return is_flushing; }
+
+  bool is_object_exist(const hobject_t& soid) {
+    return volume_meta_cache.find(soid) != volume_meta_cache.end();
+  }
 
   void purge_origin_obj(OpRequestRef op) { 
     if (origin_oid_map.find(op) != origin_oid_map.end()) {

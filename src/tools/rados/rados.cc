@@ -102,7 +102,6 @@ void usage(ostream& out)
 "   rmsnap <snap-name>               remove snap <snap-name>\n"
 "\n"
 "OBJECT COMMANDS\n"
-"   call <obj-name> [--class_name] [--method_name] [--call_arg1] [--call_arg2] [--out_file]\n"
 "   get <obj-name> <outfile>         fetch object\n"
 "   put <obj-name> <infile> [--offset offset]\n"
 "                                    write object with start offset (default:0)\n"
@@ -2788,40 +2787,6 @@ static int rados_tool_common(const std::map < std::string, std::string > &opts,
     }
     else
       ret = 0;
-  } else if (strcmp(nargs[0], "call") == 0) {
-    if (!pool_name || nargs.size() < (obj_name ? 1 : 2)) {
-      usage(cerr);
-      return 1;
-    }
-    if (!obj_name) {
-      obj_name = nargs[1];
-    }
-    bufferlist out, in;
-    std::chrono::duration<double> timePassed;
-    encode(call_arg1, in);
-    if (call_arg2 != 0)
-      encode(call_arg2, in);
-    mono_time start_time = mono_clock::now();
-    ret = io_ctx.exec(*obj_name, class_name, method_name, in, out);
-    if (ret < 0) {
-      cerr << "error cls call " << pool_name << "/" << class_name << "/" << method_name << ": " << cpp_strerror(ret) << std::endl;
-      return 1;
-    }
-    cout << "cls process end, out.length = " << out.length() << std::endl;
-    int fd = TEMP_FAILURE_RETRY(::open(out_file, O_WRONLY|O_CREAT|O_TRUNC|O_BINARY, 0644));
-    if (fd < 0) {
-      int err = errno;
-      cerr << "failed to open file: " << cpp_strerror(err) << std::endl;
-      return -err;
-    }
-    ret = out.write_fd(fd);
-    timePassed = mono_clock::now() - start_time;
-    cout << "Cls complete and total get time: " << timePassed.count() << std::endl;
-    if (ret < 0) {
-      cerr << "error writing to file: " << cpp_strerror(ret) << std::endl;
-    }
-    if (fd != 1)
-      VOID_TEMP_FAILURE_RETRY(::close(fd));
   } else if (strcmp(nargs[0], "cls_openssl_md5") == 0) {
     if(nargs.size() < 3) {
       cerr << "cls_openssl_md5 usage: <obj> <outfile>" << std::endl;
@@ -2896,8 +2861,7 @@ static int rados_tool_common(const std::map < std::string, std::string > &opts,
     }
     if (fd != 1)
       VOID_TEMP_FAILURE_RETRY(::close(fd));
-  }
-  else if (strcmp(nargs[0], "getxattr") == 0) {
+  } else if (strcmp(nargs[0], "getxattr") == 0) {
     if (!pool_name || nargs.size() < (obj_name ? 2 : 3)) {
       usage(cerr);
       return 1;
