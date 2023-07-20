@@ -462,17 +462,19 @@ int AggregateBuffer::op_translate(OpRequestRef &op, std::vector<OSDOp> &ops) {
       }
       break;
     }
-
-    case CEPH_OSD_OP_WRITE:
     case CEPH_OSD_OP_WRITEFULL:
     {
-      // 为RGW对象覆盖写提供请求转译
+      // 为RGW对象全量覆盖写提供请求转译
       osd_op.op.op = CEPH_OSD_OP_WRITE;
-      osd_op.op.extent.offset = vol_offset + osd_op.op.extent.offset;
-      ceph_assert(osd_op.op.extent.offset + osd_op.op.extent.length <= 
-        inflight_volume_meta.get_chunk_size());
-      // 覆盖写后，对象的len可能会变化，那么相应地也要修改volume元数据
+      osd_op.op.extent.offset = vol_offset;
+      // 填0处理
+      dout(4) << __func__ << ": bufferlist before zerofilling " << osd_op.indata << dendl;
+      size_t zero_to_fill = inflight_volume_meta.get_chunk_size() - osd_op.indata.length();
+      osd_op.indata.append_zero(zero_to_fill);
+      dout(4) << __func__ << ": bufferlist after zerofilling " << osd_op.indata << dendl;
+      // 全量覆盖写后，对象的len可能会变化，那么相应地也要修改volume元数据
       inflight_volume_meta.update_chunk(origin_oid, osd_op.op.extent.length);
+      osd_op.op.extent.length = inflight_volume_meta.get_chunk_size();
       ops.push_back(inflight_volume_meta.generate_write_meta_op());
       break;
     }

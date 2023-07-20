@@ -1940,10 +1940,6 @@ static int rados_tool_common(const std::map < std::string, std::string > &opts,
   if (i != opts.end()) {
     create_pool = true;
   }
-  i = opts.find("class_name");
-  if (i != opts.end()) {
-    class_name = i->second.c_str();
-  }
   i = opts.find("out_file");
   if (i != opts.end()) {
     out_file = i->second.c_str();
@@ -1959,20 +1955,6 @@ static int rados_tool_common(const std::map < std::string, std::string > &opts,
   i = opts.find("read_length");
   if (i != opts.end()) {
     if (rados_sistrtoll(i, &read_length)) {
-      return -EINVAL;
-    }
-  }
-  i = opts.find("method_name");
-  if (i != opts.end()) {
-    method_name = i->second.c_str();
-  }
-  i = opts.find("call_arg1");
-  if (i != opts.end()) {
-    call_arg1 = i->second;
-  }
-  i = opts.find("call_arg2");
-  if (i != opts.end()) {
-    if (rados_sistrtoll(i, &call_arg2)) {
       return -EINVAL;
     }
   }
