@@ -378,3 +378,4 @@ set_target_properties(cls_openssl_md5 PROPERTIES
   INSTALL_RPATH ""
   CXX_VISIBILITY_PRESET hidden)
 target_link_libraries(cls_openssl_md5 PRIVATE OpenSSL::Crypto)
+install(TARGETS cls_openssl_md5 DESTINATION ${cls_dir})
