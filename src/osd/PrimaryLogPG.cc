@@ -2059,24 +2059,17 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
     m_aggregate_buffer->init(cap, chunk_size, flush_timer_enabled, time_out);
   }
   
-  // 对message中的信息解码
-  // if (m->has_flag(CEPH_OSD_FLAG_AGGREGATE)) {
-    // m->decode_payload();
-    // op->reset_desc();   // for TrackedOp
-    // m->clear_payload();
-  // } else {
-    if (m->finish_decode()) {
-      op->reset_desc();   // for TrackedOp
-      m->clear_payload();
-    }
-  // }
-   
+  if (m->finish_decode()) {
+    op->reset_desc();   // for TrackedOp
+    m->clear_payload();
+  }
+
 
   dout(20) << __func__ << ": op " << *m << dendl;
-  
+
   // 构建head对象
   const hobject_t head = m->get_hobj().get_head();
- 
+
   dout(4) << __func__ << " pg: " << info.pgid.pgid << " head: "
 	  	 << head << " pg_num " << pool.info.get_pg_num() << " hash "
 		 	 << std::hex << head.get_hash() << std::dec 
@@ -2113,7 +2106,7 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
       return;
     }
   }
-  } 
+  }
 
   if (m->has_flag(CEPH_OSD_FLAG_PARALLELEXEC)) {
     // not implemented.
@@ -2320,7 +2313,9 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
         // 延迟等待恢复完毕后再次执行本次读请求
         waiting_for_all_object_recovery.push_back(op);
         return;
-      } else if (r == AGGREGATE_REDIRECT &&
+      }
+      /*
+      else if (r == AGGREGATE_REDIRECT &&
                  is_active() &&
                  is_clean() &&
                  m->get_retry_attempt() <= cct->_conf->aggregateEC_redirect_read_max_times) {
@@ -2329,9 +2324,7 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
         int r = pgbackend->object_locate(m, shard);
         // 如果确定数据在当前OSD上，那就不需要重定向
         if (!r && shard != whoami_shard()) {
-          // m->set_flag(CEPH_OSD_FLAG_BALANCE_READS);
           int flags = m->get_flags() & (CEPH_OSD_FLAG_ACK | CEPH_OSD_FLAG_ONDISK);
-          // m->set_spg(spg_t(whoami_spg_t().pgid, shard.shard));
           MOSDOpReply *reply = new MOSDOpReply(m, -EAGAIN, get_osdmap_epoch(),
                                               flags, false);
           request_redirect_t redir(m->get_object_locator(), m->get_hobj().oid.name, shard.osd, shard.shard);
@@ -2343,6 +2336,7 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
           return;
         }
       } // else {}
+              */
     }
   }
   // ceph会把丢失的object整合成一个map,这里就是检索map判断本次操作的对象是否丢失了
