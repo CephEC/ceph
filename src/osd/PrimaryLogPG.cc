@@ -2059,6 +2059,12 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
     m_aggregate_buffer->init(cap, chunk_size, flush_timer_enabled, time_out);
   }
   
+  dout(20) << __func__ << " op.payload_length = " << m->get_data().length() << dendl;
+  for (auto &osd_op : m->ops) {
+    dout(20) << __func__ << " ops payload_len = " << osd_op.op.payload_len << dendl;
+    load_volume_attrs();
+  }
+
   if (m->finish_decode()) {
     op->reset_desc();   // for TrackedOp
     m->clear_payload();
