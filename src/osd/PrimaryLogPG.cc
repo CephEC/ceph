@@ -2314,7 +2314,6 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
         waiting_for_all_object_recovery.push_back(op);
         return;
       }
-      /*
       else if (r == AGGREGATE_REDIRECT &&
                  is_active() &&
                  is_clean() &&
@@ -2336,7 +2335,6 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
           return;
         }
       } // else {}
-              */
     }
   }
   // ceph会把丢失的object整合成一个map,这里就是检索map判断本次操作的对象是否丢失了
