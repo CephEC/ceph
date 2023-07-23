@@ -142,7 +142,7 @@ public:
     do_redirect = false;
   }
   MOSDOpReply(const MOSDOp *req, int r, epoch_t e, int acktype,
-	      bool ignore_out_data)
+	      bool ignore_out_data, bool ignore_in_data = true)
     : Message{CEPH_MSG_OSD_OPREPLY, HEAD_VERSION, COMPAT_VERSION},
       oid(req->hobj.oid), pgid(req->pgid.pgid), ops(req->ops),
       bdata_encode(false) {
@@ -158,10 +158,13 @@ public:
 
     for (unsigned i = 0; i < ops.size(); i++) {
       // zero out input data
+      if (ignore_in_data) {
+        ops[i].indata.clear();
+      }
       ops[i].indata.clear();
       if (ignore_out_data) {
-	// original request didn't set the RETURNVEC flag
-	ops[i].outdata.clear();
+        // original request didn't set the RETURNVEC flag
+        ops[i].outdata.clear();
       }
     }
   }

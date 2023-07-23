@@ -2331,7 +2331,7 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
         if (!r && shard != whoami_shard()) {
           int flags = m->get_flags() & (CEPH_OSD_FLAG_ACK | CEPH_OSD_FLAG_ONDISK);
           MOSDOpReply *reply = new MOSDOpReply(m, -EAGAIN, get_osdmap_epoch(),
-                                              flags, false);
+                                              flags, false, false);
           request_redirect_t redir(m->get_object_locator(), m->get_hobj().oid.name, shard.osd, shard.shard);
           reply->set_redirect(redir);
           dout(10) << "redirect volume read request to osd(" << shard.osd << ")" << 
