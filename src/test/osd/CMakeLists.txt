@@ -123,3 +123,12 @@ add_ceph_unittest(unittest_mclock_scheduler)
 target_link_libraries(unittest_mclock_scheduler
   global osd dmclock os
 )
+
+# unittest_ec_aggregate
+add_executable(unittest_ec_aggregate
+  test_ec_aggregate.cc
+)
+add_ceph_unittest(unittest_ec_aggregate)
+target_link_libraries(unittest_ec_aggregate
+  global osd os
+)
