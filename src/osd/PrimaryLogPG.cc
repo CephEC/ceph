@@ -2062,7 +2062,6 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
   dout(20) << __func__ << " op.payload_length = " << m->get_data().length() << dendl;
   for (auto &osd_op : m->ops) {
     dout(20) << __func__ << " ops payload_len = " << osd_op.op.payload_len << dendl;
-    load_volume_attrs();
   }
 
   if (m->finish_decode()) {
@@ -2321,10 +2320,11 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
         return;
       }
       else if (r == AGGREGATE_REDIRECT &&
-                 is_active() &&
-                 is_clean() &&
-                 m->get_retry_attempt() <= cct->_conf->aggregateEC_redirect_read_max_times) {
-        // 转译后的请求重定向到对应OSD (只有在保证当前pg是active+clean的状态才会走重定向的逻辑)
+               is_active() &&
+               is_clean() &&
+               m->get_retry_attempt() <= cct->_conf->aggregateEC_redirect_read_max_times) {
+        // 转译后的请求重定向到对应OSD 
+        // (只有在保证当前pg是primary且active+clean的状态才会走重定向的逻辑)
         pg_shard_t shard;
         int r = pgbackend->object_locate(m, shard);
         // 如果确定数据在当前OSD上，那就不需要重定向
@@ -4480,7 +4480,8 @@ void PrimaryLogPG::execute_ctx(OpContext *ctx)
   recovery_state.update_trim_to();
 
   // verify that we are doing this in order?
-  if (cct->_conf->osd_debug_op_order && m->get_source().is_client() &&
+  if (!is_aggregate_enabled() &&
+      cct->_conf->osd_debug_op_order && m->get_source().is_client() &&
       !pool.info.is_tier() && !pool.info.has_tiers()) {
     map<client_t,ceph_tid_t>& cm = debug_op_order[obc->obs.oi.soid];
     ceph_tid_t t = m->get_tid();
@@ -6455,7 +6456,7 @@ int PrimaryLogPG::do_osd_ops(OpContext *ctx, vector<OSDOp>& ops)
       // note: stat does not require RD
       {
         // 在aggregateEC配置下，所以STAT命令会在do_op中被拦截，然后由AggregateBuffer负责处理
-        if (is_aggregate_enabled() && is_primary()) {
+        if (is_aggregate_enabled()) {
           break;
         }
         tracepoint(osd, do_osd_op_pre_stat, soid.oid.name.c_str(), soid.snap.val);

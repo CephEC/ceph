@@ -7158,14 +7158,17 @@ ostream& operator<<(ostream& out, const OSDOp& op)
 }
 
 
-void OSDOp::split_osd_op_vector_out_data(vector<OSDOp>& ops, ceph::buffer::list& in)
+uint64_t OSDOp::split_osd_op_vector_out_data(vector<OSDOp>& ops, ceph::buffer::list& in)
 {
+  uint64_t off = 0;
   auto datap = in.begin();
   for (unsigned i = 0; i < ops.size(); i++) {
     if (ops[i].op.payload_len) {
       datap.copy(ops[i].op.payload_len, ops[i].outdata);
+      off += ops[i].op.payload_len;
     }
   }
+  return off;
 }
 
 void OSDOp::merge_osd_op_vector_out_data(vector<OSDOp>& ops, ceph::buffer::list& out)

@@ -4170,12 +4170,26 @@ struct OSDOp {
    * @param in  [in] combined data buffer
    */
   template<typename V>
-  static void split_osd_op_vector_in_data(V& ops,
+  static uint64_t split_osd_op_vector_in_data(V& ops,
 					  ceph::buffer::list& in) {
+    uint64_t off = 0;
     ceph::buffer::list::iterator datap = in.begin();
     for (unsigned i = 0; i < ops.size(); i++) {
       if (ops[i].op.payload_len) {
 	datap.copy(ops[i].op.payload_len, ops[i].indata);
+  off += ops[i].op.payload_len;
+      }
+    }
+    return off;
+  }
+
+  template<typename V>
+  static void split_osd_op_vector_in_data_for_aggregateEC(V& ops,
+					  ceph::buffer::list& in, std::vector<uint64_t> &indata_lens) {
+    ceph::buffer::list::iterator datap = in.begin();
+    for (unsigned i = 0; i < ops.size(); i++) {
+      if (indata_lens[i]) {
+	      datap.copy(indata_lens[i], ops[i].indata);
       }
     }
   }
@@ -4199,13 +4213,33 @@ struct OSDOp {
     }
   }
 
+  template<typename V>
+  static void merge_osd_op_vector_in_data_for_aggregateEC(V& ops, ceph::buffer::list& out) {
+    for (unsigned i = 0; i < ops.size(); i++) {
+      if (ops[i].indata.length()) {
+	      out.append(ops[i].indata);
+      }
+    }
+  }
+
   /**
    * split a ceph::buffer::list into constituent outdata members of a vector of OSDOps
    *
    * @param ops [out] vector of OSDOps
    * @param in  [in] combined data buffer
    */
-  static void split_osd_op_vector_out_data(std::vector<OSDOp>& ops, ceph::buffer::list& in);
+  static uint64_t split_osd_op_vector_out_data(std::vector<OSDOp>& ops, ceph::buffer::list& in);
+
+  template<typename V>
+  static void split_osd_op_vector_out_data_for_AggregateEC(V& ops, ceph::buffer::list& in,
+    std::vector<uint64_t> &outdata_lens) {
+    auto datap = in.begin();
+    for (unsigned i = 0; i < ops.size(); i++) {
+      if (outdata_lens[i]) {
+        datap.copy(outdata_lens[i], ops[i].outdata);
+      }
+    }
+  }
 
   /**
    * merge outdata members of a vector of OSDOps into a single ceph::buffer::list
@@ -4214,6 +4248,15 @@ struct OSDOp {
    * @param out [out] combined data buffer
    */
   static void merge_osd_op_vector_out_data(std::vector<OSDOp>& ops, ceph::buffer::list& out);
+
+  template<typename V>
+  static void merge_osd_op_vector_out_data_for_AggregateEC(V& ops, ceph::buffer::list& out) {
+    for (unsigned i = 0; i < ops.size(); i++) {
+      if (ops[i].outdata.length()) {
+        out.append(ops[i].outdata);
+      }
+    }
+  }
 
   /**
    * Clear data as much as possible, leave minimal data for historical op dump

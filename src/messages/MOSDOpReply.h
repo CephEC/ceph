@@ -31,7 +31,7 @@
 
 class MOSDOpReply final : public Message {
 private:
-  static constexpr int HEAD_VERSION = 8;
+  static constexpr int HEAD_VERSION = 9;
   static constexpr int COMPAT_VERSION = 2;
 
   object_t oid;
@@ -161,7 +161,6 @@ public:
       if (ignore_in_data) {
         ops[i].indata.clear();
       }
-      ops[i].indata.clear();
       if (ignore_out_data) {
         // original request didn't set the RETURNVEC flag
         ops[i].outdata.clear();
@@ -200,6 +199,8 @@ public:
     using ceph::encode;
     if(false == bdata_encode) {
       OSDOp::merge_osd_op_vector_out_data(ops, data);
+      // 重定向时需要将转译后的indata返回client，经由client转发
+      OSDOp::merge_osd_op_vector_in_data_for_aggregateEC(ops, data);
       bdata_encode = true;
     }
 
@@ -251,6 +252,10 @@ public:
         }
       }
       encode_trace(payload, features);
+      for (unsigned i = 0; i < num_ops; i++) {
+        uint64_t indata_len = ops[i].indata.length();
+	      encode(indata_len, payload);
+      }
     }
   }
   void decode_payload() override {
@@ -258,7 +263,7 @@ public:
     auto p = payload.cbegin();
 
     // Always keep here the newest version of decoding order/rule
-    if (header.version == HEAD_VERSION) {
+    if (header.version >= 8) {
       decode(oid, p);
       decode(pgid, p);
       decode(flags, p);
@@ -276,7 +281,6 @@ public:
       for (unsigned i = 0; i < num_ops; ++i)
 	decode(ops[i].rval, p);
 
-      OSDOp::split_osd_op_vector_out_data(ops, data);
 
       decode(replay_version, p);
       decode(user_version, p);
@@ -284,6 +288,20 @@ public:
       if (do_redirect)
 	decode(redirect, p);
       decode_trace(p);
+
+      uint64_t off = OSDOp::split_osd_op_vector_out_data(ops, data);
+      if (header.version == 9) {
+        // 重定向时需要将转译后xattr命令的indata返回client
+        // 经由client转发到对应replicateOSD处理
+        std::vector<uint64_t> indata_lens(ops.size());
+        for (unsigned i = 0; i < ops.size(); i++) {
+          decode(indata_lens[i], p);
+        }
+        bufferlist tmp_bl;
+        tmp_bl.substr_of(data, off, data.length() - off);
+        OSDOp::split_osd_op_vector_in_data_for_aggregateEC(ops, tmp_bl, indata_lens);
+      }
+
     } else if (header.version < 2) {
       ceph_osd_reply_head head;
       decode(head, p);

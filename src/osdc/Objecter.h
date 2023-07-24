@@ -1784,8 +1784,6 @@ public:
     pg_t pgid; ///< last (raw) pg we mapped to
     spg_t actual_pgid; ///< last (actual) spg_t we mapped to
 
-    spg_t specific_pgid; // aggregateEC重定向
-
     unsigned pg_num = 0; ///< last pg_num we mapped to
     unsigned pg_num_mask = 0; ///< last pg_num_mask we mapped to
     unsigned pg_num_pending = 0; ///< last pg_num we mapped to
@@ -1806,7 +1804,6 @@ public:
     bool paused = false;
 
     int osd = -1;      ///< the final target osd, or -1
-    int specific_osd = -1;  // aggregateEC重定向volume读请求到replicate OSD时会使用到
 
     epoch_t last_force_resend = 0;
 

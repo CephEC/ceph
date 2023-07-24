@@ -36,7 +36,7 @@ namespace _mosdop {
 template<typename V>
 class MOSDOp final : public MOSDFastDispatchOp {
 private:
-  static constexpr int HEAD_VERSION = 8;
+  static constexpr int HEAD_VERSION = 9;
   static constexpr int COMPAT_VERSION = 3;
 
 private:
@@ -301,6 +301,8 @@ public:
     using ceph::encode;
     if( false == bdata_encode ) {
       OSDOp::merge_osd_op_vector_in_data(ops, data);
+      // stat命令随着read命令转译后，需要将outdata的数据一路转发到replicateOSD再返回
+      OSDOp::merge_osd_op_vector_out_data_for_AggregateEC(ops, data);
       bdata_encode = true;
     }
 
@@ -412,6 +414,8 @@ struct ceph_osd_request_head {
     } else {
       // latest v8 encoding with hobject_t hash separate from pgid, no
       // reassert version
+
+      // v9相比v8，增加了对outdata的编码
       header.version = HEAD_VERSION;
 
       encode(pgid, payload);
@@ -439,6 +443,10 @@ struct ceph_osd_request_head {
 
       encode(retry_attempt, payload);
       encode(features, payload);
+      for (unsigned i = 0; i < ops.size(); i++) {
+        uint64_t outdata_len = ops[i].outdata.length();
+        encode(outdata_len, payload);
+      }
     }
   }
 
@@ -448,7 +456,7 @@ struct ceph_osd_request_head {
     p = std::cbegin(payload);
 
     // Always keep here the newest version of decoding order/rule
-    if (header.version == HEAD_VERSION) {
+    if (header.version >= 8) {
       decode(pgid, p);      // actual pgid
       uint32_t hash;
       decode(hash, p); // raw hash value
@@ -612,7 +620,18 @@ struct ceph_osd_request_head {
     hobj.set_key(oloc.key);
     hobj.nspace = oloc.nspace;
 
-    OSDOp::split_osd_op_vector_in_data(ops, data);
+    uint64_t off = OSDOp::split_osd_op_vector_in_data(ops, data);
+
+    if (header.version == HEAD_VERSION) {
+      std::vector<uint64_t> outdata_lens(ops.size());
+      for (unsigned i = 0; i < ops.size(); i++) {
+        decode(outdata_lens[i], p);
+      }
+      // stat命令随着read命令转译后，需要将outdata的数据一路转发到replicateOSD再返回
+      bufferlist tmp_bl;
+      tmp_bl.substr_of(data, off, data.length() - off);
+      OSDOp::split_osd_op_vector_out_data_for_AggregateEC(ops, tmp_bl, outdata_lens);
+    }
 
     final_decode_needed = false;
     return true;

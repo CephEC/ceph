@@ -95,12 +95,12 @@ int AggregateBuffer::write(OpRequestRef op, MOSDOp* m)
   }
 
   // volume满，未处于flushing状态，则等待flush（一般不会为真）
-  if (volume_buffer.full() || is_flushing.load()) {
+  if (is_flushing.load() || volume_buffer.full()) {
     waiting_for_aggregate.push_back(op);
     return AGGREGATE_PENDING_OP;
   }
 
-  if (!is_bind_volume()) bind(m->get_hobj().get_head());
+  if (!is_bind_volume()) bind(m->get_hobj());
 
   if (volume_buffer.add_chunk(op, m) < 0) {
     dout(4) << __func__ << " call add_chunk failed" << dendl;
@@ -143,7 +143,7 @@ void AggregateBuffer::clear_ec_cache() {
 }
 
 void AggregateBuffer::ec_cache_read(extent_map& read_result) {
-  // TODO: 单个数据块内仅缓存有效数据
+  dout(10) << __func__ << " read cache " << read_result << dendl;
   for (uint32_t i = 0; i < ec_cache.second.size(); i++) {
     uint64_t chunk_size = volume_buffer.get_volume_info().get_chunk_size();
     uint64_t off = i * chunk_size;
@@ -218,6 +218,7 @@ void AggregateBuffer::requeue_waiting_for_aggregate_op() {
 }
 
 void AggregateBuffer::update_cache(const hobject_t& soid, std::vector<OSDOp> *ops) {
+  std::unique_lock<std::shared_mutex> lock(meta_mutex);
   dout(4) << __func__ << " try to update meta cache, object = " << soid << " ops = " << *ops << dendl;
   std::shared_ptr<volume_t> meta_ptr;
   for (auto i = ops->rbegin(); i != ops->rend(); i++) {
@@ -365,6 +366,7 @@ void AggregateBuffer::object_off_to_volume_off(OSDOp &osd_op, chunk_t chunk_meta
 }
 
 int AggregateBuffer::op_translate(OpRequestRef &op, std::vector<OSDOp> &ops) {
+  std::shared_lock<std::shared_mutex> lock(meta_mutex);
   MOSDOp *m = static_cast<MOSDOp *>(op->get_nonconst_req());
   auto origin_oid = m->get_hobj();
   if (origin_oid_map.find(op) != origin_oid_map.end()) {

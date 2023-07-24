@@ -177,7 +177,6 @@ public:
 private:
   ceph::mutex flush_lock = ceph::make_mutex("AggregateBuffer::flush_lock");
   ceph::mutex timer_lock = ceph::make_mutex("AggregateBuffer::timer_lock");
-  ceph::condition_variable flush_cond;
   Context* flush_callback;
   SafeTimer flush_timer;
   std::atomic<bool> is_flushing = false;
@@ -206,6 +205,7 @@ public:
   std::list<OpRequestRef> waiting_for_aggregate;
   std::list<OpRequestRef> waiting_for_reply;
   OpRequestRef volume_op;
+  std::shared_mutex meta_mutex;
 
   volume_t inflight_volume_meta; 
   // 与当前正在执行的请求相关联的volume元数据， 主要在ECBackEnd处做空间优化的时候被使用
