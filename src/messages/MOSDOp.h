@@ -620,16 +620,24 @@ struct ceph_osd_request_head {
     hobj.set_key(oloc.key);
     hobj.nspace = oloc.nspace;
 
+    uint64_t sum = 0;
+    for (unsigned i = 0; i < num_ops; i++) {
+      sum += ops[i].payload_len;
+    }
+    ceph_assert(sum <= data.length());
     uint64_t off = OSDOp::split_osd_op_vector_in_data(ops, data);
 
     if (header.version == HEAD_VERSION) {
       std::vector<uint64_t> outdata_lens(ops.size());
-      for (unsigned i = 0; i < ops.size(); i++) {
+      uint64_t sum = 0;
+      for (unsigned i = 0; i < num_ops; i++) {
         decode(outdata_lens[i], p);
+        sum += outdata_lens[i];
       }
       // stat命令随着read命令转译后，需要将outdata的数据一路转发到replicateOSD再返回
       bufferlist tmp_bl;
       tmp_bl.substr_of(data, off, data.length() - off);
+      ceph_assert(sum <= tmp_bl.length());
       OSDOp::split_osd_op_vector_out_data_for_AggregateEC(ops, tmp_bl, outdata_lens);
     }
 

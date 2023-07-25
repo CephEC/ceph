@@ -407,7 +407,6 @@ int AggregateBuffer::op_translate(OpRequestRef &op, std::vector<OSDOp> &ops) {
       osd_op.op.xattr.name_len = key.size();
       osd_op.indata.append(key);
       osd_op.indata.append(value);
-      osd_op.op.payload_len = osd_op.indata.length();
       break;
     }
     case CEPH_OSD_OP_GETXATTR:
@@ -420,7 +419,6 @@ int AggregateBuffer::op_translate(OpRequestRef &op, std::vector<OSDOp> &ops) {
       osd_op.indata.clear();
       osd_op.op.xattr.name_len = key.size();
       osd_op.indata.append(key);
-      osd_op.op.payload_len = osd_op.indata.length();
       break;
     }
 
@@ -432,7 +430,6 @@ int AggregateBuffer::op_translate(OpRequestRef &op, std::vector<OSDOp> &ops) {
       osd_op.indata.clear();
       osd_op.op.xattr.name_len = origin_oid.oid.name.length();
       osd_op.indata.append(origin_oid.oid.name);
-      osd_op.op.payload_len = osd_op.indata.length();
       break;
     }
     case CEPH_OSD_OP_STAT:
