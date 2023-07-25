@@ -379,3 +379,16 @@ set_target_properties(cls_openssl_md5 PROPERTIES
   CXX_VISIBILITY_PRESET hidden)
 target_link_libraries(cls_openssl_md5 PRIVATE OpenSSL::Crypto)
 install(TARGETS cls_openssl_md5 DESTINATION ${cls_dir})
+
+#cls_parquet_scan
+set(cls_parquet_scan_srcs parquet_scan/cls_parquet_scan.cc)
+set(ARROW_LIBRARIES Arrow::Arrow Arrow::Parquet)
+add_library(cls_parquet_scan SHARED ${cls_parquet_scan_srcs})
+set_target_properties(cls_parquet_scan PROPERTIES
+  VERSION "1.0.0"
+  SOVERSION "1"
+  INSTALL_RPATH ""
+  CXX_VISIBILITY_PRESET hidden)
+target_include_directories(cls_parquet_scan SYSTEM BEFORE PRIVATE ${arrow_INCLUDE_DIR})
+target_link_libraries(cls_parquet_scan ${ARROW_LIBRARIES})
+install(TARGETS cls_parquet_scan DESTINATION ${cls_dir})

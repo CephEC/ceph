@@ -593,9 +593,6 @@ if(WITH_CEPHFS OR WITH_RADOSGW)
   find_package(Lua 5.3 REQUIRED)
 endif()
 
-# rados object classes
-add_subdirectory(cls)
-
 # RADOS client/library
 add_subdirectory(osdc)
 
@@ -872,30 +869,28 @@ set(SPAWN_BUILD_TESTS OFF CACHE INTERNAL "disable building of spawn unit tests")
 set(SPAWN_INSTALL OFF CACHE INTERNAL "disable installation of spawn headers")
 add_subdirectory(spawn)
 
+# build arrow
+# find arrow's dependencies
+if (WITH_SYSTEM_UTF8PROC)
+  find_package(utf8proc 2.2.0 REQUIRED)
+else()
+  include(BuildUtf8proc)
+  build_utf8proc()
+endif()
+find_package(thrift 0.13 REQUIRED)
+include(BuildArrow)
+build_arrow()
+
+
+# rados object classes
+add_subdirectory(cls)
+
 # RadosGW
 if(WITH_KVS)
   add_subdirectory(key_value_store)
 endif(WITH_KVS)
+
 if(WITH_RADOSGW)
-  if(WITH_RADOSGW_SELECT_PARQUET)
-    if(WITH_SYSTEM_ARROW)
-      find_package(Arrow 4 REQUIRED QUIET)
-      find_package(Parquet 4 REQUIRED QUIET)
-    else()
-      # find arrow's dependencies
-      if (WITH_SYSTEM_UTF8PROC)
-        find_package(utf8proc 2.2.0 REQUIRED)
-      else()
-        include(BuildUtf8proc)
-        build_utf8proc()
-      endif()
-      find_package(thrift 0.13 REQUIRED)
-
-      include(BuildArrow)
-      build_arrow()
-    endif()
-  endif()
-
   add_subdirectory(libkmip)
   add_subdirectory(rgw)
 endif(WITH_RADOSGW)

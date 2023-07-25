@@ -102,6 +102,9 @@ void usage(ostream& out)
 "   rmsnap <snap-name>               remove snap <snap-name>\n"
 "\n"
 "OBJECT COMMANDS\n"
+"   cls_thumbnail <photo-graph-name>  <thumbnail-outfile>  ratio  <shape.ratio.x>(emg., 0.1) <shape.ratio.x>(emg., 0.1)\n"
+"   cls_openssl_md5 <obj-name> <md5-code-outfile>\n"
+"   cls_parquet_filter <obj-name> <filter-row-num> <filter-outfile>\n"
 "   get <obj-name> <outfile>         fetch object\n"
 "   put <obj-name> <infile> [--offset offset]\n"
 "                                    write object with start offset (default:0)\n"
@@ -2779,6 +2782,47 @@ static int rados_tool_common(const std::map < std::string, std::string > &opts,
     ret = io_ctx.exec(*obj_name, "openssl_md5", "compute", parm, out);
     if (ret != 0) {
       cerr << "error cls openssl_md5::compute :" << cpp_strerror(ret) << std::endl;
+      return 1;
+    }
+    cout << "cls process end, out.length = " << out.length() << std::endl;
+    int fd = TEMP_FAILURE_RETRY(::open(out_file, O_WRONLY|O_CREAT|O_TRUNC|O_BINARY, 0644));
+    if (fd < 0) {
+      int err = errno;
+      cerr << "failed to open file: " << cpp_strerror(err) << std::endl;
+      return -err;
+    }
+    ret = out.write_fd(fd);
+    timePassed = mono_clock::now() - start_time;
+    cout << "Cls complete and total get time: " << timePassed.count() << std::endl;
+    if (ret < 0) {
+      cerr << "error writing to file: " << cpp_strerror(ret) << std::endl;
+    }
+    if (fd != 1)
+      VOID_TEMP_FAILURE_RETRY(::close(fd));
+
+  } else if (strcmp(nargs[0], "cls_parquet_filter") == 0) {
+    if(nargs.size() < 4) {
+      cerr << "cls_parquet_filter usage: <obj> <filter-row> <outfile>" << std::endl;
+      return -EINVAL;
+    }
+    if (!obj_name) { obj_name = nargs[1]; }
+    if (!out_file) { out_file = nargs[3]; }
+    bufferlist out;
+    std::chrono::duration<double> timePassed;
+    mono_time start_time = mono_clock::now();
+    uint64_t offset = 0;
+    char* endptr = NULL;
+    offset = strtoull(nargs[2], &endptr, 10);
+    if (*endptr) {
+      cerr << "Invalid value for size: '" << nargs[2] << "'" << std::endl;
+      return 1;
+    }
+    bufferlist parm;
+    encode(offset, parm);
+    
+    ret = io_ctx.exec(*obj_name, "parquet_scan", "filter", parm, out);
+    if (ret != 0) {
+      cerr << "error cls parquet_scan::filter :" << cpp_strerror(ret) << std::endl;
       return 1;
     }
     cout << "cls process end, out.length = " << out.length() << std::endl;

@@ -2945,7 +2945,9 @@ void ECBackend::do_async_call(AsyncCallOp &op) {
        i != op.async_call_ops.end();
        ++i) {
     pair<uint64_t, uint64_t> chunk_off_len;
-    chunk_off_len = make_pair(0, sinfo.get_chunk_size());
+    ceph_assert(i->second.to_read.get<1>() <= sinfo.get_chunk_size());
+    // 只需要从磁盘读取对象的有效数据
+    chunk_off_len = make_pair(0, i->second.to_read.get<1>());
 
     for (auto j = i->second.need.begin();
         j != i->second.need.end();
