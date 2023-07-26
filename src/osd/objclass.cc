@@ -144,7 +144,7 @@ int cls_cxx_remove(cls_method_context_t hctx)
   if ((*pctx)->pg->is_aggregate_enabled()) {
     // 适配s3cmd的delete逻辑
     (*pctx)->pg->get_aggregate_buffer()->op_translate((*pctx)->op, ops);
-    (*pctx)->ops->insert(ops.end(), ops.begin(), ops.end());
+    (*pctx)->ops->insert((*pctx)->ops->end(), ops.begin(), ops.end());
     return 0;
   }
   return (*pctx)->pg->do_osd_ops(*pctx, ops);
