@@ -325,7 +325,7 @@ struct OnDegradeCallComplete : public Context {
   ECBackend *ec;
   const hobject_t hoid;
   const std::pair<boost::tuple<uint64_t, uint64_t, uint32_t>,
-    std::pair<ClsParmContext*, OSDOp*> > &call_ctx;
+    std::pair<ClsParmContext*, OSDOp*> > call_ctx;
   std::unique_ptr<Context> on_complete;
   bufferlist read_data;
   OnDegradeCallComplete(
@@ -333,7 +333,7 @@ struct OnDegradeCallComplete : public Context {
     ECBackend *ec,
     const hobject_t &hoid,
     const std::pair<boost::tuple<uint64_t, uint64_t, uint32_t>,
-      std::pair<ClsParmContext*, OSDOp*> > &call_ctx,
+      std::pair<ClsParmContext*, OSDOp*> > call_ctx,
     Context *on_complete,
     bufferlist &read_data) 
   : cct(cct), ec(ec), hoid(hoid), call_ctx(call_ctx),
