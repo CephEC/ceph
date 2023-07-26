@@ -390,5 +390,10 @@ set_target_properties(cls_parquet_scan PROPERTIES
   INSTALL_RPATH ""
   CXX_VISIBILITY_PRESET hidden)
 target_include_directories(cls_parquet_scan SYSTEM BEFORE PRIVATE ${arrow_INCLUDE_DIR})
-target_link_libraries(cls_parquet_scan ${ARROW_LIBRARIES})
+target_link_libraries(cls_parquet_scan
+	PRIVATE
+	/usr/lib64/libre2.so
+	/usr/lib64/libutf8proc.so.2
+	${ARROW_LIBRARIES}
+	)
 install(TARGETS cls_parquet_scan DESTINATION ${cls_dir})

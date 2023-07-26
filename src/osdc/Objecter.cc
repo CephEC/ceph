@@ -3371,6 +3371,9 @@ void Objecter::redirect_to_replicateOSD(MOSDOpReply *m, Op *op, shunique_lock<ce
   op->translated_ops.reserve(translated_ops.size());
   for (uint32_t i = 0; i < translated_ops.size(); i++) {
     op->translated_ops.push_back(translated_ops[i]);
+    op->translated_ops[i].op.payload_len = 0; 
+    // 清空payload_len，别把MOSDOpReply的payload_len(表示outdata的长度)
+    // 带入到MOSDOp中（表示indata的长度)
   }
   op->ops.swap(op->translated_ops);
   op->target.base_oid.swap(op->target.redirect_oid);
