@@ -70,7 +70,9 @@ public:
   void finish_cls(const hobject_t& soid) {
     if (cls_ctx_map.find(soid) == cls_ctx_map.end())
       return;
+    ClsParmContext *parm = cls_ctx_map[soid];
     cls_ctx_map.erase(soid);
+    delete parm;
   }
 
   ClsParmContext* get_cls_ctx(const hobject_t& soid) {
@@ -227,7 +229,7 @@ private:
   std::list<std::shared_ptr<volume_t>> volume_not_full;
 
   std::map<hobject_t, ClsParmContext*> cls_ctx_map;
-  // TODO: 缓存EC块
+
   std::pair<std::shared_ptr<volume_t>, std::vector< bufferlist >> ec_cache;
 };
 

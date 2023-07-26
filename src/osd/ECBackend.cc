@@ -339,6 +339,13 @@ struct OnDegradeCallComplete : public Context {
   : cct(cct), ec(ec), hoid(hoid), call_ctx(call_ctx),
     on_complete(on_complete), read_data(read_data) {}
   void finish(int r) override {
+    if (r < 0) {
+      (call_ctx.second.second)->rval = r;
+      if (on_complete) {
+        on_complete.release()->complete(r);
+      }
+      return;
+    }
     bufferlist bl;
     std::string cname, mname;
     bufferlist indata;
@@ -366,6 +373,7 @@ struct OnDegradeCallComplete : public Context {
     r = method->exec((cls_method_context_t)(cls_parm_ctx),
                       read_data,
                       (call_ctx.second.second)->outdata);
+    (call_ctx.second.second)->rval = r;
     if (on_complete) {
       on_complete.release()->complete(r);
     }
@@ -986,7 +994,9 @@ void ECBackend::handle_sub_call(
     r = method->exec((cls_method_context_t)&(op.cls_parm_ctx[i->first]),
                       bl,
                       reply->cls_result[i->first]);
-
+    if (r < 0) {
+      goto error;
+    }
     dout(10) << "method called response length=" << reply->cls_result[i->first].length() 
     << " r = " << r << dendl;
     continue;
@@ -1452,7 +1462,9 @@ void ECBackend::complete_call_op(AsyncCallOp &cop) {
   ceph_assert(cop.async_call_ops.size() == cop.complete.size());
   for (; reqiter != cop.async_call_ops.end(); ++reqiter, ++resiter) {
     if (reqiter->second.cb) {
-      pair<hobject_t, ceph::buffer::list > arg(reqiter->first, resiter->second.returned);
+      pair<hobject_t, pair<ceph::buffer::list, int>> arg(reqiter->first, 
+                                                         make_pair(resiter->second.returned,
+                                                                   resiter->second.error));
       reqiter->second.cb.release()->complete(std::move(arg));
     }
   }
@@ -2633,17 +2645,6 @@ void ECBackend::objects_read_async(
        ++i) {
     if (is_aggregate_enabled()) {
       // 这里的offset和length不需要对齐到stripe，因为aggregateEC中的读操作不以条带为单位
-      /*
-      auto adjusted_off = i->first.get<0>();
-      auto adjusted_len = i->first.get<1>();
-      if(adjusted_off % chunk_size) {
-        adjusted_off = adjusted_off - (adjusted_off % chunk_size);
-      }
-      if(adjusted_len % chunk_size) {
-        adjusted_len = adjusted_len - (adjusted_len % chunk_size) + chunk_size;
-      }
-      es.union_insert(adjusted_off, adjusted_len);
-      */
       es.union_insert(i->first.get<0>(), i->first.get<1>());
     } else {
       pair<uint64_t, uint64_t> tmp =
@@ -2668,7 +2669,7 @@ void ECBackend::objects_read_async(
 	  flags));
     }
   }
-  // TODO
+
   struct cb {
     ECBackend *ec;
     hobject_t hoid;
@@ -2860,7 +2861,7 @@ void ECBackend::object_call_async(
     // 数据块丢失，需要恢复整个条带
     // 选择将整个条带读入Primary OSD再进行Cls操作
     dout(10) << __func__ << " degrade call aysnc obj = " << hoid
-      << " operate_range = " << call_ctx.first << dendl;
+      << " operate_range = " << call_ctx.first << " cls_context = " << *(call_ctx.second.first) << dendl;
     object_degrade_call_async(hoid, call_ctx, on_complete);
     return;
   }
@@ -2884,13 +2885,14 @@ void ECBackend::object_call_async(
 	      call_ctx(call_ctx),
 	      on_complete(on_complete) {}
         
-    void operator()(pair<hobject_t, ceph::buffer::list> &&results) {
-      auto &outdata = results.second;
+    void operator()(pair<hobject_t, pair<ceph::buffer::list, int>> &&results) {
+      auto &outdata = results.second.first;
       auto osd_op = call_ctx.second.second;
       (osd_op->op).extent.length = outdata.length();
       (osd_op->outdata).claim_append(outdata);
+      osd_op->rval = results.second.second;
       if (on_complete) {
-	      on_complete.release()->complete(0);
+	      on_complete.release()->complete(results.second.second);
       }
     }
     ~cb() {}
@@ -2901,7 +2903,8 @@ void ECBackend::object_call_async(
 	            op_call_request_t(call_ctx.first,  // 本次需要读取的{offset，length，flag}
 	                              shards,     // 实际读取的分片编号
 	                              make_gen_lambda_context<std::pair<hobject_t,
-                                                        ceph::buffer::list > &&, cb>(cb(this,
+                                                        std::pair<ceph::buffer::list, int> > &&, cb>(
+                                                                                     cb(this,
                                                                                         hoid,
                                                                                         call_ctx,
                                                                                         on_complete)),

@@ -4418,7 +4418,6 @@ void PrimaryLogPG::execute_ctx(OpContext *ctx)
   }
 
   bool pending_async_calls = !ctx->pending_async_calls.empty();
-  // 异常情况下是否需要对pending_async_calls做特殊处理?
   if (pending_async_calls) {
     // come back later.
     pgbackend->object_call_async(obc->obs.oi.soid,

@@ -411,14 +411,14 @@ public:
   struct op_call_request_t {
     const boost::tuple<uint64_t, uint64_t, uint32_t> to_read;
     std::map<pg_shard_t, std::vector<std::pair<int, int>>> need;
-    GenContextURef<std::pair<hobject_t, ceph::buffer::list > &&> cb;
+    GenContextURef<std::pair<hobject_t, std::pair<ceph::buffer::list, int> > &&> cb;
 
     ClsParmContext * cls_parm_ctx;
     op_call_request_t() {}
     op_call_request_t(
       const boost::tuple<uint64_t, uint64_t, uint32_t> &to_read,
       const std::map<pg_shard_t, std::vector<std::pair<int, int>>> &need,
-      GenContextURef<std::pair<hobject_t, ceph::buffer::list > &&> &&cb,
+      GenContextURef<std::pair<hobject_t, std::pair<ceph::buffer::list, int>> &&> &&cb,
       ClsParmContext * cls_parm_ctx) 
       : to_read(to_read), need(need), cb(std::move(cb)), cls_parm_ctx(cls_parm_ctx)
       {}
