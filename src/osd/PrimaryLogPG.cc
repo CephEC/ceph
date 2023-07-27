@@ -6213,8 +6213,9 @@ int PrimaryLogPG::do_osd_ops(OpContext *ctx, vector<OSDOp>& ops)
     span = tracing::osd::tracer.add_span(__func__, ctx->op->osd_parent_span);
   }
   ctx->current_osd_subop_num = 0;
-  for (auto p = ops.begin(); p != ops.end(); ++p, ctx->current_osd_subop_num++, ctx->processed_subop_count++) {
-    OSDOp& osd_op = *p;
+  for (auto i = 0; i < ops.size(); ++i, ctx->current_osd_subop_num++, ctx->processed_subop_count++) {
+    // rgw_obj_remove会在ops末尾添加Op，所以需要修改迭代的语法来避免内存错误
+    OSDOp& osd_op = ops[i];
     ceph_osd_op& op = osd_op.op;
 
     OpFinisher* op_finisher = nullptr;
