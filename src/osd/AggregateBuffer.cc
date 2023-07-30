@@ -96,6 +96,10 @@ int AggregateBuffer::write(OpRequestRef op, MOSDOp* m)
 
   // volume满，未处于flushing状态，则等待flush（一般不会为真）
   if (is_flushing.load() || volume_buffer.full()) {
+    dout(4) << __func__ << " OP needs to wait for the current volume(" 
+      << volume_buffer.get_volume_info().get_oid()
+      << ") flush to finish. is_flushing =  " << is_flushing
+      << " volume_buffer.full = " << volume_buffer.full() << dendl;
     waiting_for_aggregate.push_back(op);
     return AGGREGATE_PENDING_OP;
   }
@@ -168,9 +172,6 @@ int AggregateBuffer::flush()
     is_flushing.store(true);
     volume_t vol_info = volume_buffer.get_volume_info();
 
-    // TODO: judge if cache ec chunk
-
-    // TODO: generate new op for volume and requeue it
     MOSDOp* m = volume_buffer.generate_op();
     // OpRequestRef op = pg->osd->op_tracker.create_request<OpRequest, Message*>(m);
     volume_op = pg->osd->osd->create_request(m);
@@ -490,9 +491,6 @@ int AggregateBuffer::op_translate(OpRequestRef &op, std::vector<OSDOp> &ops) {
       } catch (ceph::buffer::error &e)
       {
         dout(10) << "call unable to decode class" << dendl;
-        dout(30) << "in dump: ";
-        osd_op.indata.hexdump(*_dout);
-        *_dout << dendl;
         ceph_assert(false);
       }
       // 只转译新构建的Cls算子（因为原生的cls算子和基于aggregateEC的cls算子的参数解析方式不同，所以需要区分）

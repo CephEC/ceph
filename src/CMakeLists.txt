@@ -282,7 +282,7 @@ if(${ENABLE_COVERAGE})
     -fprofile-arcs
     -ftest-coverage
     -O0)
-  list(APPEND EXTRALIBS gcov)
+  list(APPEND CMAKE_DL_LIBS gcov)
 endif(${ENABLE_COVERAGE})
 
 if(WITH_TESTS)

@@ -21,13 +21,6 @@ static ostream& _prefix(std::ostream *_dout, const Chunk *buf) {
 chunk_t Chunk::set_from_op(OpRequestRef _op, MOSDOp* _m, const uint8_t& seq, uint64_t chunk_size) {
 
   const hobject_t& oid = _m->get_hobj();
-  const spg_t pg_id = _m->get_spg();
-  if (pg_id.pgid != chunk_info.get_spg().pgid) {
-    dout(4) << "set_from_op failed, request_pg_id = " << pg_id.pgid
-      << " chunk_pg_id = " << pg_id.pgid << dendl;
-    return chunk_t();
-  }
-
   // 将对象填充到oid中
   chunk_info.set_from_op(seq, 0, oid);
 

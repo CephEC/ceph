@@ -50,14 +50,7 @@ void Volume::init(uint64_t _cap, uint64_t _chunk_size)
 
 int Volume::add_chunk(OpRequestRef op, MOSDOp* m) 
 {
-  // TODO：查找oid是否存在（覆盖写情况）
-
   uint32_t free_chunk_index = volume_info.find_free_chunk();
-  if (free_chunk_index >= volume_info.get_cap()) {
-    dout(4) << " add_chunk failed" << " free_chunk_index = " <<  free_chunk_index
-      << " volume cap = " << volume_info.get_cap() << " m = " << *m << dendl;
-    return -1;
-  }
   // new Chunk
   Chunk* new_chunk = chunks[free_chunk_index];
   // init chunk & return its metadata
