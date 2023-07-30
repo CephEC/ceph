@@ -6313,8 +6313,9 @@ int PrimaryLogPG::do_osd_ops(OpContext *ctx, vector<OSDOp>& ops)
         ctx->op_finishers[ctx->current_osd_subop_num].reset(
           new ReadFinisher(osd_op));
       } else {
-        dout(10) << " async_op_call finish, result.length = " << osd_op.outdata.length() << dendl;
 	      result = op_finisher->execute();
+        dout(10) << " async_op_call finish, result.length = " << osd_op.outdata.length()
+          << " result = " << result << dendl;
       }
       break;
     }

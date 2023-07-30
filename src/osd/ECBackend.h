@@ -427,10 +427,9 @@ public:
 
 
   struct op_call_result_t {
-    int r;
     int error;
     ceph::buffer::list returned;
-    op_call_result_t() : r(0) {}
+    op_call_result_t() : error(0) {}
   };
   friend ostream &operator<<(ostream &lhs, const op_call_result_t &rhs);
 
