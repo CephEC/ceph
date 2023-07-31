@@ -2026,8 +2026,11 @@ void PrimaryLogPG::load_volume_attrs()
 void PrimaryLogPG::reply_op_error(OpRequestRef op, int err, eversion_t v, version_t uv,
 	std::vector<pg_log_op_return_item_t> op_returns) {
   if (is_aggregate_enabled() && op->is_write_volume_op()) {
-    for (auto aggregated_op : m_aggregate_buffer->waiting_for_reply)
+    for (auto aggregated_op : m_aggregate_buffer->waiting_for_reply) {
       osd->reply_op_error(aggregated_op, err, v, uv, op_returns);
+    }
+    m_aggregate_buffer->requeue_waiting_for_aggregate_op();
+    m_aggregate_buffer->clear();
   } else {
     osd->reply_op_error(op, err, v, uv, op_returns);
   }
@@ -2843,6 +2846,8 @@ void PrimaryLogPG::record_write_error(OpRequestRef op, const hobject_t &soid,
       }
       if (pg->is_aggregate_enabled() && pg->get_aggregate_buffer()->should_reply_buffered_op()) {
         pg->get_aggregate_buffer()->send_reply(reply, true);
+        pg->get_aggregate_buffer()->requeue_waiting_for_aggregate_op();
+        pg->get_aggregate_buffer()->clear();
       } else {
         ldpp_dout(pg, 10) << " sending commit on " << *m << " " << reply << dendl;
         pg->osd->send_message_osd_client(reply, m->get_connection());
@@ -4542,7 +4547,6 @@ void PrimaryLogPG::execute_ctx(OpContext *ctx)
   }
   if (is_aggregate_enabled() && m_aggregate_buffer->should_reply_buffered_op()) {
     m_aggregate_buffer->send_reply(reply, ignore_out_data);
-    m_aggregate_buffer->requeue_waiting_for_aggregate_op();
   } else {
     // 覆盖写还是走常规的回复流程
     dout(10) << " sending reply to " << m->get_connection()->get_peer_addr() << dendl; 
@@ -4570,6 +4574,7 @@ void PrimaryLogPG::execute_ctx(OpContext *ctx)
   ctx->register_on_finish(
     [ctx, this]() {
       if (is_aggregate_enabled() && ctx->op->is_write_volume_op()) {
+        m_aggregate_buffer->requeue_waiting_for_aggregate_op();
         m_aggregate_buffer->clear();
       }
       delete ctx;
