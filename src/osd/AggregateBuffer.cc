@@ -212,8 +212,8 @@ void AggregateBuffer::remove_volume_meta(const hobject_t& soid) {
 void AggregateBuffer::requeue_waiting_for_aggregate_op() {
   for (auto it = waiting_for_aggregate.rbegin(); it != waiting_for_aggregate.rend(); it++) {
     auto m = (*it)->get_req<MOSDOp>();
-    op->set_requeued();
-    pg->requeue_op(op);
+    (*it)->set_requeued();
+    pg->requeue_op(*it);
     dout(4) << __func__ << ": requeue write op " << *m << dendl;
   }
 }
