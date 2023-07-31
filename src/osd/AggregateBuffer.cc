@@ -261,8 +261,10 @@ void AggregateBuffer::update_cache(const hobject_t& soid, std::vector<OSDOp> *op
     } else if (osd_op.op.op == CEPH_OSD_OP_WRITE) {
       // 聚合逻辑下,所有request中一定包含一个WRITE OP和一个SETXATTR OP
       if (!meta_ptr || meta_ptr->full() || ec_cache.first->get_oid() != soid) continue;
+            uint64_t chunk_size = volume_buffer.get_volume_info().get_chunk_size();
+      dout(4) << __func__ << " cache data chunk, obj = " << soid << " off = " << osd_op.op.extent.offset
+        << " len = " << osd_op.op.extent.length << " volume_chunk_size = " << chunk_size << dendl;
       // 将本轮聚合的数据缓存在内存中
-      uint64_t chunk_size = volume_buffer.get_volume_info().get_chunk_size();
       // ceph_assert(osd_op.op.extent.length == chunk_size);
       uint64_t chunk_id = osd_op.op.extent.offset / chunk_size;
       if (ec_cache.second[chunk_id].length() != 0) {
@@ -272,6 +274,7 @@ void AggregateBuffer::update_cache(const hobject_t& soid, std::vector<OSDOp> *op
       ec_cache.second[chunk_id].append(std::move(osd_op.indata));
       // ceph_assert(ec_cache.second[chunk_id].length() == chunk_size);
     }
+    dout(4) << __func__ << " update meta cache complete, obj = " << soid << " ops = " << *ops << dendl;
   }
   if (!is_volume_cached(soid)) {
     // 判断ec_cache的volume_t元数据和实际缓存的数据块数据
