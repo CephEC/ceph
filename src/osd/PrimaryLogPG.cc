@@ -2026,6 +2026,8 @@ void PrimaryLogPG::load_volume_attrs()
 void PrimaryLogPG::reply_op_error(OpRequestRef op, int err, eversion_t v, version_t uv,
 	std::vector<pg_log_op_return_item_t> op_returns) {
   if (is_aggregate_enabled() && op->is_write_volume_op()) {
+    dout(4) << __func__ << " m " << *(op->m) <<
+      << " err " << err << dendl;
     for (auto aggregated_op : m_aggregate_buffer->waiting_for_reply) {
       osd->reply_op_error(aggregated_op, err, v, uv, op_returns);
     }
