@@ -288,7 +288,7 @@ void AggregateBuffer::send_reply(MOSDOpReply* reply, bool ignore_out_data)
   for (auto &op : waiting_for_reply) {
     auto m = op->get_req<MOSDOp>();
     MOSDOpReply* split_reply = new MOSDOpReply(m, reply, ignore_out_data);
-    dout(4) << __func__ << ": send reply to " << m->get_connection()->get_peer_addr() << dendl;
+    dout(4) << __func__ << ": send reply to " << m->get_source_addr() << dendl;
     pg->osd->send_message_osd_client(split_reply, m->get_connection());
     op->mark_commit_sent(); 
   }
