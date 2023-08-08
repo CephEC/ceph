@@ -1862,7 +1862,7 @@ void PrimaryLogPG::do_request(
   const Message *m = op->get_req();
   int msg_type = m->get_type();
   dout(4) << "message type " << msg_type << dendl;
-  if (!op->is_requeued_op()) {
+
   if (m->get_connection()->has_feature(CEPH_FEATURE_RADOS_BACKOFF)) {
     auto session = ceph::ref_cast<Session>(m->get_connection()->get_priv());
     if (!session)
@@ -1896,11 +1896,11 @@ void PrimaryLogPG::do_request(
       }
     }
   }
-  }
 
   if (!is_peered()) {
     // Delay unless PGBackend says it's ok
     // ECBackend says false
+    dout(4) << " is peering, delay op " << op << dendl;
     if (pgbackend->can_handle_while_inactive(op)) {
       bool handled = pgbackend->handle_message(op);
       ceph_assert(handled);
@@ -2026,8 +2026,6 @@ void PrimaryLogPG::load_volume_attrs()
 void PrimaryLogPG::reply_op_error(OpRequestRef op, int err, eversion_t v, version_t uv,
 	std::vector<pg_log_op_return_item_t> op_returns) {
   if (is_aggregate_enabled() && op->is_write_volume_op()) {
-    dout(4) << __func__ << " m " << *(op->m) <<
-      << " err " << err << dendl;
     for (auto aggregated_op : m_aggregate_buffer->waiting_for_reply) {
       osd->reply_op_error(aggregated_op, err, v, uv, op_returns);
     }
@@ -2102,7 +2100,6 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
   bool can_backoff = false;
   ceph::ref_t<Session> session;
  
-  if (!op->is_requeued_op()) {
   can_backoff =
     m->get_connection()->has_feature(CEPH_FEATURE_RADOS_BACKOFF);
   if (can_backoff) {
@@ -2115,7 +2112,6 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
     if (session->check_backoff(cct, info.pgid, head, m)) {
       return;
     }
-  }
   }
 
   if (m->has_flag(CEPH_OSD_FLAG_PARALLELEXEC)) {
@@ -13140,6 +13136,13 @@ void PrimaryLogPG::apply_and_flush_repops(bool requeue)
 	  rq.push_back(std::get<0>(i));
 	}
 	waiting_for_ondisk.erase(p);
+      }
+    }
+    if (is_aggregate_enabled() && m_aggregate_buffer->should_reply_buffered_op()) {
+      for (list<OpRequestRef>::reverse_iterator i = m_aggregate_buffer->waiting_for_reply.rbegin();
+          i != m_aggregate_buffer->waiting_for_reply.rend();
+          ++i) {
+        rq.push_back(*i);
       }
     }
 

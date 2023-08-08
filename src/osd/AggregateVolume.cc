@@ -108,7 +108,7 @@ MOSDOp* Volume::generate_op()
     auto &ops = (*iter)->get_ops();
     (volume_m->ops).insert((volume_m->ops).end(), ops.begin(), ops.end());
   }
-  volume_m->set_connection(ConnectionRef());
+  volume_m->set_connection(newest_m->get_connection());
     
   // 将volume_t元数据编码封装为一个写扩展属性的OSDOp
   // 这个OSDOp放置在MOSDOp中OSDOp数组的最末端，便于在on_commit回调中找到它

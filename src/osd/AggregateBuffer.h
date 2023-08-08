@@ -193,7 +193,7 @@ private:
       {}
       void finish(int r) override {
         LambdaContext<T>::finish(r);
-      } 
+      }
     private:
       const AggregateBuffer* buffer;
   };

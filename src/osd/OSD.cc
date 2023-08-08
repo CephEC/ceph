@@ -9832,11 +9832,9 @@ void OSD::dequeue_op(
 
   logger->tinc(l_osd_op_before_dequeue_op_lat, latency);
 
-  if (!op->is_requeued_op()) {
-    service.maybe_share_map(m->get_connection().get(),
-  			    pg->get_osdmap(),
-  			    op->sent_epoch);
-  }
+  service.maybe_share_map(m->get_connection().get(),
+  			  pg->get_osdmap(),
+  			  op->sent_epoch);
 
   if (pg->is_deleting())
     return;
