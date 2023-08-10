@@ -977,7 +977,11 @@ int ObjBencher::partial_read_bench(
   if (read_length) data.op_size = read_length;
   sanitize_object_contents(&data, data.op_size); //clean it up once; subsequent
   //changes will be safe because string length should remain the same
-  
+   
+  std::random_device rd;
+  std::mt19937 gen(rd());
+  std::uniform_int_distribution<> dis(0, data.object_size - read_length);
+
   std::ofstream fout;
   if (bench_latency_file) {
     fout.open(bench_latency_file, std::ios::in | std::ios::out | std::ios::binary);
@@ -1020,7 +1024,7 @@ int ObjBencher::partial_read_bench(
     index[i] = i;
     start_times[i] = mono_clock::now();
     create_completion(i, _aio_cb, (void *)&lc);
-    r = aio_read(name[i], i, contents[i].get(), data.op_size, 0);
+    r = aio_read(name[i], i, contents[i].get(), data.op_size, dis(gen));
     if (r < 0) {
       cerr << "r = " << r << std::endl;
       goto ERR;
@@ -1085,15 +1089,6 @@ int ObjBencher::partial_read_bench(
     data.avg_latency = total_latency / data.finished;
     --data.in_flight;
 
-    if (!no_verify) {
-      snprintf(data.object_contents, data.object_size, "I'm the %16dth op!", current_index);
-      if ((cur_contents->length() != data.op_size) ||
-          (memcmp(data.object_contents, cur_contents->c_str(), data.op_size) != 0)) {
-        cerr << name[slot] << " is not correct!" << std::endl;
-        ++errors;
-      }
-    }
-
     locker.unlock();
     release_completion(slot);
 
@@ -1116,7 +1111,7 @@ int ObjBencher::partial_read_bench(
 
     start_times[slot] = mono_clock::now();
     create_completion(slot, _aio_cb, (void *)&lc);
-    r = aio_read(newName, slot, contents[slot].get(), data.op_size, 0);
+    r = aio_read(newName, slot, contents[slot].get(), data.op_size, dis(gen));
     if (r < 0) {
       goto ERR;
     }
