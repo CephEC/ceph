@@ -170,6 +170,8 @@ public:
     return volume_meta_cache.find(soid) != volume_meta_cache.end();
   }
 
+  int objects_list(pg_nls_response_t &response, unsigned list_size);
+
   void purge_origin_obj(OpRequestRef op) { 
     if (origin_oid_map.find(op) != origin_oid_map.end()) {
       origin_oid_map.erase(op);

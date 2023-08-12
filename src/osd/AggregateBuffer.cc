@@ -283,6 +283,26 @@ void AggregateBuffer::update_cache(const hobject_t& soid, std::vector<OSDOp> *op
   }
 }
 
+int AggregateBuffer::objects_list(pg_nls_response_t &response, unsigned list_size) {
+  std::shared_lock<std::shared_mutex> lock(meta_mutex);
+  hobject_t lower_bound = response.handle;
+  auto iter = volume_meta_cache.lower_bound(lower_bound);
+  if (iter == volume_meta_cache.end()) {
+    response.handle = pg->info.pgid.pgid.get_hobj_end(pg->pool.info.get_pg_num());
+    return 1;
+  }
+  for (unsigned i = 0; i < list_size && iter != volume_meta_cache.end(); i++, iter++) {
+	  librados::ListObjectImpl item;
+	  item.nspace = iter->first.get_namespace();
+	  item.oid = iter->first.oid.name;
+	  item.locator = iter->first.get_key();
+	  response.entries.push_back(item);
+  }
+  response.handle = (iter != volume_meta_cache.end() ? iter->first : 
+                            pg->info.pgid.pgid.get_hobj_end(pg->pool.info.get_pg_num()));
+  return 0;
+}
+
 void AggregateBuffer::send_reply(MOSDOpReply* reply, bool ignore_out_data)
 {
   for (auto &op : waiting_for_reply) {
@@ -293,6 +313,7 @@ void AggregateBuffer::send_reply(MOSDOpReply* reply, bool ignore_out_data)
     op->mark_commit_sent(); 
   }
 }
+
 void AggregateBuffer::clear() {
   while (!waiting_for_reply.empty()) {
     waiting_for_reply.pop_front();

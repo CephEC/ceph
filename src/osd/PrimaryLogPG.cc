@@ -1313,6 +1313,15 @@ void PrimaryLogPG::do_pg_op(OpRequestRef op)
 	  break;
 	}
 
+  if (is_aggregate_enabled()) {
+    result = m_aggregate_buffer->objects_list(response, list_size);
+    dout(10) << "pgnls handle=" << response.handle << dendl;
+    encode(response, osd_op.outdata);
+	  dout(10) << " pgnls result=" << result << " outdata.length()="
+		  << osd_op.outdata.length() << dendl;
+    break;
+  }
+
 	hobject_t next;
 	hobject_t lower_bound = response.handle;
 	hobject_t pg_start = info.pgid.pgid.get_hobj_start();
