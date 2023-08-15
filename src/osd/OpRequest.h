@@ -53,12 +53,12 @@ public:
   bool is_write_volume_op() const { return is_write_volume; }
   void set_write_volume() { is_write_volume = true; }
   void unset_write_volume() { is_write_volume = false; }
-  bool need_cephec_storage_optimize() const { return cephec_storage_optimize; }
-  void set_cephec_storage_optimize() { cephec_storage_optimize = true; }
-  void unset_cephec_storage_optimize() { cephec_storage_optimize = false; }
-  bool is_cephec_translated_op() { return cephec_translated_op; }
-  void set_cephec_translated_op() { cephec_translated_op = true; }
-  void unset_cephec_translated_op() { cephec_translated_op = false; }
+  bool need_aggregateEC_storage_optimize() const { return aggregateEC_storage_optimize; }
+  void set_aggregateEC_storage_optimize() { aggregateEC_storage_optimize = true; }
+  void unset_aggregateEC_storage_optimize() { aggregateEC_storage_optimize = false; }
+  bool is_aggregateEC_translated_op() { return aggregateEC_translated_op; }
+  void set_aggregateEC_translated_op() { aggregateEC_translated_op = true; }
+  void unset_aggregateEC_translated_op() { aggregateEC_translated_op = false; }
   std::vector<OpInfo::ClassInfo> classes() const {
     return op_info.get_classes();
   }
@@ -78,8 +78,8 @@ private:
   utime_t dequeued_time;
   bool is_requeued = false;
   bool is_write_volume = false;
-  bool cephec_storage_optimize = false;
-  bool cephec_translated_op = false;
+  bool aggregateEC_storage_optimize = false;
+  bool aggregateEC_translated_op = false;
   static const uint8_t flag_queued_for_pg=1 << 0;
   static const uint8_t flag_reached_pg =  1 << 1;
   static const uint8_t flag_delayed =     1 << 2;

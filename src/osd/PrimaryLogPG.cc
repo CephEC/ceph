@@ -2296,7 +2296,7 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
   // 这里是分界线,在此之上的代码看到的是用户下发的rgw对象，在此之下代码看到的就只有volume对象
   if (is_primary() &&
       is_aggregate_enabled() && 
-      (!op->is_write_volume_op() && !op->is_cephec_translated_op()) &&
+      (!op->is_write_volume_op() && !op->is_aggregateEC_translated_op()) &&
       op->get_reqid().name.is_client()) {
     if (m_aggregate_buffer->need_aggregate_op(m)) {
       // 聚合RGW对象

@@ -177,8 +177,8 @@ int AggregateBuffer::flush()
     volume_op = pg->osd->osd->create_request(m);
     volume_op->set_requeued();
     volume_op->set_write_volume();
-    volume_op->set_cephec_storage_optimize();
-    volume_op->set_cephec_translated_op();
+    volume_op->set_aggregateEC_storage_optimize();
+    volume_op->set_aggregateEC_translated_op();
     
     pg->requeue_op(volume_op);
     inflight_volume_meta = volume_buffer.get_volume_info();
@@ -471,7 +471,7 @@ int AggregateBuffer::op_translate(OpRequestRef &op, std::vector<OSDOp> &ops) {
         ops.push_back(generate_zero_op(vol_offset, inflight_volume_meta.get_chunk_size()));
         inflight_volume_meta.remove_chunk(origin_oid);
         inflight_volume_meta.generate_write_meta_op(ops[i]);
-        op->set_cephec_storage_optimize();
+        op->set_aggregateEC_storage_optimize();
         dout(4) << __func__ << " want delete object(oid = "
           << origin_oid << "), but just update volume_meta. op = " << *m << dendl;
       } else {
@@ -518,7 +518,7 @@ int AggregateBuffer::op_translate(OpRequestRef &op, std::vector<OSDOp> &ops) {
         ceph_assert(false);
       }
       // 只转译新构建的Cls算子（因为原生的cls算子和基于aggregateEC的cls算子的参数解析方式不同，所以需要区分）
-      if (!ClassHandler::get_instance().in_class_list(cname, cct->_conf->osd_cephec_class_list)) {
+      if (!ClassHandler::get_instance().in_class_list(cname, cct->_conf->osd_aggregateEC_class_list)) {
         continue;
       }
       // 为EC pool中的Cls请求提供转译
@@ -551,6 +551,6 @@ int AggregateBuffer::op_translate(OpRequestRef &op, std::vector<OSDOp> &ops) {
       << inflight_volume_meta.get_oid() << " off =  " << osd_op.op.extent.offset
       << " len = " << osd_op.op.extent.length << ")" << dendl;
   }
-  op->set_cephec_translated_op();
+  op->set_aggregateEC_translated_op();
   return r;
 }

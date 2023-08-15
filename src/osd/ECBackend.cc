@@ -2381,7 +2381,7 @@ bool ECBackend::try_reads_to_commit()
   if (op->plan.t) {
     std::optional<map<int, size_t>> compress_off = std::nullopt;
     if(auto client_op = dynamic_cast<OpRequest*>(op->client_op.get());
-      client_op != nullptr && client_op->need_cephec_storage_optimize()) {
+      client_op != nullptr && client_op->need_aggregateEC_storage_optimize()) {
       
       auto pg = dynamic_cast<PrimaryLogPG*>(get_parent());
       ceph_assert(pg != nullptr && pg->is_aggregate_enabled());
