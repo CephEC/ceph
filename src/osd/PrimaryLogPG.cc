@@ -6441,7 +6441,7 @@ int PrimaryLogPG::do_osd_ops(OpContext *ctx, vector<OSDOp>& ops)
 	  ctx->user_modify = true;
 
 	bufferlist outdata;
-	dout(10) << "call method " << cname << "." << mname << dendl;
+	dout(10) << "call method " << cname << "." << mname << " indata.length = " << indata.length() << dendl;
 	int prev_rd = ctx->num_read;
 	int prev_wr = ctx->num_write;
 	result = method->exec((cls_method_context_t)&ctx, indata, outdata);

@@ -369,6 +369,15 @@ install(TARGETS cls_opencv_thumbnail DESTINATION ${cls_dir})
 add_library(cls_opencv_thumbnail_client STATIC opencv_thumbnail/cls_opencv_thumbnail_client.cc)
 target_link_libraries(cls_opencv_thumbnail_client librados ceph-common)
 
+# cls_graph
+set(cls_graph_srcs graph/cls_graph.cc)
+add_library(cls_graph SHARED ${cls_graph_srcs})
+set_target_properties(cls_graph PROPERTIES
+  VERSION "1.0.0"
+  SOVERSION "1"
+  INSTALL_RPATH ""
+  CXX_VISIBILITY_PRESET hidden)
+
 #cls_openssl_md5
 set(cls_openssl_md5_srcs openssl_md5/cls_openssl_md5.cc)
 add_library(cls_openssl_md5 SHARED ${cls_openssl_md5_srcs})
@@ -397,3 +406,6 @@ target_link_libraries(cls_parquet_scan
 	${ARROW_LIBRARIES}
 	)
 install(TARGETS cls_parquet_scan DESTINATION ${cls_dir})
+install(TARGETS cls_graph DESTINATION ${cls_dir})
+add_library(cls_graph_client STATIC graph/cls_graph_client.cc)
+target_link_libraries(cls_graph_client librados ceph-common)

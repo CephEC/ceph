@@ -26,6 +26,7 @@ if(NOT WIN32)
   target_link_libraries(neorados libneorados spawn fmt::fmt ${CMAKE_DL_LIBS})
   #install(TARGETS neorados DESTINATION bin)
 endif()
+target_link_libraries(rados cls_graph_client)
 
 if(WITH_TESTS)
 add_executable(ceph_scratchtool scratchtool.c)

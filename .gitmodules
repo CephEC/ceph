@@ -75,3 +75,6 @@
 [submodule "src/opencv"]
 	path = src/opencv
 	url = https://github.com/opencv/opencv
+[submodule "src/json"]
+  path = src/json
+  url = https://github.com/nlohmann/json.git
