@@ -67,3 +67,19 @@
 [submodule "src/pybind/mgr/rook/rook-client-python"]
 	path = src/pybind/mgr/rook/rook-client-python
 	url = https://github.com/ceph/rook-client-python.git
+[submodule "s3select"]
+	path = src/s3select
+	url = https://github.com/ceph/s3select.git
+[submodule "src/libkmip"]
+	path = src/libkmip
+	url = https://github.com/ceph/libkmip
+	branch = ceph-master
+[submodule "src/arrow"]
+	path = src/arrow
+	url = https://github.com/apache/arrow.git
+[submodule "src/utf8proc"]
+	path = src/utf8proc
+	url = https://github.com/JuliaStrings/utf8proc
+[submodule "src/json"]
+  path = src/json
+  url = https://github.com/nlohmann/json.git

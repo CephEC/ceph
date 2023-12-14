@@ -50,6 +50,8 @@
 #include <memory>
 
 #include "cls/lock/cls_lock_client.h"
+#include "cls/graph/cls_graph_client.hh"
+
 #include "include/compat.h"
 #include "include/util.h"
 #include "common/hobject.h"
@@ -3227,6 +3229,32 @@ static int rados_tool_common(const std::map < std::string, std::string > &opts,
       cerr << "error during benchmark: " << cpp_strerror(ret) << std::endl;
     if (formatter && output)
       delete outstream;
+  }
+  else if (strcmp(nargs[0], "cls_graph") == 0) {
+    if (!pool_name || (nargs.size() < 2 && !obj_name)) {
+      usage(cerr);
+      return 1;
+    }
+    if (!obj_name) {
+      obj_name = nargs[1];
+    }
+    std::vector<int> src_nodes{6};
+    std::vector<int> sample_nums{10,10};
+    std::vector<std::vector<int>> res;
+    bufferlist out;
+    int r = rados::cls::graph::graph_sampling(&io_ctx, *obj_name, src_nodes, sample_nums, out);
+    if (r < 0) {
+      cerr << "graph_sampling failed, err = " << r << std::endl;
+      return 1;
+    }
+    decode(res, out);
+    for(int i=0;i<res.size();i++){
+        for(int j=0;j<res[i].size();j++){
+            cout << res[i][j] <<" ";
+        }
+        cout << std::endl;
+    }
+    cout << "Done!" << " outdata " << out.length() << std::endl;
   }
   else if (strcmp(nargs[0], "cleanup") == 0) {
     if (!pool_name) {

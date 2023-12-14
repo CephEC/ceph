@@ -300,3 +300,15 @@ if (WITH_RADOSGW)
     rgw_gc/cls_rgw_gc_client.cc)
   add_library(cls_rgw_gc_client STATIC ${cls_rgw_gc_client_srcs})
 endif (WITH_RADOSGW)
+
+# cls_graph
+set(cls_graph_srcs graph/cls_graph.cc)
+add_library(cls_graph SHARED ${cls_graph_srcs})
+set_target_properties(cls_graph PROPERTIES
+  VERSION "1.0.0"
+  SOVERSION "1"
+  INSTALL_RPATH ""
+  CXX_VISIBILITY_PRESET hidden)
+install(TARGETS cls_graph DESTINATION ${cls_dir})
+add_library(cls_graph_client STATIC graph/cls_graph_client.cc)
+target_link_libraries(cls_graph_client librados ceph-common)
