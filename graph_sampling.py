@@ -1,5 +1,6 @@
 import rados
 import json
+import sys
 
 def pack_and_encode(array1, array2):
     data = {
@@ -13,7 +14,7 @@ def pack_and_encode(array1, array2):
 def decode_two_dimensional_vector(json_string):
     return json.loads(json_string)
 
-def send_cls_request(conf_file, obj_name, pool_name, cls_commandconf_file, obj_name, pool_name, src_nodes, sample_nums):
+def send_cls_request(conf_file, obj_name, pool_name, src_nodes, sample_nums):
     # 连接到集群
     cluster = rados.Rados(conffile=conf_file)
     cluster.connect()
@@ -36,7 +37,7 @@ def send_cls_request(conf_file, obj_name, pool_name, cls_commandconf_file, obj_n
       print(row)
 
 if __name__ == "__main__":
-    conf_file = '/etc/ceph/ceph.conf'  # Ceph配置文件的路径
+    conf_file = '/home/zfy/ceph/build/ceph.conf'  # Ceph配置文件的路径
     pool_name = sys.argv[1]  # 存储池的名称
     obj_name = sys.argv[2]   # 操作的对象名称
     src_nodes = [6]
