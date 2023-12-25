@@ -76,9 +76,9 @@ std::vector<T> sampling(const std::vector<T>& src_nodes, int sample_num, const s
 	std::mt19937 gen(rd());
 	for (const auto& sid : src_nodes) {
 		std::vector<T> res(sample_num);
-		std::uniform_int_distribution<> dis(0, neighbor_table.at(sid).size() - 1);
+		//std::uniform_int_distribution<> dis(0, neighbor_table.at(sid).size() - 1);
 		for (int i = 0; i < sample_num; i++) {
-			res[i] = neighbor_table.at(sid)[dis(gen)];
+			res[i] = neighbor_table.at(sid)[i % neighbor_table.at(sid).size()];
 		}
 		results.insert(results.end(), res.begin(), res.end());
 	}
