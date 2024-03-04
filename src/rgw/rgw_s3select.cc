@@ -162,7 +162,7 @@ void aws_response_handler::init_success_response()
   m_buff_header.clear();
   header_size = create_header_records();
   sql_result.append(m_buff_header.c_str(), header_size);
-  sql_result.append(PAYLOAD_LINE);
+  // sql_result.append(PAYLOAD_LINE);
 }
 
 void aws_response_handler::send_continuation_response()
@@ -213,7 +213,7 @@ void aws_response_handler::init_error_response(const char* error_message)
 
 void aws_response_handler::send_success_response()
 {
-  sql_result.append(END_PAYLOAD_LINE);
+  // sql_result.append(END_PAYLOAD_LINE);
   int buff_len = create_message(header_size);
   s->formatter->write_bin_data(sql_result.data(), buff_len);
   rgw_flush_formatter_and_reset(s, s->formatter);
@@ -487,6 +487,8 @@ int RGWSelectObj_ObjStore_S3::handle_aws_cli_parameters(std::string& sql_query)
     m_row_delimiter='\n';
   } else if(m_row_delimiter.compare("&#10;") == 0) {
     //presto change
+    m_row_delimiter='\n';
+  } else if (m_row_delimiter.compare("&#xA;") == 0) {
     m_row_delimiter='\n';
   }
   extract_by_tag(m_s3select_input, "QuoteEscapeCharacter", m_escape_char);

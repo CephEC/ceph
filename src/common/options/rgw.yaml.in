@@ -67,7 +67,7 @@ options:
     more than a single operation. When RGW objects are written to the default
     storage class, up to this amount of payload data will be stored alongside
     metadata in the head object.
-  default: 4_M
+  default: 20_M
   services:
   - rgw
   with_legacy: true
@@ -1735,7 +1735,7 @@ options:
     over multiple objects.
   fmt_desc: The size of an object stripe for Ceph Object Gateway objects.
     See `Architecture`_ for details on striping.
-  default: 4_M
+  default: 20_M
   services:
   - rgw
   with_legacy: true
@@ -1781,7 +1781,7 @@ options:
   long_desc: The maximum request size of a single object read operation sent to RADOS
   fmt_desc: The maximum request size of a single get operation sent to the
     Ceph Storage Cluster.
-  default: 4_M
+  default: 20_M
   services:
   - rgw
   with_legacy: true
