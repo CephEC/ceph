@@ -1284,3 +1284,9 @@ options:
   level: dev
   default: true
   with_legacy: true
+- name: osd_ec_attrs_optimize_enabled
+  desc: osd_ec_attrs_optimize_enabled
+  level: advanced
+  type: bool
+  default: false
+  with_legacy: true

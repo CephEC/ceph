@@ -93,6 +93,68 @@ void encode_and_write(
   }
 }
 
+void encode_and_write(
+  pg_t pgid,
+  const hobject_t &oid,
+  const ECUtil::stripe_info_t &sinfo,
+  ErasureCodeInterfaceRef &ecimpl,
+  const set<int> &want,
+  uint64_t offset,
+  bufferlist bl,
+  uint32_t flags,
+  ECUtil::HashInfoRef hinfo,
+  extent_map &written,
+  map<shard_id_t, ObjectStore::Transaction> *transactions,
+  DoutPrefixProvider *dpp,
+	set<int> should_write) {
+  const uint64_t before_size = hinfo->get_total_logical_size(sinfo);
+  ceph_assert(sinfo.logical_offset_is_stripe_aligned(offset));
+  ceph_assert(sinfo.logical_offset_is_stripe_aligned(bl.length()));
+  ceph_assert(bl.length());
+
+  map<int, bufferlist> buffers;
+  int r = ECUtil::encode(
+    sinfo, ecimpl, bl, want, &buffers);
+  ceph_assert(r == 0);
+
+  written.insert(offset, bl.length(), bl);
+
+  ldpp_dout(dpp, 20) << __func__ << ": " << oid
+		     << " new_size "
+		     << offset + bl.length()
+		     << dendl;
+
+  if (offset >= before_size) {
+    ceph_assert(offset == before_size);
+    hinfo->append(
+      sinfo.aligned_logical_offset_to_chunk_offset(offset),
+      buffers);
+  }
+
+  for (auto &&i : *transactions) {
+    ceph_assert(buffers.count(i.first));
+    bufferlist &enc_bl = buffers[i.first];
+    if (offset >= before_size) {
+      i.second.set_alloc_hint(
+	coll_t(spg_t(pgid, i.first)),
+	ghobject_t(oid, ghobject_t::NO_GEN, i.first),
+	0, 0,
+	CEPH_OSD_ALLOC_HINT_FLAG_SEQUENTIAL_WRITE |
+	CEPH_OSD_ALLOC_HINT_FLAG_APPEND_ONLY);
+    }
+		if (should_write.find(i.first) != should_write.end()) {
+    i.second.write(
+      coll_t(spg_t(pgid, i.first)),
+      ghobject_t(oid, ghobject_t::NO_GEN, i.first),
+      sinfo.logical_to_prev_chunk_offset(
+	offset),
+      enc_bl.length(),
+      enc_bl,
+      flags);
+		}
+  }
+}
+
 bool ECTransaction::requires_overwrite(
   uint64_t prev_size,
   const PGTransaction::ObjectOperation &op) {
@@ -118,6 +180,9 @@ void ECTransaction::generate_transactions(
   set<hobject_t> *temp_added,
   set<hobject_t> *temp_removed,
   DoutPrefixProvider *dpp,
+	std::set<int> should_write,
+	set<int> should_write_attrs,
+	bool osd_ec_attrs_optimize_enabled,
   const ceph_release_t require_osd_release)
 {
   ceph_assert(written_map);
@@ -370,6 +435,11 @@ void ECTransaction::generate_transactions(
 	  }
 	}
 	for (auto &&st : *transactions) {
+		// attr的更新只写入primary和 存放ec_chunk的节点
+		if (osd_ec_attrs_optimize_enabled && 
+				should_write_attrs.find(st.first) == should_write_attrs.end()) {
+			continue;
+		}
 	  st.second.setattrs(
 	    coll_t(spg_t(pgid, st.first)),
 	    ghobject_t(oid, ghobject_t::NO_GEN, st.first),
@@ -600,7 +670,8 @@ void ECTransaction::generate_transactions(
 	  hinfo,
 	  written,
 	  transactions,
-	  dpp);
+	  dpp,
+		should_write);
       }
 
       auto to_append = to_write.intersect(

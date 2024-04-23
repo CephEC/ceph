@@ -954,7 +954,7 @@ void ECBackend::handle_sub_write(
     span = tracing::osd::tracer.add_span(__func__, msg->osd_parent_span);
   }
   trace.event("handle_sub_write");
-
+  dout(15) << __func__ << " ECSubWrite, object = " << op.soid << " t = " << op.t << dendl;
   if (!get_parent()->pgb_is_primary())
     get_parent()->update_stats(op.stats);
   ObjectStore::Transaction localt;
@@ -1994,6 +1994,9 @@ bool ECBackend::try_reads_to_commit()
   waiting_commit.push_back(*op);
 
   dout(10) << __func__ << ": starting commit on " << *op << dendl;
+  if (op->plan.t && op->plan.t->op_map.find(op->hoid) != op->plan.t->op_map.end()) {
+    dout(20) << __func__ << " attr_updates " << op->plan.t->op_map[op->hoid].attr_updates << dendl;
+  }
   dout(20) << __func__ << ": " << cache << dendl;
 
   get_parent()->apply_stats(
@@ -2023,6 +2026,43 @@ bool ECBackend::try_reads_to_commit()
 
   op->trace.event("start ec write");
 
+  // 只有primary和stripe_chunk所在的分片需要更新元数据
+  set<int> should_write_attrs;
+  const std::vector<int> &chunk_mapping = ec_impl->get_chunk_mapping();
+  should_write_attrs.insert(get_parent()->whoami_shard().shard);
+  for(int i = get_ec_data_chunk_count(); i < get_ec_data_chunk_count() + get_ec_stripe_chunk_size(); ++i) {
+    int chunk_id = i < chunk_mapping.size() ? chunk_mapping[i] : i;
+    should_write_attrs.insert(chunk_id);
+  }
+
+  // 只有被覆盖写的分片以及stripe_chunk所在的分片需要更新元数据
+  set<int> should_write;
+  if (op->plan.t && op->plan.t->op_map.find(op->hoid) != op->plan.t->op_map.end()) {
+    set<int> logical_data_chunk_set;
+    for (auto &update_range : op->plan.t->op_map[op->hoid].buffer_updates) {
+      // 记录逻辑的data_chunk_id
+      uint32_t first_chunk_id = update_range.get_off() / sinfo.get_chunk_size();
+      uint32_t last_chunk_id = (update_range.get_off() + update_range.get_len() - 1) / sinfo.get_chunk_size();
+      for (uint32_t i = first_chunk_id; i <= last_chunk_id; i++) {
+        if (logical_data_chunk_set.count(i) == 0) {
+          logical_data_chunk_set.insert(i);
+        }
+      }
+    }
+    // 逻辑的data_chunk_id转换为物理的data_chunk_id
+    for(std::set<int>::iterator iter=logical_data_chunk_set.begin();
+        iter != logical_data_chunk_set.end();
+        iter++){
+      int chunk_id = (int)chunk_mapping.size() > *iter ? chunk_mapping[*iter] : *iter;
+      should_write.insert(chunk_id);
+    }
+    // 追加逻辑的stripe_chunk_id;
+    for(int i = get_ec_data_chunk_count(); i < get_ec_data_chunk_count() + get_ec_stripe_chunk_size(); ++i) {
+      int chunk_id = i < chunk_mapping.size() ? chunk_mapping[i] : i;
+      should_write.insert(chunk_id);
+    }
+  }
+
   map<hobject_t,extent_map> written;
   if (op->plan.t) {
     ECTransaction::generate_transactions(
@@ -2037,6 +2077,9 @@ bool ECBackend::try_reads_to_commit()
       &(op->temp_added),
       &(op->temp_cleared),
       get_parent()->get_dpp(),
+      should_write,
+      should_write_attrs,
+      cct->_conf->osd_ec_attrs_optimize_enabled,
       get_osdmap()->require_osd_release);
   }
 
@@ -2076,21 +2119,27 @@ bool ECBackend::try_reads_to_commit()
   std::vector<std::pair<int, Message*>> messages;
   messages.reserve(get_parent()->get_acting_recovery_backfill_shards().size());
   set<pg_shard_t> backfill_shards = get_parent()->get_backfill_shards();
+  
   for (set<pg_shard_t>::const_iterator i =
 	 get_parent()->get_acting_recovery_backfill_shards().begin();
        i != get_parent()->get_acting_recovery_backfill_shards().end();
        ++i) {
-    op->pending_apply.insert(*i);
-    op->pending_commit.insert(*i);
     map<shard_id_t, ObjectStore::Transaction>::iterator iter =
       trans.find(i->shard);
+    ceph_assert(iter != trans.end());
+
+    // 基于attrs优化和overwrite优化后，某些shard对应的事务可能是空的，那么就没必要传sub_write请求了
+    if (iter->second.empty()) continue;
+
+    op->pending_apply.insert(*i);
+    op->pending_commit.insert(*i);
     ceph_assert(iter != trans.end());
     bool should_send = get_parent()->should_send_op(*i, op->hoid);
     const pg_stat_t &stats =
       (should_send || !backfill_shards.count(*i)) ?
       get_info().stats :
       parent->get_shard_info().find(*i)->second.stats;
-
+  
     ECSubWrite sop(
       get_parent()->whoami_shard(),
       op->tid,
@@ -2113,7 +2162,7 @@ bool ECBackend::try_reads_to_commit()
       trace.init("ec sub write", nullptr, &op->trace);
       trace.keyval("shard", i->shard.id);
     }
-
+    dout(20) << __func__ << " : send SubWriteRequest to " << i->shard << cache << dendl;
     if (*i == get_parent()->whoami_shard()) {
       should_write_local = true;
       local_write_op.claim(sop);

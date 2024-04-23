@@ -194,6 +194,9 @@ namespace ECTransaction {
     std::set<hobject_t> *temp_added,
     std::set<hobject_t> *temp_removed,
     DoutPrefixProvider *dpp,
+		std::set<int> should_write,
+		std::set<int> should_write_attrs,
+		bool osd_ec_attrs_optimize_enabled,
     const ceph_release_t require_osd_release = ceph_release_t::unknown);
 };
 
