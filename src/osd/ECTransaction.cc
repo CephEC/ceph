@@ -11,6 +11,11 @@
  * Foundation.  See file COPYING.
  *
  */
+#define dout_context cct
+#define dout_subsys ceph_subsys_osd
+#define DOUT_PREFIX_ARGS this
+#undef dout_prefix
+#define dout_prefix _prefix(_dout, this)
 
 #include <iostream>
 #include <vector>
@@ -94,6 +99,7 @@ void encode_and_write(
 }
 
 void encode_and_write(
+	CephContext *cct,
   pg_t pgid,
   const hobject_t &oid,
   const ECUtil::stripe_info_t &sinfo,
@@ -151,6 +157,8 @@ void encode_and_write(
       enc_bl.length(),
       enc_bl,
       flags);
+		} else {
+			dout(20) << __func__ << " skip write to shard" << i.first << dendl;
 		}
   }
 }
@@ -169,6 +177,7 @@ bool ECTransaction::requires_overwrite(
 }
 
 void ECTransaction::generate_transactions(
+	CephContext *cct,
   WritePlan &plan,
   ErasureCodeInterfaceRef &ecimpl,
   pg_t pgid,
@@ -180,8 +189,8 @@ void ECTransaction::generate_transactions(
   set<hobject_t> *temp_added,
   set<hobject_t> *temp_removed,
   DoutPrefixProvider *dpp,
-	std::set<int> should_write,
-	set<int> should_write_attrs,
+	std::set<int> &should_write,
+	set<int> &should_write_attrs,
 	bool osd_ec_attrs_optimize_enabled,
   const ceph_release_t require_osd_release)
 {
@@ -438,6 +447,7 @@ void ECTransaction::generate_transactions(
 		// attr的更新只写入primary和 存放ec_chunk的节点
 		if (osd_ec_attrs_optimize_enabled && 
 				should_write_attrs.find(st.first) == should_write_attrs.end()) {
+			dout(20) << __func__ << " skip attr_updates to shard" << st.first << dendl;
 			continue;
 		}
 	  st.second.setattrs(
@@ -659,6 +669,7 @@ void ECTransaction::generate_transactions(
 	  }
 	}
 	encode_and_write(
+		cct,
 	  pgid,
 	  oid,
 	  sinfo,
@@ -731,6 +742,11 @@ void ECTransaction::generate_transactions(
 	bufferlist hbuf;
 	encode(*hinfo, hbuf);
 	for (auto &&i : *transactions) {
+		if (osd_ec_attrs_optimize_enabled && 
+				should_write_attrs.find(i.first) == should_write_attrs.end()) {
+			dout(20) << __func__ << " skip attr_updates to shard" << i.first << dendl;
+			continue;
+		}
 	  i.second.setattr(
 	    coll_t(spg_t(pgid, i.first)),
 	    ghobject_t(oid, ghobject_t::NO_GEN, i.first),

@@ -2030,7 +2030,7 @@ bool ECBackend::try_reads_to_commit()
   set<int> should_write_attrs;
   const std::vector<int> &chunk_mapping = ec_impl->get_chunk_mapping();
   should_write_attrs.insert(get_parent()->whoami_shard().shard);
-  for(int i = get_ec_data_chunk_count(); i < get_ec_data_chunk_count() + get_ec_stripe_chunk_size(); ++i) {
+  for (int i = ec_impl->get_data_chunk_count(); i < ec_impl->get_chunk_count(); ++i) {
     int chunk_id = i < chunk_mapping.size() ? chunk_mapping[i] : i;
     should_write_attrs.insert(chunk_id);
   }
@@ -2041,11 +2041,23 @@ bool ECBackend::try_reads_to_commit()
     set<int> logical_data_chunk_set;
     for (auto &update_range : op->plan.t->op_map[op->hoid].buffer_updates) {
       // 记录逻辑的data_chunk_id
-      uint32_t first_chunk_id = update_range.get_off() / sinfo.get_chunk_size();
-      uint32_t last_chunk_id = (update_range.get_off() + update_range.get_len() - 1) / sinfo.get_chunk_size();
-      for (uint32_t i = first_chunk_id; i <= last_chunk_id; i++) {
-        if (logical_data_chunk_set.count(i) == 0) {
-          logical_data_chunk_set.insert(i);
+      uint32_t start = update_range.get_off() % sinfo.get_stripe_width();
+      uint32_t end = (update_range.get_off() + update_range.get_len() - 1) % sinfo.get_stripe_width();
+      // 简单点,如果写入数据大于4KB,那么就写入全条带
+      if (update_range.get_len() > sinfo.get_chunk_size()) {
+        for (uint32_t i = 0; i < ec_impl->get_data_chunk_count(); i++) {
+          if (logical_data_chunk_set.count(i) == 0) {
+            logical_data_chunk_set.insert(i);
+          }
+        }
+      } else {
+        // 写入部分chunk
+        uint32_t first_chunk_id = start / sinfo.get_chunk_size();
+        uint32_t last_chunk_id = end / sinfo.get_chunk_size();
+        for (uint32_t i = first_chunk_id; i <= last_chunk_id; i++) {
+          if (logical_data_chunk_set.count(i) == 0) {
+            logical_data_chunk_set.insert(i);
+          }
         }
       }
     }
@@ -2057,15 +2069,16 @@ bool ECBackend::try_reads_to_commit()
       should_write.insert(chunk_id);
     }
     // 追加逻辑的stripe_chunk_id;
-    for(int i = get_ec_data_chunk_count(); i < get_ec_data_chunk_count() + get_ec_stripe_chunk_size(); ++i) {
+    for(int i = ec_impl->get_data_chunk_count(); i < ec_impl->get_chunk_count(); ++i) {
       int chunk_id = i < chunk_mapping.size() ? chunk_mapping[i] : i;
       should_write.insert(chunk_id);
     }
   }
-
+  dout(20) << __func__ << " should_write " << should_write << " should_write_attrs " << should_write_attrs << dendl;
   map<hobject_t,extent_map> written;
   if (op->plan.t) {
     ECTransaction::generate_transactions(
+      cct,
       op->plan,
       ec_impl,
       get_parent()->get_info().pgid.pgid,
@@ -2129,7 +2142,10 @@ bool ECBackend::try_reads_to_commit()
     ceph_assert(iter != trans.end());
 
     // 基于attrs优化和overwrite优化后，某些shard对应的事务可能是空的，那么就没必要传sub_write请求了
-    if (iter->second.empty()) continue;
+    if (iter->second.empty()) {
+      dout(20) << __func__ << ": skip SubWrite for shard: " << i->shard << dendl;
+      continue;
+    }
 
     op->pending_apply.insert(*i);
     op->pending_commit.insert(*i);
@@ -2162,7 +2178,7 @@ bool ECBackend::try_reads_to_commit()
       trace.init("ec sub write", nullptr, &op->trace);
       trace.keyval("shard", i->shard.id);
     }
-    dout(20) << __func__ << " : send SubWriteRequest to " << i->shard << cache << dendl;
+    dout(20) << __func__ << " : send SubWriteRequest to " << i->shard << dendl;
     if (*i == get_parent()->whoami_shard()) {
       should_write_local = true;
       local_write_op.claim(sop);
