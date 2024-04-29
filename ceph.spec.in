@@ -577,7 +577,6 @@ Requires:       ceph-base = %{_epoch_prefix}%{version}-%{release}
 Requires:       ceph-mgr-modules-core = %{_epoch_prefix}%{version}-%{release}
 Requires:	    libcephsqlite = %{_epoch_prefix}%{version}-%{release}
 %if 0%{?weak_deps}
-Recommends:	ceph-mgr-dashboard = %{_epoch_prefix}%{version}-%{release}
 Recommends:	ceph-mgr-diskprediction-local = %{_epoch_prefix}%{version}-%{release}
 Recommends:	ceph-mgr-k8sevents = %{_epoch_prefix}%{version}-%{release}
 Recommends:	ceph-mgr-cephadm = %{_epoch_prefix}%{version}-%{release}
@@ -589,37 +588,6 @@ module derived from Calamari) and expose CLI hooks.  ceph-mgr gathers
 the cluster maps, the daemon metadata, and performance counters, and
 exposes all these to the python modules.
 
-%package mgr-dashboard
-Summary:        Ceph Dashboard
-BuildArch:      noarch
-%if 0%{?suse_version}
-Group:          System/Filesystems
-%endif
-Requires:       ceph-mgr = %{_epoch_prefix}%{version}-%{release}
-Requires:       ceph-grafana-dashboards = %{_epoch_prefix}%{version}-%{release}
-Requires:       ceph-prometheus-alerts = %{_epoch_prefix}%{version}-%{release}
-Requires:       python%{python3_pkgversion}-setuptools
-%if 0%{?fedora} || 0%{?rhel}
-Requires:       python%{python3_pkgversion}-cherrypy
-Requires:       python%{python3_pkgversion}-jwt
-Requires:       python%{python3_pkgversion}-routes
-Requires:       python%{python3_pkgversion}-werkzeug
-%if 0%{?weak_deps}
-Recommends:     python%{python3_pkgversion}-saml
-%endif
-%endif
-%if 0%{?suse_version}
-Requires:       python%{python3_pkgversion}-CherryPy
-Requires:       python%{python3_pkgversion}-PyJWT
-Requires:       python%{python3_pkgversion}-Routes
-Requires:       python%{python3_pkgversion}-Werkzeug
-Recommends:     python%{python3_pkgversion}-python3-saml
-%endif
-%description mgr-dashboard
-ceph-mgr-dashboard is a manager module, providing a web-based application
-to monitor and manage many aspects of a Ceph cluster and related components.
-See the Dashboard documentation at http://docs.ceph.com/ for details and a
-detailed feature overview.
 
 %package mgr-diskprediction-local
 Summary:        Ceph Manager module for predicting disk failures
@@ -1242,19 +1210,6 @@ populated file-systems.
 
 %endif
 
-%package grafana-dashboards
-Summary:	The set of Grafana dashboards for monitoring purposes
-BuildArch:	noarch
-%if 0%{?suse_version}
-Group:		System/Filesystems
-%endif
-%description grafana-dashboards
-This package provides a set of Grafana dashboards for monitoring of
-Ceph clusters. The dashboards require a Prometheus server setup
-collecting data from Ceph Manager "prometheus" module and Prometheus
-project "node_exporter" module. The dashboards are designed to be
-integrated with the Ceph Manager Dashboard web UI.
-
 %package prometheus-alerts
 Summary:        Prometheus alerts for a Ceph deployment
 BuildArch:      noarch
@@ -1802,19 +1757,6 @@ if [ $1 -ge 1 ] ; then
   if [ "X$CEPH_AUTO_RESTART_ON_UPGRADE" = "Xyes" ] ; then
     /usr/bin/systemctl try-restart ceph-mgr@\*.service > /dev/null 2>&1 || :
   fi
-fi
-
-%files mgr-dashboard
-%{_datadir}/ceph/mgr/dashboard
-
-%post mgr-dashboard
-if [ $1 -eq 1 ] ; then
-    /usr/bin/systemctl try-restart ceph-mgr.target >/dev/null 2>&1 || :
-fi
-
-%postun mgr-dashboard
-if [ $1 -eq 1 ] ; then
-    /usr/bin/systemctl try-restart ceph-mgr.target >/dev/null 2>&1 || :
 fi
 
 %files mgr-diskprediction-local
@@ -2564,14 +2506,6 @@ if [ $1 -eq 0 ]; then
 fi
 exit 0
 %endif
-
-%files grafana-dashboards
-%if 0%{?suse_version}
-%attr(0755,root,root) %dir %{_sysconfdir}/grafana
-%attr(0755,root,root) %dir %{_sysconfdir}/grafana/dashboards
-%endif
-%attr(0755,root,root) %dir %{_sysconfdir}/grafana/dashboards/ceph-dashboard
-%config %{_sysconfdir}/grafana/dashboards/ceph-dashboard/*
 
 %files prometheus-alerts
 %if 0%{?suse_version}
