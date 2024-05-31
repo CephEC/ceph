@@ -1926,6 +1926,10 @@ int RadosObject::RadosReadOp::iterate(const DoutPrefixProvider* dpp, int64_t ofs
   return parent_op.iterate(dpp, ofs, end, cb, y);
 }
 
+int RadosObject::RadosReadOp::iterate(const DoutPrefixProvider* dpp, int64_t ofs, int64_t end, RGWGetDataCB* cb, optional_yield y, bool skip_osd_cache) {
+  return parent_op.iterate(dpp, ofs, end, cb, y, skip_osd_cache);
+}
+
 int RadosObject::swift_versioning_restore(RGWObjectCtx* obj_ctx,
 					     bool& restored,
 					     const DoutPrefixProvider* dpp)

@@ -161,7 +161,7 @@ public:
 
   int get_obj_iterate_cb(const DoutPrefixProvider *dpp, const rgw_raw_obj& read_obj, off_t obj_ofs,
                          off_t read_ofs, off_t len, bool is_head_obj,
-                         RGWObjState *astate, void *arg) override;
+                         RGWObjState *astate, void *arg);
 };
 
 template<typename T>

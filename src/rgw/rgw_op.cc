@@ -2112,7 +2112,7 @@ static inline void rgw_cond_decode_objtags(
   }
 }
 
-void RGWGetObj::execute(optional_yield y)
+void RGWGetObj::execute_with_cache(optional_yield y)
 {
   bufferlist bl;
   gc_invalidate_time = ceph_clock_now();
@@ -2284,7 +2284,197 @@ void RGWGetObj::execute(optional_yield y)
   ofs_x = ofs;
   end_x = end;
   filter->fixup_range(ofs_x, end_x);
-  op_ret = read_op->iterate(this, ofs_x, end_x, filter, s->yield);
+  op_ret = read_op->iterate(this, ofs_x, end_x, filter, s->yield, false);
+
+  if (op_ret >= 0)
+    op_ret = filter->flush();
+
+  perfcounter->tinc(l_rgw_get_lat, s->time_elapsed());
+  if (op_ret < 0) {
+    goto done_err;
+  }
+
+  op_ret = send_response_data(bl, 0, 0);
+  if (op_ret < 0) {
+    goto done_err;
+  }
+  return;
+
+done_err:
+  send_response_data_error(y);
+}
+
+void RGWGetObj::execute(optional_yield y)
+{
+  bufferlist bl;
+  gc_invalidate_time = ceph_clock_now();
+  gc_invalidate_time += (s->cct->_conf->rgw_gc_obj_min_wait / 2);
+
+  bool need_decompress;
+  int64_t ofs_x, end_x;
+  RGWGetObj_CB cb(this);
+  RGWGetObj_Filter* filter = (RGWGetObj_Filter *)&cb;
+  boost::optional<RGWGetObj_Decompress> decompress;
+  std::unique_ptr<RGWGetObj_Filter> decrypt;
+  map<string, bufferlist>::iterator attr_iter;
+
+  perfcounter->inc(l_rgw_get);
+
+  std::unique_ptr<rgw::sal::Object::ReadOp> read_op(s->object->get_read_op(s->obj_ctx));
+  op_ret = get_params(y);
+  if (op_ret < 0)
+    goto done_err;
+
+  op_ret = init_common();
+  if (op_ret < 0)
+    goto done_err;
+
+  read_op->params.mod_ptr = mod_ptr;
+  read_op->params.unmod_ptr = unmod_ptr;
+  read_op->params.high_precision_time = s->system_request; /* system request need to use high precision time */
+  read_op->params.mod_zone_id = mod_zone_id;
+  read_op->params.mod_pg_ver = mod_pg_ver;
+  read_op->params.if_match = if_match;
+  read_op->params.if_nomatch = if_nomatch;
+  read_op->params.lastmod = &lastmod;
+
+  op_ret = read_op->prepare(s->yield, this);
+  if (op_ret < 0)
+    goto done_err;
+  version_id = s->object->get_instance();
+  s->obj_size = s->object->get_obj_size();
+  attrs = s->object->get_attrs();
+
+  /* STAT ops don't need data, and do no i/o */
+  if (get_type() == RGW_OP_STAT_OBJ) {
+    return;
+  }
+  if (s->info.env->exists("HTTP_X_RGW_AUTH")) {
+    op_ret = 0;
+    goto done_err;
+  }
+  /* start gettorrent */
+  if (torrent.get_flag())
+  {
+    attr_iter = attrs.find(RGW_ATTR_CRYPT_MODE);
+    if (attr_iter != attrs.end() && attr_iter->second.to_str() == "SSE-C-AES256") {
+      ldpp_dout(this, 0) << "ERROR: torrents are not supported for objects "
+          "encrypted with SSE-C" << dendl;
+      op_ret = -EINVAL;
+      goto done_err;
+    }
+    torrent.init(s, store);
+    rgw_obj obj = s->object->get_obj();
+    op_ret = torrent.get_torrent_file(s->object.get(), total_len, bl, obj);
+    if (op_ret < 0)
+    {
+      ldpp_dout(this, 0) << "ERROR: failed to get_torrent_file ret= " << op_ret
+                       << dendl;
+      goto done_err;
+    }
+    op_ret = send_response_data(bl, 0, total_len);
+    if (op_ret < 0)
+    {
+      ldpp_dout(this, 0) << "ERROR: failed to send_response_data ret= " << op_ret << dendl;
+      goto done_err;
+    }
+    return;
+  }
+  /* end gettorrent */
+
+  op_ret = rgw_compression_info_from_attrset(attrs, need_decompress, cs_info);
+  if (op_ret < 0) {
+    ldpp_dout(this, 0) << "ERROR: failed to decode compression info, cannot decompress" << dendl;
+    goto done_err;
+  }
+  if (need_decompress) {
+      s->obj_size = cs_info.orig_size;
+      s->object->set_obj_size(cs_info.orig_size);
+      decompress.emplace(s->cct, &cs_info, partial_content, filter);
+      filter = &*decompress;
+  }
+
+  attr_iter = attrs.find(RGW_ATTR_MANIFEST);
+  if (attr_iter != attrs.end() && get_type() == RGW_OP_GET_OBJ && get_data) {
+    RGWObjManifest m;
+    decode(m, attr_iter->second);
+    if (m.get_tier_type() == "cloud-s3") {
+      /* XXX: Instead send presigned redirect or read-through */
+      op_ret = -ERR_INVALID_OBJECT_STATE;
+      ldpp_dout(this, 0) << "ERROR: Cannot get cloud tiered object. Failing with "
+		       << op_ret << dendl;
+      goto done_err;
+    }
+  }
+
+  attr_iter = attrs.find(RGW_ATTR_USER_MANIFEST);
+  if (attr_iter != attrs.end() && !skip_manifest) {
+    op_ret = handle_user_manifest(attr_iter->second.c_str(), y);
+    if (op_ret < 0) {
+      ldpp_dout(this, 0) << "ERROR: failed to handle user manifest ret="
+		       << op_ret << dendl;
+      goto done_err;
+    }
+    return;
+  }
+
+  attr_iter = attrs.find(RGW_ATTR_SLO_MANIFEST);
+  if (attr_iter != attrs.end() && !skip_manifest) {
+    is_slo = true;
+    op_ret = handle_slo_manifest(attr_iter->second, y);
+    if (op_ret < 0) {
+      ldpp_dout(this, 0) << "ERROR: failed to handle slo manifest ret=" << op_ret
+		       << dendl;
+      goto done_err;
+    }
+    return;
+  }
+
+  // for range requests with obj size 0
+  if (range_str && !(s->obj_size)) {
+    total_len = 0;
+    op_ret = -ERANGE;
+    goto done_err;
+  }
+
+  op_ret = s->object->range_to_ofs(s->obj_size, ofs, end);
+  if (op_ret < 0)
+    goto done_err;
+  total_len = (ofs <= end ? end + 1 - ofs : 0);
+
+  /* Check whether the object has expired. Swift API documentation
+   * stands that we should return 404 Not Found in such case. */
+  if (need_object_expiration() && s->object->is_expired()) {
+    op_ret = -ENOENT;
+    goto done_err;
+  }
+
+  /* Decode S3 objtags, if any */
+  rgw_cond_decode_objtags(s, attrs);
+
+  start = ofs;
+
+  attr_iter = attrs.find(RGW_ATTR_MANIFEST);
+  op_ret = this->get_decrypt_filter(&decrypt, filter,
+                                    attr_iter != attrs.end() ? &(attr_iter->second) : nullptr);
+  if (decrypt != nullptr) {
+    filter = decrypt.get();
+  }
+  if (op_ret < 0) {
+    goto done_err;
+  }
+
+  if (!get_data || ofs > end) {
+    send_response_data(bl, 0, 0);
+    return;
+  }
+
+  perfcounter->inc(l_rgw_get_b, end - ofs);
+
+  ofs_x = ofs;
+  end_x = end;
+  filter->fixup_range(ofs_x, end_x);
+  op_ret = read_op->iterate(this, ofs_x, end_x, filter, s->yield, true);
 
   if (op_ret >= 0)
     op_ret = filter->flush();

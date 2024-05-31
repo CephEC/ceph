@@ -11056,6 +11056,10 @@ int BlueStore::_do_read(
     buffered = true;
   }
 
+  if (op_flags & CEPH_OSD_OP_FLAG_FADVISE_NOCACHE) {
+    dout(20) << __func__ << " skipping to buffered" << dendl;
+  }
+
   if (offset + length > o->onode.size) {
     length = o->onode.size - offset;
   }

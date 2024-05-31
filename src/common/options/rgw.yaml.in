@@ -3397,3 +3397,10 @@ options:
   - rgw
   flags:
   - startup
+- name: rgw_read_bypass_osd_cache
+  type: bool
+  level: advanced
+  desc: true if we get a object bypass the objectstore cache
+  default: false
+  services:
+  - rgw

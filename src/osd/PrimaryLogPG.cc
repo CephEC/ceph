@@ -5796,7 +5796,7 @@ int PrimaryLogPG::do_read(OpContext *ctx, OSDOp& osd_op) {
   }
 
   dout(30) << __func__ << "op.extent.length is now " << op.extent.length << dendl;
-
+  dout(10) << " async_read noted for " << soid << " op_flags = " << op.flags << dendl;
   // read into a buffer
   int result = 0;
   if (trimmed_read && op.extent.length == 0) {
@@ -5820,13 +5820,14 @@ int PrimaryLogPG::do_read(OpContext *ctx, OSDOp& osd_op) {
 		  new FillInVerifyExtent(&op.extent.length, &osd_op.rval,
 					 &osd_op.outdata, maybe_crc, oi.size,
 					 osd, soid, op.flags))));
-    dout(10) << " async_read noted for " << soid << dendl;
+    dout(10) << " async_read noted for " << soid << " op_flags = " << op.flags << dendl;
 
     ctx->op_finishers[ctx->current_osd_subop_num].reset(
       new ReadFinisher(osd_op));
   } else {
     int r = pgbackend->objects_read_sync(
       soid, op.extent.offset, op.extent.length, op.flags, &osd_op.outdata);
+    dout(10) << " async_read noted for " << soid << " op_flags = " << op.flags << dendl;
     // whole object?  can we verify the checksum?
     if (r >= 0 && op.extent.offset == 0 &&
         (uint64_t)r == oi.size && oi.is_data_digest()) {

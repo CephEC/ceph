@@ -32,6 +32,7 @@
 #include "common/utf8.h"
 #include "common/ceph_json.h"
 #include "common/ceph_time.h"
+#include "common/debug.h"
 
 #include "rgw_common.h"
 #include "rgw_dmclock.h"
@@ -409,6 +410,7 @@ public:
   int verify_permission(optional_yield y) override;
   void pre_exec() override;
   void execute(optional_yield y) override;
+  void execute_with_cache(optional_yield y);
   int parse_range();
   int read_user_manifest_part(
     rgw::sal::Bucket* bucket,

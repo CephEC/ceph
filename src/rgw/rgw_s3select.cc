@@ -584,7 +584,7 @@ void RGWSelectObj_ObjStore_S3::execute(optional_yield y)
     }
   } else {
     //CSV processing
-    RGWGetObj::execute(y);
+    RGWGetObj::execute_with_cache(y);
   }
 }
 

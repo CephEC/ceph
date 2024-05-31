@@ -111,10 +111,11 @@ class RadosObject : public Object {
       virtual int prepare(optional_yield y, const DoutPrefixProvider* dpp) override;
       virtual int read(int64_t ofs, int64_t end, bufferlist& bl, optional_yield y, const DoutPrefixProvider* dpp) override;
       virtual int iterate(const DoutPrefixProvider* dpp, int64_t ofs, int64_t end, RGWGetDataCB* cb, optional_yield y) override;
+      virtual int iterate(const DoutPrefixProvider* dpp, int64_t ofs, int64_t end, RGWGetDataCB* cb, optional_yield y, bool skip_osd_cache) override;
       virtual int get_attr(const DoutPrefixProvider* dpp, const char* name, bufferlist& dest, optional_yield y) override;
     };
 
-    struct RadosDeleteOp : public DeleteOp {
+    struct RadosDeleteOp : public DeleteOp  {
     private:
       RadosObject* source;
       RGWObjectCtx* rctx;

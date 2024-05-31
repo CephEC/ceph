@@ -6,7 +6,7 @@
 
 #include <functional>
 #include <boost/container/flat_map.hpp>
-
+#include "common/debug.h"
 #include "include/rados/librados.hpp"
 #include "include/Context.h"
 #include "include/random.h"
@@ -406,6 +406,8 @@ class RGWRados
                            RGWObjState *olh_state, RGWObjState **target_state, optional_yield y);
   int get_obj_state_impl(const DoutPrefixProvider *dpp, RGWObjectCtx *rctx, const RGWBucketInfo& bucket_info, const rgw_obj& obj, RGWObjState **state,
                          bool follow_olh, optional_yield y, bool assume_noent = false);
+  int get_obj_state_impl(const DoutPrefixProvider *dpp, RGWObjectCtx *rctx, const RGWBucketInfo& bucket_info, const rgw_obj& obj, RGWObjState **state,
+                         bool follow_olh, optional_yield y, bool assume_noent, bool skip_osd_cache);
   int append_atomic_test(const DoutPrefixProvider *dpp, RGWObjectCtx *rctx, const RGWBucketInfo& bucket_info, const rgw_obj& obj,
                          librados::ObjectOperation& op, RGWObjState **state, optional_yield y);
   
@@ -760,6 +762,7 @@ public:
       static int range_to_ofs(uint64_t obj_size, int64_t &ofs, int64_t &end);
       int read(int64_t ofs, int64_t end, bufferlist& bl, optional_yield y, const DoutPrefixProvider *dpp);
       int iterate(const DoutPrefixProvider *dpp, int64_t ofs, int64_t end, RGWGetDataCB *cb, optional_yield y);
+      int iterate(const DoutPrefixProvider *dpp, int64_t ofs, int64_t end, RGWGetDataCB *cb, optional_yield y, bool skip_osd_cache);
       int get_attr(const DoutPrefixProvider *dpp, const char *name, bufferlist& dest, optional_yield y);
     };
 
@@ -1237,25 +1240,26 @@ public:
 
   int get_obj_state(const DoutPrefixProvider *dpp, RGWObjectCtx *rctx, const RGWBucketInfo& bucket_info, const rgw_obj& obj, RGWObjState **state,
                     bool follow_olh, optional_yield y, bool assume_noent = false);
+  int get_obj_state(const DoutPrefixProvider *dpp, RGWObjectCtx *rctx, const RGWBucketInfo& bucket_info, const rgw_obj& obj, RGWObjState **state,
+                    bool follow_olh, optional_yield y, bool assume_noent, bool skip_osd_cache);
   int get_obj_state(const DoutPrefixProvider *dpp, RGWObjectCtx *rctx, const RGWBucketInfo& bucket_info, const rgw_obj& obj, RGWObjState **state, optional_yield y) {
     return get_obj_state(dpp, rctx, bucket_info, obj, state, true, y);
   }
 
   using iterate_obj_cb = int (*)(const DoutPrefixProvider*, const rgw_raw_obj&, off_t, off_t,
-                                 off_t, bool, RGWObjState*, void*);
+                                 off_t, bool, RGWObjState*, void*, bool);
 
   int iterate_obj(const DoutPrefixProvider *dpp, RGWObjectCtx& ctx, const RGWBucketInfo& bucket_info,
                   const rgw_obj& obj, off_t ofs, off_t end,
                   uint64_t max_chunk_size, iterate_obj_cb cb, void *arg,
-                  optional_yield y);
+                  optional_yield y, bool skip_osd_cache);
 
   int append_atomic_test(const DoutPrefixProvider *dpp, const RGWObjState* astate, librados::ObjectOperation& op);
 
   virtual int get_obj_iterate_cb(const DoutPrefixProvider *dpp,
                          const rgw_raw_obj& read_obj, off_t obj_ofs,
                          off_t read_ofs, off_t len, bool is_head_obj,
-                         RGWObjState *astate, void *arg);
-
+                         RGWObjState *astate, void *arg, bool skip_osd_cache);
   /**
    * a simple object read without keeping state
    */
@@ -1264,6 +1268,11 @@ public:
                    rgw_raw_obj& obj, uint64_t *psize, ceph::real_time *pmtime, uint64_t *epoch,
                    std::map<std::string, bufferlist> *attrs, bufferlist *first_chunk,
                    RGWObjVersionTracker *objv_tracker, optional_yield y);
+
+  int raw_obj_stat(const DoutPrefixProvider *dpp,
+                   rgw_raw_obj& obj, uint64_t *psize, ceph::real_time *pmtime, uint64_t *epoch,
+                   std::map<std::string, bufferlist> *attrs, bufferlist *first_chunk,
+                   RGWObjVersionTracker *objv_tracker, optional_yield y, bool skip_osd_cache);
 
   int obj_operate(const DoutPrefixProvider *dpp, const RGWBucketInfo& bucket_info, const rgw_obj& obj, librados::ObjectWriteOperation *op);
   int obj_operate(const DoutPrefixProvider *dpp, const RGWBucketInfo& bucket_info, const rgw_obj& obj, librados::ObjectReadOperation *op);

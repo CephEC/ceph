@@ -5486,6 +5486,184 @@ int RGWRados::get_olh_target_state(const DoutPrefixProvider *dpp, RGWObjectCtx& 
   return 0;
 }
 
+int RGWRados::get_obj_state_impl(const DoutPrefixProvider *dpp, RGWObjectCtx *rctx, const RGWBucketInfo& bucket_info, const rgw_obj& obj, RGWObjState **state,
+                        bool follow_olh, optional_yield y, bool assume_noent, bool skip_osd_cache) {
+  if (obj.empty()) {
+    return -EINVAL;
+  }
+
+  bool need_follow_olh = follow_olh && obj.key.instance.empty();
+
+  RGWObjState *s = rctx->get_state(obj);
+  ldpp_dout(dpp, 20) << "get_obj_state: rctx=" << (void *)rctx << " obj=" << obj << " state=" << (void *)s << " s->prefetch_data=" << s->prefetch_data << dendl;
+  *state = s;
+  if (s->has_attrs) {
+    if (s->is_olh && need_follow_olh) {
+      return get_olh_target_state(dpp, *rctx, bucket_info, obj, s, state, y);
+    }
+    return 0;
+  }
+
+  s->obj = obj;
+
+  rgw_raw_obj raw_obj;
+  obj_to_raw(bucket_info.placement_rule, obj, &raw_obj);
+
+  int r = -ENOENT;
+
+  if (!assume_noent) {
+    r = RGWRados::raw_obj_stat(dpp, raw_obj, &s->size, &s->mtime, &s->epoch, &s->attrset, (s->prefetch_data ? &s->data : NULL), NULL, y, skip_osd_cache);
+  }
+
+  if (r == -ENOENT) {
+    s->exists = false;
+    s->has_attrs = true;
+    tombstone_entry entry;
+    if (obj_tombstone_cache && obj_tombstone_cache->find(obj, entry)) {
+      s->mtime = entry.mtime;
+      s->zone_short_id = entry.zone_short_id;
+      s->pg_ver = entry.pg_ver;
+      ldpp_dout(dpp, 20) << __func__ << "(): found obj in tombstone cache: obj=" << obj
+          << " mtime=" << s->mtime << " pgv=" << s->pg_ver << dendl;
+    } else {
+      s->mtime = real_time();
+    }
+    return 0;
+  }
+  if (r < 0)
+    return r;
+
+  s->exists = true;
+  s->has_attrs = true;
+  s->accounted_size = s->size;
+
+  auto iter = s->attrset.find(RGW_ATTR_ETAG);
+  if (iter != s->attrset.end()) {
+    /* get rid of extra null character at the end of the etag, as we used to store it like that */
+    bufferlist& bletag = iter->second;
+    if (bletag.length() > 0 && bletag[bletag.length() - 1] == '\0') {
+      bufferlist newbl;
+      bletag.splice(0, bletag.length() - 1, &newbl);
+      bletag = std::move(newbl);
+    }
+  }
+
+  iter = s->attrset.find(RGW_ATTR_COMPRESSION);
+  const bool compressed = (iter != s->attrset.end());
+  if (compressed) {
+    // use uncompressed size for accounted_size
+    try {
+      RGWCompressionInfo info;
+      auto p = iter->second.cbegin();
+      decode(info, p);
+      s->accounted_size = info.orig_size; 
+    } catch (buffer::error&) {
+      ldpp_dout(dpp, 0) << "ERROR: could not decode compression info for object: " << obj << dendl;
+      return -EIO;
+    }
+  }
+
+  iter = s->attrset.find(RGW_ATTR_SHADOW_OBJ);
+  if (iter != s->attrset.end()) {
+    bufferlist bl = iter->second;
+    bufferlist::iterator it = bl.begin();
+    it.copy(bl.length(), s->shadow_obj);
+    s->shadow_obj[bl.length()] = '\0';
+  }
+  s->obj_tag = s->attrset[RGW_ATTR_ID_TAG];
+  auto ttiter = s->attrset.find(RGW_ATTR_TAIL_TAG);
+  if (ttiter != s->attrset.end()) {
+    s->tail_tag = s->attrset[RGW_ATTR_TAIL_TAG];
+  }
+
+  bufferlist manifest_bl = s->attrset[RGW_ATTR_MANIFEST];
+  if (manifest_bl.length()) {
+    auto miter = manifest_bl.cbegin();
+    try {
+      s->manifest.emplace();
+      decode(*s->manifest, miter);
+      s->manifest->set_head(bucket_info.placement_rule, obj, s->size); /* patch manifest to reflect the head we just read, some manifests might be
+                                             broken due to old bugs */
+      s->size = s->manifest->get_obj_size();
+      if (!compressed)
+        s->accounted_size = s->size;
+    } catch (buffer::error& err) {
+      ldpp_dout(dpp, 0) << "ERROR: couldn't decode manifest" << dendl;
+      return -EIO;
+    }
+    ldpp_dout(dpp, 10) << "manifest: total_size = " << s->manifest->get_obj_size() << dendl;
+    if (cct->_conf->subsys.should_gather<ceph_subsys_rgw, 20>() && \
+	s->manifest->has_explicit_objs()) {
+      RGWObjManifest::obj_iterator mi;
+      for (mi = s->manifest->obj_begin(dpp); mi != s->manifest->obj_end(dpp); ++mi) {
+        ldpp_dout(dpp, 20) << "manifest: ofs=" << mi.get_ofs() << " loc=" << mi.get_location().get_raw_obj(store) << dendl;
+      }
+    }
+
+    if (!s->obj_tag.length()) {
+      /*
+       * Uh oh, something's wrong, object with manifest should have tag. Let's
+       * create one out of the manifest, would be unique
+       */
+      generate_fake_tag(dpp, store, s->attrset, *s->manifest, manifest_bl, s->obj_tag);
+      s->fake_tag = true;
+    }
+  }
+  map<string, bufferlist>::iterator aiter = s->attrset.find(RGW_ATTR_PG_VER);
+  if (aiter != s->attrset.end()) {
+    bufferlist& pg_ver_bl = aiter->second;
+    if (pg_ver_bl.length()) {
+      auto pgbl = pg_ver_bl.cbegin();
+      try {
+        decode(s->pg_ver, pgbl);
+      } catch (buffer::error& err) {
+        ldpp_dout(dpp, 0) << "ERROR: couldn't decode pg ver attr for object " << s->obj << ", non-critical error, ignoring" << dendl;
+      }
+    }
+  }
+  aiter = s->attrset.find(RGW_ATTR_SOURCE_ZONE);
+  if (aiter != s->attrset.end()) {
+    bufferlist& zone_short_id_bl = aiter->second;
+    if (zone_short_id_bl.length()) {
+      auto zbl = zone_short_id_bl.cbegin();
+      try {
+        decode(s->zone_short_id, zbl);
+      } catch (buffer::error& err) {
+        ldpp_dout(dpp, 0) << "ERROR: couldn't decode zone short id attr for object " << s->obj << ", non-critical error, ignoring" << dendl;
+      }
+    }
+  }
+  if (s->obj_tag.length()) {
+    ldpp_dout(dpp, 20) << "get_obj_state: setting s->obj_tag to " << s->obj_tag.c_str() << dendl;
+  } else {
+    ldpp_dout(dpp, 20) << "get_obj_state: s->obj_tag was set empty" << dendl;
+  }
+
+  /* an object might not be olh yet, but could have olh id tag, so we should set it anyway if
+   * it exist, and not only if is_olh() returns true
+   */
+  iter = s->attrset.find(RGW_ATTR_OLH_ID_TAG);
+  if (iter != s->attrset.end()) {
+    s->olh_tag = iter->second;
+  }
+
+  if (is_olh(s->attrset)) {
+    s->is_olh = true;
+
+    ldpp_dout(dpp, 20) << __func__ << ": setting s->olh_tag to " << string(s->olh_tag.c_str(), s->olh_tag.length()) << dendl;
+
+    if (need_follow_olh) {
+      return get_olh_target_state(dpp, *rctx, bucket_info, obj, s, state, y);
+    } else if (obj.key.have_null_instance() && !s->manifest) {
+      // read null version, and the head object only have olh info
+      s->exists = false;
+      return -ENOENT;
+    }
+  }
+
+  return 0;                  
+}
+
 int RGWRados::get_obj_state_impl(const DoutPrefixProvider *dpp, RGWObjectCtx *rctx, const RGWBucketInfo& bucket_info, const rgw_obj& obj,
                                  RGWObjState **state, bool follow_olh, optional_yield y, bool assume_noent)
 {
@@ -5677,6 +5855,18 @@ int RGWRados::get_obj_state(const DoutPrefixProvider *dpp, RGWObjectCtx *rctx, c
   return ret;
 }
 
+int RGWRados::get_obj_state(const DoutPrefixProvider *dpp, RGWObjectCtx *rctx, const RGWBucketInfo& bucket_info, const rgw_obj& obj, RGWObjState **state,
+                            bool follow_olh, optional_yield y, bool assume_noent, bool skip_osd_cache)
+{
+  int ret;
+
+  do {
+    ret = get_obj_state_impl(dpp, rctx, bucket_info, obj, state, follow_olh, y, assume_noent, skip_osd_cache);
+  } while (ret == -EAGAIN);
+
+  return ret;
+}
+
 int RGWRados::Object::get_manifest(const DoutPrefixProvider *dpp, RGWObjManifest **pmanifest, optional_yield y)
 {
   RGWObjState *astate;
@@ -5815,7 +6005,7 @@ int RGWRados::append_atomic_test(const DoutPrefixProvider *dpp,
 
 int RGWRados::Object::get_state(const DoutPrefixProvider *dpp, RGWObjState **pstate, bool follow_olh, optional_yield y, bool assume_noent)
 {
-  return store->get_obj_state(dpp, &ctx, bucket_info, obj, pstate, follow_olh, y, assume_noent);
+  return store->get_obj_state(dpp, &ctx, bucket_info, obj, pstate, follow_olh, y, assume_noent, true);
 }
 
 void RGWRados::Object::invalidate_state()
@@ -6527,17 +6717,17 @@ int get_obj_data::flush(rgw::AioResultList&& results) {
 static int _get_obj_iterate_cb(const DoutPrefixProvider *dpp,
                                const rgw_raw_obj& read_obj, off_t obj_ofs,
                                off_t read_ofs, off_t len, bool is_head_obj,
-                               RGWObjState *astate, void *arg)
+                               RGWObjState *astate, void *arg, bool skip_osd_cache)
 {
   struct get_obj_data* d = static_cast<struct get_obj_data*>(arg);
   return d->rgwrados->get_obj_iterate_cb(dpp, read_obj, obj_ofs, read_ofs, len,
-                                      is_head_obj, astate, arg);
+                                      is_head_obj, astate, arg, skip_osd_cache);
 }
 
 int RGWRados::get_obj_iterate_cb(const DoutPrefixProvider *dpp,
                                  const rgw_raw_obj& read_obj, off_t obj_ofs,
                                  off_t read_ofs, off_t len, bool is_head_obj,
-                                 RGWObjState *astate, void *arg)
+                                 RGWObjState *astate, void *arg, bool skip_osd_cache)
 {
   ObjectReadOperation op;
   struct get_obj_data* d = static_cast<struct get_obj_data*>(arg);
@@ -6575,7 +6765,10 @@ int RGWRados::get_obj_iterate_cb(const DoutPrefixProvider *dpp,
 
   ldpp_dout(dpp, 20) << "rados->get_obj_iterate_cb oid=" << read_obj.oid << " obj-ofs=" << obj_ofs << " read_ofs=" << read_ofs << " len=" << len << dendl;
   op.read(read_ofs, len, nullptr, nullptr);
-
+  if (g_conf().get_val<bool>("rgw_read_bypass_osd_cache") && skip_osd_cache) {
+    dout(5) << " oid=" << read_obj.oid << " skip objectstore cache " << dendl;
+    op.set_op_flags2(LIBRADOS_OP_FLAG_FADVISE_NOCACHE);
+  }
   const uint64_t cost = len;
   const uint64_t id = obj_ofs; // use logical object offset for sorting replies
 
@@ -6597,7 +6790,30 @@ int RGWRados::Object::Read::iterate(const DoutPrefixProvider *dpp, int64_t ofs, 
   get_obj_data data(store, cb, &*aio, ofs, y);
 
   int r = store->iterate_obj(dpp, obj_ctx, source->get_bucket_info(), state.obj,
-                             ofs, end, chunk_size, _get_obj_iterate_cb, &data, y);
+                             ofs, end, chunk_size, _get_obj_iterate_cb, &data, y, true);
+  if (r < 0) {
+    ldpp_dout(dpp, 0) << "iterate_obj() failed with " << r << dendl;
+    data.cancel(); // drain completions without writing back to client
+    return r;
+  }
+
+  return data.drain();
+}
+
+int RGWRados::Object::Read::iterate(const DoutPrefixProvider *dpp, int64_t ofs, int64_t end, RGWGetDataCB *cb,
+                                    optional_yield y, bool skip_osd_cache)
+{
+  RGWRados *store = source->get_store();
+  CephContext *cct = store->ctx();
+  RGWObjectCtx& obj_ctx = source->get_ctx();
+  const uint64_t chunk_size = cct->_conf->rgw_get_obj_max_req_size;
+  const uint64_t window_size = cct->_conf->rgw_get_obj_window_size;
+
+  auto aio = rgw::make_throttle(window_size, y);
+  get_obj_data data(store, cb, &*aio, ofs, y);
+
+  int r = store->iterate_obj(dpp, obj_ctx, source->get_bucket_info(), state.obj,
+                             ofs, end, chunk_size, _get_obj_iterate_cb, &data, y, skip_osd_cache);
   if (r < 0) {
     ldpp_dout(dpp, 0) << "iterate_obj() failed with " << r << dendl;
     data.cancel(); // drain completions without writing back to client
@@ -6610,7 +6826,7 @@ int RGWRados::Object::Read::iterate(const DoutPrefixProvider *dpp, int64_t ofs, 
 int RGWRados::iterate_obj(const DoutPrefixProvider *dpp, RGWObjectCtx& obj_ctx,
                           const RGWBucketInfo& bucket_info, const rgw_obj& obj,
                           off_t ofs, off_t end, uint64_t max_chunk_size,
-                          iterate_obj_cb cb, void *arg, optional_yield y)
+                          iterate_obj_cb cb, void *arg, optional_yield y, bool skip_osd_cache)
 {
   rgw_raw_obj head_obj;
   rgw_raw_obj read_obj;
@@ -6621,7 +6837,7 @@ int RGWRados::iterate_obj(const DoutPrefixProvider *dpp, RGWObjectCtx& obj_ctx,
 
   obj_to_raw(bucket_info.placement_rule, obj, &head_obj);
 
-  int r = get_obj_state(dpp, &obj_ctx, bucket_info, obj, &astate, false, y);
+  int r = get_obj_state(dpp, &obj_ctx, bucket_info, obj, &astate, false, y,  false, skip_osd_cache);
   if (r < 0) {
     return r;
   }
@@ -6651,7 +6867,7 @@ int RGWRados::iterate_obj(const DoutPrefixProvider *dpp, RGWObjectCtx& obj_ctx,
         }
 
         reading_from_head = (read_obj == head_obj);
-        r = cb(dpp, read_obj, ofs, read_ofs, read_len, reading_from_head, astate, arg);
+        r = cb(dpp, read_obj, ofs, read_ofs, read_len, reading_from_head, astate, arg, skip_osd_cache);
 	if (r < 0) {
 	  return r;
         }
@@ -6665,7 +6881,7 @@ int RGWRados::iterate_obj(const DoutPrefixProvider *dpp, RGWObjectCtx& obj_ctx,
       read_obj = head_obj;
       uint64_t read_len = std::min(len, max_chunk_size);
 
-      r = cb(dpp, read_obj, ofs, ofs, read_len, reading_from_head, astate, arg);
+      r = cb(dpp, read_obj, ofs, ofs, read_len, reading_from_head, astate, arg, skip_osd_cache);
       if (r < 0) {
 	return r;
       }
@@ -7688,6 +7904,58 @@ int RGWRados::follow_olh(const DoutPrefixProvider *dpp, const RGWBucketInfo& buc
   }
 
   *target = olh.target;
+
+  return 0;
+}
+
+int RGWRados::raw_obj_stat(const DoutPrefixProvider *dpp,
+                           rgw_raw_obj& obj, uint64_t *psize, real_time *pmtime, uint64_t *epoch,
+                           map<string, bufferlist> *attrs, bufferlist *first_chunk,
+                           RGWObjVersionTracker *objv_tracker, optional_yield y, bool skip_osd_cache)
+{
+  rgw_rados_ref ref;
+  int r = get_raw_obj_ref(dpp, obj, &ref);
+  if (r < 0) {
+    return r;
+  }
+
+  map<string, bufferlist> unfiltered_attrset;
+  uint64_t size = 0;
+  struct timespec mtime_ts;
+
+  ObjectReadOperation op;
+  if (objv_tracker) {
+    objv_tracker->prepare_op_for_read(&op);
+  }
+  if (attrs) {
+    op.getxattrs(&unfiltered_attrset, NULL);
+  }
+  if (psize || pmtime) {
+    op.stat2(&size, &mtime_ts, NULL);
+  }
+  if (first_chunk) {
+    op.read(0, cct->_conf->rgw_max_chunk_size, first_chunk, NULL);
+    if (g_conf().get_val<bool>("rgw_read_bypass_osd_cache") && skip_osd_cache) {
+      op.set_op_flags2(LIBRADOS_OP_FLAG_FADVISE_NOCACHE);
+    }
+  }
+  bufferlist outbl;
+  r = rgw_rados_operate(dpp, ref.pool.ioctx(), ref.obj.oid, &op, &outbl, null_yield);
+
+  if (epoch) {
+    *epoch = ref.pool.ioctx().get_last_version();
+  }
+
+  if (r < 0)
+    return r;
+
+  if (psize)
+    *psize = size;
+  if (pmtime)
+    *pmtime = ceph::real_clock::from_timespec(mtime_ts);
+  if (attrs) {
+    rgw_filter_attrset(unfiltered_attrset, RGW_ATTR_PREFIX, attrs);
+  }
 
   return 0;
 }
