@@ -584,8 +584,63 @@ void RGWSelectObj_ObjStore_S3::execute(optional_yield y)
     }
   } else {
     //CSV processing
-    RGWGetObj::execute_with_cache(y);
+    // RGWGetObj::execute_with_cache(y);
+    pushdown_s3select(y);
   }
+}
+
+void RGWSelectObj_ObjStore_S3::pushdown_s3select(optional_yield y) {
+  bufferlist bl;
+  gc_invalidate_time = ceph_clock_now();
+  gc_invalidate_time += (s->cct->_conf->rgw_gc_obj_min_wait / 2);
+  RGWGetObj_CB cb(this);
+  RGWGetObj_Filter* filter = (RGWGetObj_Filter *)&cb;
+
+  std::unique_ptr<RGWGetObj_Filter> decrypt;
+
+  std::unique_ptr<rgw::sal::Object::ReadOp> read_op(s->object->get_read_op(s->obj_ctx));
+  int64_t ofs_x = 0;
+  int64_t end_x = s->cct->_conf->rgw_get_obj_max_req_size;
+
+  op_ret = get_params(y);
+  if (op_ret < 0)
+    goto done_err;
+
+  op_ret = init_common();
+  if (op_ret < 0)
+    goto done_err;
+
+  read_op->params.mod_ptr = mod_ptr;
+  read_op->params.unmod_ptr = unmod_ptr;
+  read_op->params.high_precision_time = s->system_request; /* system request need to use high precision time */
+  read_op->params.mod_zone_id = mod_zone_id;
+  read_op->params.mod_pg_ver = mod_pg_ver;
+  read_op->params.if_match = if_match;
+  read_op->params.if_nomatch = if_nomatch;
+  read_op->params.lastmod = &lastmod;
+
+  op_ret = read_op->prepare(s->yield, this);
+  if (op_ret < 0)
+    goto done_err;
+  s->obj_size = s->object->get_obj_size();
+  attrs = s->object->get_attrs();
+  
+  op_ret = read_op->pushdown(this, ofs_x, end_x, filter, s->yield, m_sql_query);
+  if (op_ret >= 0)
+	      op_ret = filter->flush();
+
+      if (op_ret < 0) {
+	          goto done_err;
+		    }
+
+        op_ret = send_response_data(bl, 0, 0);
+	  if (op_ret < 0) {
+		      goto done_err;
+		        }
+  return;
+
+done_err:
+  send_response_data_error(y);
 }
 
 int RGWSelectObj_ObjStore_S3::parquet_processing(bufferlist& bl, off_t ofs, off_t len)
@@ -661,6 +716,43 @@ int RGWSelectObj_ObjStore_S3::csv_processing(bufferlist& bl, off_t ofs, off_t le
 
 int RGWSelectObj_ObjStore_S3::send_response_data(bufferlist& bl, off_t ofs, off_t len)
 {
+  uint32_t length_post_processing;
+  
+  if (!m_aws_response_handler.is_set()) {
+    m_aws_response_handler.set(s, this);
+  }
+  m_aws_response_handler.init_response();
+  m_aws_response_handler.init_success_response();
+  //query is correct(syntax), processing is starting.
+  m_aws_response_handler.get_sql_result().append(bl.to_str());
+  length_post_processing = (m_aws_response_handler.get_sql_result()).size();
+  m_aws_response_handler.update_total_bytes_returned(length_post_processing);
+  m_aws_response_handler.update_processed_size(s->obj_size);
+  if (chunk_number == 0) {
+    //success flow
+    if (op_ret < 0) {
+      set_req_state_err(s, op_ret);
+    }
+    dump_errno(s);
+    // Explicitly use chunked transfer encoding so that we can stream the result
+    // to the user without having to wait for the full length of it.
+    end_header(s, this, "application/xml", CHUNKED_TRANSFER_ENCODING);
+  }
+  chunk_number++;
+  m_aws_response_handler.send_success_response();
+  if (enable_progress == true) {
+    m_aws_response_handler.init_progress_response();
+    m_aws_response_handler.send_progress_response();
+  }
+  m_aws_response_handler.init_stats_response();
+  m_aws_response_handler.send_stats_response();
+  m_aws_response_handler.init_end_response();
+  return 0;
+}
+
+/*
+int RGWSelectObj_ObjStore_S3::send_response_data(bufferlist& bl, off_t ofs, off_t len)
+{
   if (!m_aws_response_handler.is_set()) {
     m_aws_response_handler.set(s, this);
   }
@@ -672,4 +764,4 @@ int RGWSelectObj_ObjStore_S3::send_response_data(bufferlist& bl, off_t ofs, off_
   }
   return csv_processing(bl,ofs,len);
 }
-
+*/

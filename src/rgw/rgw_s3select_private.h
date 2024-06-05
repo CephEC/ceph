@@ -201,13 +201,12 @@ public:
   virtual int send_response_data(bufferlist& bl, off_t ofs, off_t len) override;
 
   virtual int get_params(optional_yield y) override;
-
+  bool prefetch_data() override { return false; }
   virtual void execute(optional_yield) override;
 
 private:
-
   int csv_processing(bufferlist& bl, off_t ofs, off_t len);
-
+  void pushdown_s3select(optional_yield y);
   int parquet_processing(bufferlist& bl, off_t ofs, off_t len);
 
   int run_s3select(const char* query, const char* input, size_t input_length);

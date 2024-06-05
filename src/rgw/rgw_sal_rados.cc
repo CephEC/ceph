@@ -1930,6 +1930,10 @@ int RadosObject::RadosReadOp::iterate(const DoutPrefixProvider* dpp, int64_t ofs
   return parent_op.iterate(dpp, ofs, end, cb, y, skip_osd_cache);
 }
 
+int RadosObject::RadosReadOp::pushdown(const DoutPrefixProvider* dpp, int64_t ofs, int64_t end, RGWGetDataCB* cb, optional_yield y, std::string sql) {
+  return parent_op.pushdown(dpp, ofs, end, cb, y, sql);
+}
+
 int RadosObject::swift_versioning_restore(RGWObjectCtx* obj_ctx,
 					     bool& restored,
 					     const DoutPrefixProvider* dpp)

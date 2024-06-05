@@ -79,7 +79,7 @@ options:
     RGW object. When writing an object RGW will send multiple chunks to RADOS. The
     total size of the writes does not exceed the window size. The window size may
     be adjusted dynamically in order to better utilize the pipe.
-  default: 16_M
+  default: 20_M
   services:
   - rgw
   see_also:
@@ -1770,7 +1770,7 @@ options:
   level: advanced
   desc: RGW object read window size
   long_desc: The window size in bytes for a single object read request
-  default: 16_M
+  default: 20_M
   services:
   - rgw
   with_legacy: true

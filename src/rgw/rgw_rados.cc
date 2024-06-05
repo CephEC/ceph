@@ -5512,7 +5512,7 @@ int RGWRados::get_obj_state_impl(const DoutPrefixProvider *dpp, RGWObjectCtx *rc
   int r = -ENOENT;
 
   if (!assume_noent) {
-    r = RGWRados::raw_obj_stat(dpp, raw_obj, &s->size, &s->mtime, &s->epoch, &s->attrset, (s->prefetch_data ? &s->data : NULL), NULL, y, skip_osd_cache);
+    r = RGWRados::raw_obj_stat(dpp, raw_obj, &s->size, &s->mtime, &s->epoch, &s->attrset, NULL, NULL, y, skip_osd_cache);
   }
 
   if (r == -ENOENT) {
@@ -5691,7 +5691,7 @@ int RGWRados::get_obj_state_impl(const DoutPrefixProvider *dpp, RGWObjectCtx *rc
   int r = -ENOENT;
 
   if (!assume_noent) {
-    r = RGWRados::raw_obj_stat(dpp, raw_obj, &s->size, &s->mtime, &s->epoch, &s->attrset, (s->prefetch_data ? &s->data : NULL), NULL, y);
+    r = RGWRados::raw_obj_stat(dpp, raw_obj, &s->size, &s->mtime, &s->epoch, &s->attrset, NULL, NULL, y);
   }
 
   if (r == -ENOENT) {
@@ -6777,6 +6777,28 @@ int RGWRados::get_obj_iterate_cb(const DoutPrefixProvider *dpp,
   return d->flush(std::move(completed));
 }
 
+int RGWRados::Object::Read::pushdown(const DoutPrefixProvider *dpp, int64_t ofs, int64_t end, RGWGetDataCB *cb, 
+                                    optional_yield y, std::string sql)
+{
+  RGWRados *store = source->get_store();
+  CephContext *cct = store->ctx();
+  RGWObjectCtx& obj_ctx = source->get_ctx();
+  const uint64_t chunk_size = cct->_conf->rgw_get_obj_max_req_size;
+  const uint64_t window_size = cct->_conf->rgw_get_obj_window_size;
+
+  auto aio = rgw::make_throttle(window_size, y);
+  get_obj_data data(store, cb, &*aio, ofs, y);
+  int r = store->pushdown_obj(dpp, obj_ctx, source->get_bucket_info(), state.obj,
+                             ofs, end, chunk_size, &data, y, sql);
+  if (r < 0) {
+    ldpp_dout(dpp, 0) << "pushdown_obj() failed with " << r << dendl;
+    data.cancel(); // drain completions without writing back to client
+    return r;
+  }
+
+  return data.drain();
+}
+
 int RGWRados::Object::Read::iterate(const DoutPrefixProvider *dpp, int64_t ofs, int64_t end, RGWGetDataCB *cb,
                                     optional_yield y)
 {
@@ -6892,6 +6914,40 @@ int RGWRados::iterate_obj(const DoutPrefixProvider *dpp, RGWObjectCtx& obj_ctx,
   }
 
   return 0;
+}
+
+int RGWRados::pushdown_obj(const DoutPrefixProvider *dpp, RGWObjectCtx& obj_ctx,
+                          const RGWBucketInfo& bucket_info, const rgw_obj& obj,
+                          off_t ofs, off_t end, uint64_t max_chunk_size, void *arg, optional_yield y, std::string sql)
+{
+  rgw_raw_obj head_obj;
+  rgw_raw_obj read_obj;
+  RGWObjState *astate = NULL;
+  struct get_obj_data* d = static_cast<struct get_obj_data*>(arg);
+
+  obj_to_raw(bucket_info.placement_rule, obj, &head_obj);
+  
+  int r = get_obj_state(dpp, &obj_ctx, bucket_info, obj, &astate, false, y,  false, false);
+  if (r < 0) {
+    return r;
+  }
+  read_obj = head_obj;
+  auto rados_obj = d->rgwrados->svc.rados->obj(read_obj);
+  r = rados_obj.open(dpp);
+  if (r < 0) {
+    ldpp_dout(dpp, 4) << "failed to open rados context for " << read_obj << dendl;
+    return r;
+  }
+  ObjectReadOperation op;
+  bufferlist inbl;
+  ENCODE_START(1, 1, inbl);
+  encode(sql, inbl);
+  ENCODE_FINISH(inbl);
+  op.exec("select", "s3_select", inbl);
+  const uint64_t cost = end - ofs;
+  const uint64_t id = ofs;
+  auto completed = d->aio->get(rados_obj, rgw::Aio::librados_op(std::move(op), d->yield), cost, id);
+  return d->flush(std::move(completed));
 }
 
 int RGWRados::obj_operate(const DoutPrefixProvider *dpp, const RGWBucketInfo& bucket_info, const rgw_obj& obj, ObjectWriteOperation *op)

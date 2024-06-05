@@ -21,6 +21,16 @@ set_target_properties(cls_hello PROPERTIES
   CXX_VISIBILITY_PRESET hidden)
 install(TARGETS cls_hello DESTINATION ${cls_dir})
 
+# cls_select
+set(cls_select_srcs select/cls_select.cc)
+add_library(cls_select SHARED ${cls_select_srcs})
+set_target_properties(cls_select PROPERTIES
+  VERSION "1.0.0"
+  SOVERSION "1"
+  INSTALL_RPATH ""
+  CXX_VISIBILITY_PRESET hidden)
+install(TARGETS cls_select DESTINATION ${cls_dir})
+
 # cls_numops
 set(cls_numops_srcs numops/cls_numops.cc)
 add_library(cls_numops SHARED ${cls_numops_srcs})
