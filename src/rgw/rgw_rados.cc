@@ -6778,7 +6778,7 @@ int RGWRados::get_obj_iterate_cb(const DoutPrefixProvider *dpp,
 }
 
 int RGWRados::Object::Read::pushdown(const DoutPrefixProvider *dpp, int64_t ofs, int64_t end, RGWGetDataCB *cb, 
-                                    optional_yield y, std::string sql)
+                                    optional_yield y, std::string sql, bool cache)
 {
   RGWRados *store = source->get_store();
   CephContext *cct = store->ctx();
@@ -6789,7 +6789,7 @@ int RGWRados::Object::Read::pushdown(const DoutPrefixProvider *dpp, int64_t ofs,
   auto aio = rgw::make_throttle(window_size, y);
   get_obj_data data(store, cb, &*aio, ofs, y);
   int r = store->pushdown_obj(dpp, obj_ctx, source->get_bucket_info(), state.obj,
-                             ofs, end, chunk_size, &data, y, sql);
+                             ofs, end, chunk_size, &data, y, sql, cache);
   if (r < 0) {
     ldpp_dout(dpp, 0) << "pushdown_obj() failed with " << r << dendl;
     data.cancel(); // drain completions without writing back to client
@@ -6918,7 +6918,7 @@ int RGWRados::iterate_obj(const DoutPrefixProvider *dpp, RGWObjectCtx& obj_ctx,
 
 int RGWRados::pushdown_obj(const DoutPrefixProvider *dpp, RGWObjectCtx& obj_ctx,
                           const RGWBucketInfo& bucket_info, const rgw_obj& obj,
-                          off_t ofs, off_t end, uint64_t max_chunk_size, void *arg, optional_yield y, std::string sql)
+                          off_t ofs, off_t end, uint64_t max_chunk_size, void *arg, optional_yield y, std::string sql, bool cache)
 {
   rgw_raw_obj head_obj;
   rgw_raw_obj read_obj;
@@ -6940,7 +6940,11 @@ int RGWRados::pushdown_obj(const DoutPrefixProvider *dpp, RGWObjectCtx& obj_ctx,
   }
   ObjectReadOperation op;
   bufferlist inbl;
+  if (g_conf().get_val<bool>("rgw_read_bypass_osd_cache") == false) {
+  	cache = true;
+  }
   ENCODE_START(1, 1, inbl);
+  encode(cache, inbl);
   encode(sql, inbl);
   ENCODE_FINISH(inbl);
   op.exec("select", "s3_select", inbl);

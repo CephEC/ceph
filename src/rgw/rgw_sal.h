@@ -891,7 +891,7 @@ class Object {
        * chunk. */
       virtual int iterate(const DoutPrefixProvider* dpp, int64_t ofs, int64_t end, RGWGetDataCB* cb, optional_yield y) = 0;
 
-      virtual int pushdown(const DoutPrefixProvider* dpp, int64_t ofs, int64_t end, RGWGetDataCB* cb, optional_yield y, std::string sql) { return 0; }
+      virtual int pushdown(const DoutPrefixProvider* dpp, int64_t ofs, int64_t end, RGWGetDataCB* cb, optional_yield y, std::string sql, bool cache) { return 0; }
 
       virtual int iterate(const DoutPrefixProvider* dpp, int64_t ofs, int64_t end, RGWGetDataCB* cb, optional_yield y, bool skip_osd_cache) { return 0; };
       /** Get an attribute by name */

@@ -591,6 +591,7 @@ void RGWSelectObj_ObjStore_S3::execute(optional_yield y)
 
 void RGWSelectObj_ObjStore_S3::pushdown_s3select(optional_yield y) {
   bufferlist bl;
+  bool cache = true;
   gc_invalidate_time = ceph_clock_now();
   gc_invalidate_time += (s->cct->_conf->rgw_gc_obj_min_wait / 2);
   RGWGetObj_CB cb(this);
@@ -624,8 +625,12 @@ void RGWSelectObj_ObjStore_S3::pushdown_s3select(optional_yield y) {
     goto done_err;
   s->obj_size = s->object->get_obj_size();
   attrs = s->object->get_attrs();
-  
-  op_ret = read_op->pushdown(this, ofs_x, end_x, filter, s->yield, m_sql_query);
+
+  ldout(s->cct, 10) << "output_column_delimiter  " << output_column_delimiter << dendl;
+  if (output_column_delimiter.size() && output_column_delimiter == "NOCACHE") {
+    cache = false;
+  }
+  op_ret = read_op->pushdown(this, ofs_x, end_x, filter, s->yield, m_sql_query, cache);
   if (op_ret >= 0)
 	      op_ret = filter->flush();
 

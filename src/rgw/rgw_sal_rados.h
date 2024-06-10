@@ -107,7 +107,7 @@ class RadosObject : public Object {
 
     public:
       RadosReadOp(RadosObject *_source, RGWObjectCtx *_rctx);
-      virtual int pushdown(const DoutPrefixProvider* dpp, int64_t ofs, int64_t end, RGWGetDataCB* cb, optional_yield y, std::string sql) override;
+      virtual int pushdown(const DoutPrefixProvider* dpp, int64_t ofs, int64_t end, RGWGetDataCB* cb, optional_yield y, std::string sql, bool cache) override;
       virtual int prepare(optional_yield y, const DoutPrefixProvider* dpp) override;
       virtual int read(int64_t ofs, int64_t end, bufferlist& bl, optional_yield y, const DoutPrefixProvider* dpp) override;
       virtual int iterate(const DoutPrefixProvider* dpp, int64_t ofs, int64_t end, RGWGetDataCB* cb, optional_yield y) override;

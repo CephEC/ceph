@@ -757,7 +757,7 @@ public:
       } params;
 
       explicit Read(RGWRados::Object *_source) : source(_source) {}
-      int pushdown(const DoutPrefixProvider *dpp, int64_t ofs, int64_t end, RGWGetDataCB *cb, optional_yield y, std::string sql);
+      int pushdown(const DoutPrefixProvider *dpp, int64_t ofs, int64_t end, RGWGetDataCB *cb, optional_yield y, std::string sql, bool cache);
       int prepare(optional_yield y, const DoutPrefixProvider *dpp);
       static int range_to_ofs(uint64_t obj_size, int64_t &ofs, int64_t &end);
       int read(int64_t ofs, int64_t end, bufferlist& bl, optional_yield y, const DoutPrefixProvider *dpp);
@@ -1257,7 +1257,7 @@ public:
   int pushdown_obj(const DoutPrefixProvider *dpp, RGWObjectCtx& ctx, const RGWBucketInfo& bucket_info,
                   const rgw_obj& obj, off_t ofs, off_t end,
                   uint64_t max_chunk_size, void *arg,
-                  optional_yield y, std::string sql);
+                  optional_yield y, std::string sql, bool cache);
 
   int append_atomic_test(const DoutPrefixProvider *dpp, const RGWObjState* astate, librados::ObjectOperation& op);
 

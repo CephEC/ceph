@@ -116,9 +116,12 @@ static int run_s3select(const char* query, const char* input, size_t input_lengt
 static int s3_select(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
 { 
   std::string sql;
+  bool cache = true;
+  uint32_t flags = 0;
   try {
     auto iter = in->cbegin();
     DECODE_START(1, iter);
+    decode(cache, iter);
     decode(sql, iter);
     DECODE_FINISH(iter);
   } catch (ceph::buffer::error &e) {
@@ -129,7 +132,10 @@ static int s3_select(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
 	int r = cls_cxx_stat(hctx, &size, NULL);
   if (r < 0)
     return r;
-	r = cls_cxx_read(hctx, 0, size, &read_bl);
+  if (!cache) {
+    flags = CEPH_OSD_OP_FLAG_FADVISE_NOCACHE;
+  }
+  r = cls_cxx_read2(hctx, 0, size, &read_bl, flags);
   if (r < 0)
     return r;
   int status = run_s3select(sql.c_str(), read_bl.c_str(), read_bl.length(), out);
