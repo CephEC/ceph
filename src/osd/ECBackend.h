@@ -25,6 +25,7 @@
 #include "ECTransaction.h"
 #include "ExtentCache.h"
 #include "osd/ClassHandler.h"
+#include "osd/aggregate_ec/ECBackendIntegration.h"
 
 //forward declaration
 struct ECSubWrite;
@@ -247,18 +248,6 @@ private:
     const std::vector<int> &chunk_mapping = ec_impl->get_chunk_mapping();
     for (int i = 0; i < (int)ec_impl->get_data_chunk_count(); ++i) {
       int chunk = (int)chunk_mapping.size() > i ? chunk_mapping[i] : i;
-      want_to_read->insert(chunk);
-    }
-  }
-
-  void get_want_to_read_shards_aggregateEC(
-    std::set<int>& logical_data_chunk_set,
-    std::set<int> *want_to_read) {
-    const std::vector<int> &chunk_mapping = ec_impl->get_chunk_mapping();
-    for(std::set<int>::iterator iter=logical_data_chunk_set.begin();
-        iter != logical_data_chunk_set.end();
-        iter++){
-      int chunk = (int)chunk_mapping.size() > *iter ? chunk_mapping[*iter] : *iter;
       want_to_read->insert(chunk);
     }
   }
@@ -744,13 +733,14 @@ public:
 
 
   const ECUtil::stripe_info_t sinfo;
+  // All aggregateEC layout decisions injected into native EC read/write
+  // algorithms are exposed through this boundary.
+  ceph::aggregate_ec::ECBackendIntegration aggregate_ec;
   /// If modified, ensure that the ref is held until the update is applied
   SharedPtrRegistry<hobject_t, ECUtil::HashInfo> unstable_hashinfo_registry;
   ECUtil::HashInfoRef get_hash_info(const hobject_t &hoid, bool create = false,
 				    const std::map<std::string, ceph::buffer::ptr, std::less<>> *attr = NULL);
   
-  bool aggregate_enabled = false;
-  bool aggregateEC_redirect_read = false;
 public:
   ECBackend(
     PGBackend::Listener *pg,
@@ -763,10 +753,6 @@ public:
     bool _aggregate_enabled = false,
     bool _aggregateEC_redirect_read = false);
 
-  bool is_aggregate_enabled() { return aggregate_enabled; }
-
-  bool aggregateEC_redirect_read_enabled() { return aggregateEC_redirect_read; }
-  
   /// Returns to_read replicas sufficient to reconstruct want
   int get_min_avail_to_read_shards(
     const hobject_t &hoid,     ///< [in] object

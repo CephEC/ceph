@@ -54,6 +54,10 @@
 
 class OSD;
 class OSDService;
+namespace ceph { namespace aggregate_ec {
+class Aggregator;
+class PGIntegration;
+} }
 class OSDShard;
 class OSDShardPGSlot;
 
@@ -175,6 +179,8 @@ private:
 class PG : public DoutPrefixProvider, public PeeringState::PeeringListener {
   friend struct NamedState;
   friend class PeeringState;
+  friend class ceph::aggregate_ec::Aggregator;
+  friend class ceph::aggregate_ec::PGIntegration;
   friend class PgScrubber;
 
 public:

@@ -124,11 +124,13 @@ target_link_libraries(unittest_mclock_scheduler
   global osd dmclock os
 )
 
-# unittest_ec_aggregate
-add_executable(unittest_ec_aggregate
-  test_ec_aggregate.cc
-)
-add_ceph_unittest(unittest_ec_aggregate)
-target_link_libraries(unittest_ec_aggregate
-  global osd os
-)
+# unittest_aggregate_ec
+add_executable(unittest_aggregate_ec
+  ${CMAKE_SOURCE_DIR}/src/test/aggregate_ec/test_aggregate_ec.cc)
+target_include_directories(unittest_aggregate_ec PRIVATE
+  ${CMAKE_SOURCE_DIR}/src)
+add_ceph_unittest(unittest_aggregate_ec)
+target_link_libraries(unittest_aggregate_ec
+  osd global ceph-common)
+set_tests_properties(unittest_aggregate_ec PROPERTIES
+  ENVIRONMENT "CEPH_ARGS=--admin-socket=")

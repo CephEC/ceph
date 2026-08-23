@@ -141,9 +141,9 @@ int cls_cxx_remove(cls_method_context_t hctx)
   PrimaryLogPG::OpContext **pctx = (PrimaryLogPG::OpContext **)hctx;
   vector<OSDOp> ops(1);
   ops[0].op.op = CEPH_OSD_OP_DELETE;
-  if ((*pctx)->pg->is_aggregate_enabled()) {
+  if ((*pctx)->pg->get_aggregate_ec()->translate_class_ops(
+        (*pctx)->op, ops)) {
     // 适配s3cmd的delete逻辑
-    (*pctx)->pg->get_aggregate_buffer()->op_translate((*pctx)->op, ops);
     (*pctx)->ops->insert((*pctx)->ops->end(), ops.begin(), ops.end());
     return 0;
   }
@@ -286,9 +286,8 @@ int cls_cxx_getxattr(cls_method_context_t hctx, const char *name,
   op.op.op = CEPH_OSD_OP_GETXATTR;
   op.op.xattr.name_len = strlen(name);
   op.indata.append(name, op.op.xattr.name_len);
-  if ((*pctx)->pg->is_aggregate_enabled()) {
-    (*pctx)->pg->get_aggregate_buffer()->op_translate((*pctx)->op, nops);
-  }
+  (*pctx)->pg->get_aggregate_ec()->translate_class_ops(
+    (*pctx)->op, nops);
   r = (*pctx)->pg->do_osd_ops(*pctx, nops);
   if (r < 0)
     return r;
@@ -305,9 +304,8 @@ int cls_cxx_getxattrs(cls_method_context_t hctx, map<string, bufferlist> *attrse
   int r;
 
   op.op.op = CEPH_OSD_OP_GETXATTRS;
-  if ((*pctx)->pg->is_aggregate_enabled()) {
-    (*pctx)->pg->get_aggregate_buffer()->op_translate((*pctx)->op, nops);
-  }
+  (*pctx)->pg->get_aggregate_ec()->translate_class_ops(
+    (*pctx)->op, nops);
   r = (*pctx)->pg->do_osd_ops(*pctx, nops);
   if (r < 0)
     return r;
@@ -334,9 +332,8 @@ int cls_cxx_setxattr(cls_method_context_t hctx, const char *name,
   op.op.xattr.value_len = inbl->length();
   op.indata.append(name, op.op.xattr.name_len);
   op.indata.append(*inbl);
-  if ((*pctx)->pg->is_aggregate_enabled()) {
-    (*pctx)->pg->get_aggregate_buffer()->op_translate((*pctx)->op, nops);
-  }
+  (*pctx)->pg->get_aggregate_ec()->translate_class_ops(
+    (*pctx)->op, nops);
   r = (*pctx)->pg->do_osd_ops(*pctx, nops);
 
   return r;

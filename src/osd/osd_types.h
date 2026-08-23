@@ -6812,11 +6812,12 @@ public:
   void set_empty() { chunk_state = EMPTY; }
   void set_oid(hobject_t& _oid) { soid = _oid; }
   void set_mtime(utime_t _mtime)  { mtime = _mtime; }
-  utime_t get_mtine() { return mtime; }
+  utime_t get_mtime() const { return mtime; }
+  utime_t get_mtine() const { return get_mtime(); }
 
-   bool is_empty() { return chunk_state == EMPTY; }
-   bool is_valid() { return chunk_state == VALID; }
-   bool is_invalid() { return chunk_state == INVALID; }
+   bool is_empty() const { return chunk_state == EMPTY; }
+   bool is_valid() const { return chunk_state == VALID; }
+   bool is_invalid() const { return chunk_state == INVALID; }
    hobject_t get_oid() const { return soid; }
 
   void clear() {
@@ -6916,7 +6917,7 @@ public:
     chunk_is_full.resize(cap);
     chunk_is_full.assign(cap, false);
   }
-  uint64_t get_chunk_size() { return chunk_size; }
+  uint64_t get_chunk_size() const { return chunk_size; }
   bool full() const { return size == cap; }
   bool empty() const { return size == 0; }
   uint32_t get_size() const { return size; }
@@ -6924,13 +6925,16 @@ public:
   const spg_t get_spg() const { return pg_id; }
 
   void set_oid(const hobject_t& _oid) { volume_id = _oid; }
-  hobject_t get_oid() { return volume_id; }
+  hobject_t get_oid() const { return volume_id; }
+  const std::unordered_map<hobject_t, chunk_t>& get_chunk_map() const { return chunks; }
+  void set_spg(spg_t _pg_id) { pg_id = _pg_id; }
 
   const std::vector<bool>& get_chunk_bitmap() const { return chunk_is_full; }
   // 对象是否存在
   bool exist(hobject_t& soid) { return chunks.count(soid); }
   // 获取指定soid所在chunk（元数据）
   chunk_t& get_chunk(const hobject_t& soid) { return chunks[soid]; }
+  const chunk_t& get_chunk(const hobject_t& soid) const { return chunks.at(soid); }
   
   // 外层已经确认过_oid存在这个volume内
   bool is_only_valid_object(const hobject_t& _oid) {
@@ -6971,7 +6975,7 @@ public:
     return op;
   }
 
-  std::vector<const hobject_t*> get_all_soid() {
+  std::vector<const hobject_t*> get_all_soid() const {
     std::vector<const hobject_t*> out;
     out.reserve(cap);
     for (auto &kv : chunks) {
@@ -6980,7 +6984,7 @@ public:
     return out;
   }
 
-  std::vector<const chunk_t*> get_all_chunks() {
+  std::vector<const chunk_t*> get_all_chunks() const {
     std::vector<const chunk_t*> out;
     for(auto& kv: chunks) {
       out.push_back(&(kv.second));
@@ -7000,9 +7004,16 @@ public:
   // chunk加入volume（元数据）
   void add_chunk(const hobject_t& soid, const chunk_t& chunk) 
   {
-    chunks[soid] = chunk;
+    ceph_assert(chunk.get_seq() < cap);
+    auto existing = chunks.find(soid);
+    if (existing == chunks.end()) {
+      chunks.emplace(soid, chunk);
+      size++;
+    } else {
+      chunk_is_full[existing->second.get_seq()] = false;
+      existing->second = chunk;
+    }
     chunk_is_full[chunk.get_seq()] = true;
-    size++;
   }
   // 从volume中移除chunk（元数据）
   void remove_chunk(const hobject_t& soid) 
@@ -7011,8 +7022,8 @@ public:
     if(o != chunks.end()) {
       chunk_is_full[(*o).second.get_seq()] = false;
       chunks.erase(o); 
+      size--;
     }
-    size--;
   }
   // 指定soid的对象出现覆盖写，改变chunk内部数据的有效长度
   void update_chunk(hobject_t soid, uint64_t chunk_fill_offset)
@@ -7026,9 +7037,7 @@ public:
   void clear()
   {
     chunks.clear();
-    for (auto i: chunk_is_full) {
-      i = false;
-    }
+    chunk_is_full.assign(cap, false);
     size = 0;
   }
 
@@ -7056,13 +7065,8 @@ public:
     DECODE_FINISH(bl);
   }
   volume_t& operator=(const volume_t& rhs) {
-    this->chunks.clear();
-    for (auto chunk : rhs.chunks) {
-      this->chunks[chunk.first] = chunk.second;
-    }
-    for (uint32_t i = 0; i < cap; i++) {
-      this->chunk_is_full[i] = rhs.chunk_is_full[i];
-    }
+    this->chunks = rhs.chunks;
+    this->chunk_is_full = rhs.chunk_is_full;
     this->volume_id = rhs.volume_id;
     this->chunk_size = rhs.chunk_size;
     this->size = rhs.size;

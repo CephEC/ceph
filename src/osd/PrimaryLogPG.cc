@@ -26,7 +26,6 @@
 #include <boost/tuple/tuple.hpp>
 
 #include "PrimaryLogPG.h"
-#include "AggregateBuffer.h"
 
 #include "cls/cas/cls_cas_ops.h"
 #include "common/CDC.h"
@@ -252,8 +251,10 @@ struct OnCallComplete : public Context {
     PrimaryLogPG *pg,
     PrimaryLogPG::OpContext *ctx) : pg(pg), opcontext(ctx) {}
   void finish(int r) override {
-    pg->get_aggregate_buffer()->finish_cls(opcontext->obc->obs.oi.soid);
-    pg->get_aggregate_buffer()->purge_origin_obj(opcontext->op);
+    if (auto *aggregate_ec = pg->get_aggregate_ec()) {
+      aggregate_ec->finish_call(
+        opcontext->obc->obs.oi.soid, opcontext->op);
+    }
     opcontext->finish_call(pg);
   }
   ~OnCallComplete() override {}
@@ -490,10 +491,7 @@ void PrimaryLogPG::on_local_recover(
 	waiting_for_unreadable_object.erase(unreadable_object_entry);
       }
     }
-    if (!recovery_state.have_missing()) {
-      load_volume_attrs();
-      requeue_ops(waiting_for_all_object_recovery);
-    }
+    if (m_aggregate_ec) m_aggregate_ec->on_recovery_progress();
   } else {
     t->register_on_applied(
       new C_OSD_AppliedRecoveredObjectReplica(this));
@@ -544,10 +542,7 @@ void PrimaryLogPG::on_global_recover(
     requeue_ops(unreadable_object_entry->second);
     waiting_for_unreadable_object.erase(unreadable_object_entry);
   }
-  if (!recovery_state.have_missing()) {
-    load_volume_attrs();
-    requeue_ops(waiting_for_all_object_recovery);
-  }
+  if (m_aggregate_ec) m_aggregate_ec->on_recovery_progress();
   finish_degraded_object(soid);
 }
 
@@ -1313,12 +1308,9 @@ void PrimaryLogPG::do_pg_op(OpRequestRef op)
 	  break;
 	}
 
-  if (is_aggregate_enabled()) {
-    result = m_aggregate_buffer->objects_list(response, list_size);
-    dout(10) << "pgnls handle=" << response.handle << dendl;
+  if (m_aggregate_ec &&
+      m_aggregate_ec->list_objects(response, list_size, result)) {
     encode(response, osd_op.outdata);
-	  dout(10) << " pgnls result=" << result << " outdata.length()="
-		  << osd_op.outdata.length() << dendl;
     break;
   }
 
@@ -1793,18 +1785,22 @@ PrimaryLogPG::PrimaryLogPG(OSDService *o, OSDMapRef curmap,
     pgbackend->get_is_recoverable_predicate());
   snap_trimmer_machine.initiate();
 
-  m_aggregate_buffer = std::make_shared<AggregateBuffer>(o->cct, p, this);
+  const bool aggregate_enabled =
+    o->cct->_conf->enable_aggregateEC &&
+    _pool.info.type == pg_pool_t::TYPE_ERASURE;
+  m_aggregate_ec =
+    std::make_unique<ceph::aggregate_ec::PGIntegration>(
+      o->cct, p, o, this, aggregate_enabled);
   m_scrubber = make_unique<PrimaryLogScrub>(this);
-  enable_aggregateEC = 
-    (o->cct->_conf->enable_aggregateEC && _pool.info.type == pg_pool_t::TYPE_ERASURE);
-  dout(5) << "init primaryLogPG aggregate_enabled = " << enable_aggregateEC
-          << " conf->enable_aggregateEC = " << o-cct->_conf->enable_aggregateEC
+  dout(5) << "init primaryLogPG aggregate_enabled = " << aggregate_enabled
+          << " conf->enable_aggregateEC = " << o->cct->_conf->enable_aggregateEC
           << " _pool.info.type == pg_pool_t::TYPE_ERASURE =" << (_pool.info.type == pg_pool_t::TYPE_ERASURE) << dendl;
 }
 
 PrimaryLogPG::~PrimaryLogPG()
 {
   m_scrubber.reset();
+  m_aggregate_ec.reset();
 }
 
 void PrimaryLogPG::get_src_oloc(const object_t& oid, const object_locator_t& oloc, object_locator_t& src_oloc)
@@ -2016,17 +2012,9 @@ void PrimaryLogPG::do_request(
   }
 }
 
-void PrimaryLogPG::load_volume_attrs() 
+void PrimaryLogPG::load_volume_attrs()
 {
-  std::vector<bufferlist> volume_meta;
-  get_pgbackend()->load_volume_attrs(volume_meta);
-  for (auto &bp : volume_meta) {
-    auto meta_ptr = std::make_shared<volume_t>(get_pgbackend()->get_ec_data_chunk_count(),
-                                               get_pgid());
-    auto p = bp.cbegin();
-    decode(*meta_ptr, p);
-    m_aggregate_buffer->insert_to_meta_cache(meta_ptr);
-  }
+  if (m_aggregate_ec) m_aggregate_ec->reload_metadata();
 }
 
 /** reply_op_error
@@ -2034,15 +2022,11 @@ void PrimaryLogPG::load_volume_attrs()
 */
 void PrimaryLogPG::reply_op_error(OpRequestRef op, int err, eversion_t v, version_t uv,
 	std::vector<pg_log_op_return_item_t> op_returns) {
-  if (is_aggregate_enabled() && op->is_write_volume_op()) {
-    for (auto aggregated_op : m_aggregate_buffer->waiting_for_reply) {
-      osd->reply_op_error(aggregated_op, err, v, uv, op_returns);
-    }
-    m_aggregate_buffer->requeue_waiting_for_aggregate_op();
-    m_aggregate_buffer->clear();
-  } else {
-    osd->reply_op_error(op, err, v, uv, op_returns);
+  if (m_aggregate_ec &&
+      m_aggregate_ec->handle_error(op, err, v, uv, op_returns)) {
+    return;
   }
+  osd->reply_op_error(op, err, v, uv, op_returns);
 }
 
 /** do_op - do an op
@@ -2056,21 +2040,9 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
   // change anything that will break other reads on m (operator<<).
   MOSDOp *m = static_cast<MOSDOp*>(op->get_nonconst_req());
   ceph_assert(m->get_type() == CEPH_MSG_OSD_OP);
-  // lazy initialize
-  if (!m_aggregate_buffer->is_initialized() && 
-      is_aggregate_enabled() &&
-      is_primary()) {
-    uint64_t cap = get_pgbackend()->get_ec_data_chunk_count();
-    uint64_t chunk_size = get_pgbackend()->get_ec_stripe_chunk_size();
-    bool flush_timer_enabled = cct->_conf->osd_aggregate_flush_timer_enabled;
-    double time_out = cct->_conf->osd_aggregate_buffer_flush_timeout;
-    dout(5) << __func__ << " init aggregate buffer, cap = " << cap
-	    << " chunk_size = " << chunk_size
-	    << " flush_time_out = " << time_out << dendl;
-    load_volume_attrs();
-    m_aggregate_buffer->init(cap, chunk_size, flush_timer_enabled, time_out);
-  }
-  
+  // aggregateEC initialization is lazy because it depends on the EC backend.
+  if (m_aggregate_ec) m_aggregate_ec->initialize();
+
   dout(20) << __func__ << " op.payload_length = " << m->get_data().length() << dendl;
   for (auto &osd_op : m->ops) {
     dout(20) << __func__ << " ops payload_len = " << osd_op.op.payload_len << dendl;
@@ -2292,67 +2264,9 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
 	   << dendl;
 
   [[maybe_unused]] auto span = tracing::osd::tracer.add_span(__func__, op->osd_parent_span);
-  // -------------------------------------------------------------------------------
-  // 这里是分界线,在此之上的代码看到的是用户下发的rgw对象，在此之下代码看到的就只有volume对象
-  if (is_primary() &&
-      is_aggregate_enabled() && 
-      (!op->is_write_volume_op() && !op->is_aggregateEC_translated_op()) &&
-      op->get_reqid().name.is_client()) {
-    if (m_aggregate_buffer->need_aggregate_op(m)) {
-      // 聚合RGW对象
-      dout(10) << "write op " << op << " in buffer." << dendl;
-      int r = m_aggregate_buffer->write(op, m);
-      switch (r) {
-      case AGGREGATE_PENDING_REPLY:
-      case AGGREGATE_PENDING_OP:
-        dout(10) << "aggregate pending to reply " << dendl;
-        return;
-      case AGGREGATE_CONTINUE:
-        dout(10) << "op continue." << dendl;
-        break;
-      default:
-        dout(10) << "aggregate failed." << dendl;
-        reply_op_error(op, -EINVAL);
-        return;
-      }
-    } else if (m_aggregate_buffer->need_translate_op(m)) {
-      // 读，删除，元数据处理等请求都会进入转译
-      int r = m_aggregate_buffer->op_translate(op, m->ops);
-      if (r < 0) {
-        // 这里的r只可能是ENOENT,如果后续出现其他错误码,要同步修改错误处理逻辑
-        if (!recovery_state.have_missing()) {
-          reply_op_error(op, r);
-          return;
-        }
-        // primary OSD中还有未恢复的对象，其中可能包含本次待读取的对象
-        // 延迟等待恢复完毕后再次执行本次读请求
-        waiting_for_all_object_recovery.push_back(op);
-        return;
-      }
-      else if (r == AGGREGATE_REDIRECT &&
-               is_active() &&
-               is_clean() &&
-               m->get_retry_attempt() <= cct->_conf->aggregateEC_redirect_read_max_times) {
-        // 转译后的请求重定向到对应OSD 
-        // (只有在保证当前pg是primary且active+clean的状态才会走重定向的逻辑)
-        pg_shard_t shard;
-        int r = pgbackend->object_locate(m, shard);
-        // 如果确定数据在当前OSD上，那就不需要重定向
-        if (!r && shard != whoami_shard()) {
-          int flags = m->get_flags() & (CEPH_OSD_FLAG_ACK | CEPH_OSD_FLAG_ONDISK);
-          MOSDOpReply *reply = new MOSDOpReply(m, -EAGAIN, get_osdmap_epoch(),
-                                              flags, false, false);
-          request_redirect_t redir(m->get_object_locator(), m->get_hobj().oid.name, shard.osd, shard.shard);
-          reply->set_redirect(redir);
-          dout(10) << "redirect volume read request to osd(" << shard.osd << ")" << 
-            " redirect_request " << redir << dendl;
-          m->get_connection()->send_message(reply);
-          m_aggregate_buffer->purge_origin_obj(op);
-          return;
-        }
-      } // else {}
-    }
-  }
+  // aggregateEC boundary: after this hook, a logical request may have been
+  // consumed or rewritten as a physical volume request.
+  if (m_aggregate_ec && m_aggregate_ec->preprocess_client_op(op)) return;
   // ceph会把丢失的object整合成一个map,这里就是检索map判断本次操作的对象是否丢失了
   if (is_unreadable_object(head)) {
     if (!is_primary()) {
@@ -2389,7 +2303,6 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
     // 目标对象正在进行scrub操作(检查PG内对象的正确性，如果是副本池，那么就需要比对primary osd和replicate osd中的数据
     // (好像只是用计算hash的方式来比对？传输成本应该不高),需要将当前操作延迟一下
     // 如果是EC池呢？ 难道需要读回数据块再计算一轮EC块，然后两边校验吗？（成本是不是有点高）
-    // aggregateEC场景下，写场景只写入新对象而不修改旧对象,所以这个条件判断不用考虑
     if (m_scrubber->is_scrub_active() && m_scrubber->write_blocked_by_scrub(head)) {
       dout(20) << __func__ << ": waiting for scrub" << dendl;
       waiting_for_scrub.push_back(op);
@@ -2401,7 +2314,6 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
     }
 
     // 该对象正在进行快照的复制，所以需要等待快照完成
-    // aggregateEC场景下，写场景只写入新对象而不修改旧对象,所以这个条件判断不用考虑
     // blocked on snap?
     if (auto blocked_iter = objects_blocked_on_degraded_snap.find(head);
 	blocked_iter != std::end(objects_blocked_on_degraded_snap)) {
@@ -2501,10 +2413,8 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
   }
 
   // https://bean-li.github.io/ceph-objectcontext/
-  // aggregateEC中，对于每个client传入的对象，不会为它一一对应一个obc
-  // 而是为一个Volume对应一个obc。
-  // obc的一个主要作用就是完成对象的读写互斥
-  // obc在磁盘中以扩展属性的形式保存（待验证）
+  // aggregateEC preprocessing has already replaced the logical OID with the
+  // physical volume OID, so normal ObjectContext locking is volume-scoped.
   int r = find_object_context(
     oid, &obc, can_create,
     m->has_flag(CEPH_OSD_FLAG_MAP_SNAP_CLONE),
@@ -2610,7 +2520,6 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
   }
 
   // 比对obc中记录的对象元信息（pool,key,hash等）和本次op中记录的对象元信息
-  // aggregateEC:这块逻辑可能得删掉,obc针对的是volume,op中记录的是user rgw对象,两个内容肯定不一样
   // make sure locator is consistent
   object_locator_t oloc(obc->obs.oi.soid);
   if (m->get_object_locator() != oloc) {
@@ -2848,17 +2757,13 @@ void PrimaryLogPG::record_write_error(OpRequestRef op, const hobject_t &soid,
       ldpp_dout(pg, 20) << "finished " << __func__ << " r=" << r << dendl;
       auto m = op->get_req<MOSDOp>();
       MOSDOpReply *reply = orig_reply.detach();
-      if (pg->is_aggregate_enabled()) {
-        pg->get_aggregate_buffer()->purge_origin_obj(op);
+      if (auto *aggregate_ec = pg->get_aggregate_ec();
+          aggregate_ec &&
+          aggregate_ec->handle_write_error_reply(op, reply, true)) {
+        return;
       }
-      if (pg->is_aggregate_enabled() && pg->get_aggregate_buffer()->should_reply_buffered_op()) {
-        pg->get_aggregate_buffer()->send_reply(reply, true);
-        pg->get_aggregate_buffer()->requeue_waiting_for_aggregate_op();
-        pg->get_aggregate_buffer()->clear();
-      } else {
-        ldpp_dout(pg, 10) << " sending commit on " << *m << " " << reply << dendl;
-        pg->osd->send_message_osd_client(reply, m->get_connection());
-      }
+      ldpp_dout(pg, 10) << " sending commit on " << *m << " " << reply << dendl;
+      pg->osd->send_message_osd_client(reply, m->get_connection());
     }
   };
 
@@ -4491,7 +4396,7 @@ void PrimaryLogPG::execute_ctx(OpContext *ctx)
   recovery_state.update_trim_to();
 
   // verify that we are doing this in order?
-  if (!is_aggregate_enabled() &&
+  if ((!m_aggregate_ec || m_aggregate_ec->should_check_debug_op_order()) &&
       cct->_conf->osd_debug_op_order && m->get_source().is_client() &&
       !pool.info.is_tier() && !pool.info.has_tiers()) {
     map<client_t,ceph_tid_t>& cm = debug_op_order[obc->obs.oi.soid];
@@ -4546,17 +4451,11 @@ void PrimaryLogPG::execute_ctx(OpContext *ctx)
     reply->add_flags(CEPH_OSD_FLAG_ACK | CEPH_OSD_FLAG_ONDISK);
     dout(10) << " sending reply on " << *m << " " << reply << dendl;
   
-  if (is_aggregate_enabled()) {
-    // 写入和删除完成后都需要更新元数据
-    // 更新内存中的volume_meta_cache, volume_not_full, ec_cache
-    m_aggregate_buffer->update_cache(ctx->obc->obs.oi.soid, ctx->ops);
-    m_aggregate_buffer->purge_origin_obj(ctx->op);  // 请求已完成，重置origin_oid
-  }
-  if (is_aggregate_enabled() && m_aggregate_buffer->should_reply_buffered_op()) {
-    m_aggregate_buffer->send_reply(reply, ignore_out_data);
-  } else {
-    // 覆盖写还是走常规的回复流程
-    dout(10) << " sending reply to " << m->get_connection()->get_peer_addr() << dendl; 
+  bool aggregate_reply = m_aggregate_ec &&
+    m_aggregate_ec->handle_success_reply(
+      ctx->obc->obs.oi.soid, *ctx->ops, ctx->op, reply,
+      ignore_out_data);
+  if (!aggregate_reply) {
     osd->send_message_osd_client(reply, m->get_connection());
   }
 	ctx->sent_reply = true;
@@ -4565,9 +4464,8 @@ void PrimaryLogPG::execute_ctx(OpContext *ctx)
     });
   ctx->register_on_success(
     [ctx, this]() {
-      if (is_aggregate_enabled() 
-		      && ctx->op
-		      && ctx->op->is_write_volume_op()) {
+      if (m_aggregate_ec &&
+          m_aggregate_ec->handles_split_effects(ctx->op)) {
         dout(4) << " aggregate reply send" << dendl;
         do_osd_op_effects_split(ctx);   
       } else {
@@ -4580,10 +4478,8 @@ void PrimaryLogPG::execute_ctx(OpContext *ctx)
     });
   ctx->register_on_finish(
     [ctx, this]() {
-      if (is_aggregate_enabled() && ctx->op->is_write_volume_op()) {
-        m_aggregate_buffer->requeue_waiting_for_aggregate_op();
-        m_aggregate_buffer->clear();
-      }
+      if (m_aggregate_ec)
+        m_aggregate_ec->finish_context(ctx->obc->obs.oi.soid, ctx->op);
       delete ctx;
     });
 
@@ -6120,6 +6016,9 @@ int PrimaryLogPG::do_sparse_read(OpContext *ctx, OSDOp& osd_op) {
   uint64_t size = oi.size;
   uint64_t offset = op.extent.offset;
   uint64_t length = op.extent.length;
+  uint64_t response_offset = m_aggregate_ec
+    ? m_aggregate_ec->sparse_response_offset(ctx->op, offset)
+    : offset;
 
   // are we beyond truncate_size?
   if ((oi.truncate_seq < op.extent.truncate_seq) &&
@@ -6144,7 +6043,7 @@ int PrimaryLogPG::do_sparse_read(OpContext *ctx, OSDOp& osd_op) {
           boost::make_tuple(offset, length, op.flags),
           make_pair(
 	    &osd_op.outdata,
-	    new ToSparseReadResult(&osd_op.rval, &osd_op.outdata, offset,
+	    new ToSparseReadResult(&osd_op.rval, &osd_op.outdata, response_offset,
 				   &op.extent.length))));
       dout(10) << " async_read (was sparse_read) noted for " << soid << dendl;
 
@@ -6225,7 +6124,8 @@ int PrimaryLogPG::do_osd_ops(OpContext *ctx, vector<OSDOp>& ops)
     span = tracing::osd::tracer.add_span(__func__, ctx->op->osd_parent_span);
   }
   ctx->current_osd_subop_num = 0;
-  for (auto i = 0; i < ops.size(); ++i, ctx->current_osd_subop_num++, ctx->processed_subop_count++) {
+  for (std::size_t i = 0; i < ops.size();
+       ++i, ++ctx->current_osd_subop_num, ++ctx->processed_subop_count) {
     // rgw_obj_remove会在ops末尾添加Op，所以需要修改迭代的语法来避免内存错误
     OSDOp& osd_op = ops[i];
     ceph_osd_op& op = osd_op.op;
@@ -6319,7 +6219,7 @@ int PrimaryLogPG::do_osd_ops(OpContext *ctx, vector<OSDOp>& ops)
         // TODO(zhengfuyu): ctx->num_read num_write的相关处理?
         ctx->pending_async_calls.push_back(
           make_pair(boost::make_tuple(op.extent.offset, op.extent.length, op.flags),
-                    make_pair(m_aggregate_buffer->get_cls_ctx(soid),
+                    make_pair(m_aggregate_ec->get_cls_ctx(soid),
                               &osd_op)));
         dout(10) << " async_op_call noted for " << soid << dendl;
         ctx->op_finishers[ctx->current_osd_subop_num].reset(
@@ -6468,8 +6368,8 @@ int PrimaryLogPG::do_osd_ops(OpContext *ctx, vector<OSDOp>& ops)
     case CEPH_OSD_OP_STAT:
       // note: stat does not require RD
       {
-        // 在aggregateEC配置下，所以STAT命令会在do_op中被拦截，然后由AggregateBuffer负责处理
-        if (is_aggregate_enabled()) {
+        // aggregateEC returns the logical object's STAT during preprocessing.
+        if (m_aggregate_ec && m_aggregate_ec->handles_logical_stat()) {
           break;
         }
         tracepoint(osd, do_osd_op_pre_stat, soid.oid.name.c_str(), soid.snap.val);
@@ -6658,26 +6558,10 @@ int PrimaryLogPG::do_osd_ops(OpContext *ctx, vector<OSDOp>& ops)
 	  ctx->obc,
 	  &out);
         bufferlist bl;
-        if (is_aggregate_enabled()) {
-          map<string, bufferlist,less<>> real_out;
-          // 从所有volume扩展属性中找到指定rgw对象的扩展属性
-          std::string rgw_object_name;
-          ceph_assert(osd_op.op.xattr.name_len > 0);
-          auto bp = osd_op.indata.cbegin();
-          bp.copy(osd_op.op.xattr.name_len, rgw_object_name);
-          dout(5) << "CEPH_OSD_OP_GETXATTRS, after ret = " << out << dendl;
-          for (auto it = out.begin(); it != out.end(); it++) {
-            if (it->first.compare(0, rgw_object_name.length(), rgw_object_name) == 0) {
-              auto key_size = it->first.size();
-              auto key = it->first.substr(rgw_object_name.length() + 1, key_size);
-              real_out[key] = std::move(it->second);
-            }
-          }
-          dout(5) << "CEPH_OSD_OP_GETXATTRS, before ret = " << real_out << dendl;
-          encode(real_out, bl);
-        } else {
+        if (m_aggregate_ec)
+          m_aggregate_ec->encode_getxattrs_result(osd_op, out, bl);
+        else
           encode(out, bl);
-        }
 	ctx->delta_stats.num_rd_kb += shift_round_up(bl.length(), 10);
         ctx->delta_stats.num_rd++;
         osd_op.outdata.claim_append(bl);
@@ -9134,15 +9018,11 @@ void PrimaryLogPG::do_osd_op_effects(OpContext *ctx, const ConnectionRef& conn)
 
 void PrimaryLogPG::do_osd_op_effects_split(OpContext* ctx)
 {
-  auto& waiting = m_aggregate_buffer->waiting_for_reply;
-  for (auto iter = waiting.begin(); 
-		  iter != waiting.end(); 
-		  iter++){
-    do_osd_op_effects(
-		    ctx,
-		    ctx->op ? (*iter)->get_req()->get_connection() :
-		    ConnectionRef());
-  } 
+  auto requests =
+    m_aggregate_ec->buffered_requests(ctx->obc->obs.oi.soid);
+  for (const auto &request : requests) {
+    do_osd_op_effects(ctx, request->get_req()->get_connection());
+  }
 }
 
 hobject_t PrimaryLogPG::generate_temp_object(const hobject_t& target)
@@ -9418,7 +9298,7 @@ void PrimaryLogPG::complete_read_ctx(int result, OpContext *ctx)
   reply->set_result(result);
   reply->add_flags(CEPH_OSD_FLAG_ACK | CEPH_OSD_FLAG_ONDISK);
   osd->send_message_osd_client(reply, m->get_connection());
-  m_aggregate_buffer->purge_origin_obj(ctx->op);
+  if (m_aggregate_ec) m_aggregate_ec->finish_request(ctx->op);
   close_op_ctx(ctx);
 }
 
@@ -13131,10 +13011,12 @@ void PrimaryLogPG::apply_and_flush_repops(bool requeue)
     repop->on_success.clear();
 
     if (requeue) {
-      if (repop->op) {
-	dout(10) << " requeuing " << *repop->op->get_req() << dendl;
-	rq.push_back(repop->op);
-	repop->op = OpRequestRef();
+      bool aggregate_requeued = m_aggregate_ec &&
+        m_aggregate_ec->requeue_aborted_volume(repop->op, rq);
+      if (!aggregate_requeued && repop->op) {
+        dout(10) << " requeuing " << *repop->op->get_req() << dendl;
+        rq.push_back(repop->op);
+        repop->op = OpRequestRef();
       }
 
       // also requeue any dups, interleaved into position
@@ -13145,13 +13027,6 @@ void PrimaryLogPG::apply_and_flush_repops(bool requeue)
 	  rq.push_back(std::get<0>(i));
 	}
 	waiting_for_ondisk.erase(p);
-      }
-    }
-    if (is_aggregate_enabled() && m_aggregate_buffer->should_reply_buffered_op()) {
-      for (list<OpRequestRef>::reverse_iterator i = m_aggregate_buffer->waiting_for_reply.rbegin();
-          i != m_aggregate_buffer->waiting_for_reply.rend();
-          ++i) {
-        rq.push_back(*i);
       }
     }
 
@@ -13343,7 +13218,7 @@ void PrimaryLogPG::on_change(ObjectStore::Transaction &t)
   requeue_ops(waiting_for_flush);
   requeue_ops(waiting_for_active);
   requeue_ops(waiting_for_readable);
-  requeue_ops(waiting_for_all_object_recovery);
+  if (m_aggregate_ec) m_aggregate_ec->on_pg_change();
 
   vector<ceph_tid_t> tids;
   cancel_copy_ops(is_primary(), &tids);
@@ -13515,10 +13390,7 @@ void PrimaryLogPG::cancel_pull(const hobject_t &soid)
     requeue_ops(waiting_for_unreadable_object[soid]);
     waiting_for_unreadable_object.erase(soid);
   }
-  if (!recovery_state.have_missing()) {
-    load_volume_attrs();
-    requeue_ops(waiting_for_all_object_recovery);
-  }
+  if (m_aggregate_ec) m_aggregate_ec->on_recovery_progress();
   if (is_missing_object(soid))
     recovery_state.set_last_requested(0);
   finish_degraded_object(soid);
@@ -13559,8 +13431,7 @@ bool PrimaryLogPG::start_recovery_ops(
 
   if (!recovery_state.have_missing()) {
     recovery_state.local_recovery_complete();
-    load_volume_attrs();
-    requeue_ops(waiting_for_all_object_recovery);
+    if (m_aggregate_ec) m_aggregate_ec->on_recovery_progress();
   }
 
   if (!missing.have_missing() || // Primary does not have missing

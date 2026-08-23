@@ -32,13 +32,12 @@
 #include "PGTransaction.h"
 #include "cls/cas/cls_cas_ops.h"
 
-#include "AggregateBuffer.h"
+#include "osd/aggregate_ec/PGIntegration.h"
 
 class CopyFromCallback;
 class PromoteCallback;
 struct RefCountCallback;
 
-class AggregateBuffer;
 class PrimaryLogPG;
 class PGLSFilter;
 class HitSet;
@@ -62,6 +61,7 @@ class PrimaryLogPG : public PG, public PGBackend::Listener {
   friend class OSD;
   friend class Watch;
   friend class PrimaryLogScrub;
+  friend class ceph::aggregate_ec::PGIntegration;
 
 public:
   MEMPOOL_CLASS_HELPERS();
@@ -200,7 +200,6 @@ public:
   friend class PromoteCallback;
   friend struct PromoteFinisher;
   friend struct C_gather;
-  friend class AggregateBuffer;
   
   struct ProxyReadOp {
     OpRequestRef op;
@@ -1499,11 +1498,10 @@ public:
     return info.pgid.hash_to_shard(osd->get_num_shards());
   }
 
-  AggregateBuffer* get_aggregate_buffer() {
-    return m_aggregate_buffer.get();
-  }
 
-  bool is_aggregate_enabled() { return enable_aggregateEC && pool.info.is_erasure(); }
+  ceph::aggregate_ec::PGIntegration* get_aggregate_ec() {
+    return m_aggregate_ec.get();
+  }
 
   void do_request(
     OpRequestRef& op,
@@ -1950,17 +1948,9 @@ public:
 private:
   DynamicPerfStats m_dynamic_perf_stats;
 
-  // ----
-  /**
-   * aggregate_buffer - aggregate op for NDP
-   * 
-   * std::make_shared<AggregateBuffer>
-  */
-  typedef std::shared_ptr<AggregateBuffer> AggregateBufferRef;
-  AggregateBufferRef m_aggregate_buffer;
-  bool enable_aggregateEC = false;
-  bool aggregate_initialized = false;
-  std::list<OpRequestRef> waiting_for_all_object_recovery;
+  // All aggregateEC injections into the normal PG lifecycle go through this
+  // facade; Aggregator remains hidden behind it as the core state machine.
+  std::unique_ptr<ceph::aggregate_ec::PGIntegration> m_aggregate_ec;
 };
 
 inline ostream& operator<<(ostream& out, const PrimaryLogPG::RepGather& repop)

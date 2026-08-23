@@ -13,9 +13,12 @@ set(osd_srcs
   OSD.cc
   Watch.cc
   ClassHandler.cc
-  AggregateChunk.cc
-  AggregateVolume.cc
-  AggregateBuffer.cc
+  aggregate_ec/Aggregator.cc
+  aggregate_ec/Chunk.cc
+  aggregate_ec/ECBackendIntegration.cc
+  aggregate_ec/PGIntegration.cc
+  aggregate_ec/Volume.cc
+  aggregate_ec/VolumeCatalog.cc
   PG.cc
   PGLog.cc
   PrimaryLogPG.cc

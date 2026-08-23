@@ -268,11 +268,11 @@ ECBackend::ECBackend(
   bool _aggregateEC_redirect_read)
   : PGBackend(cct, pg, store, coll, ch),
     ec_impl(ec_impl),
-    sinfo(ec_impl->get_data_chunk_count(), stripe_width) {
+    sinfo(ec_impl->get_data_chunk_count(), stripe_width),
+    aggregate_ec(
+      _aggregate_enabled, _aggregateEC_redirect_read, sinfo, ec_impl) {
   ceph_assert((ec_impl->get_data_chunk_count() *
 	  ec_impl->get_chunk_size(stripe_width)) == stripe_width);
-    aggregate_enabled = _aggregate_enabled;
-    aggregateEC_redirect_read = _aggregateEC_redirect_read;
 }
 
 PGBackend::RecoveryHandle *ECBackend::open_recovery_op()
@@ -1520,21 +1520,8 @@ void ECBackend::handle_sub_read_reply(
     // j => (chunk_offset, bufferlist)  第二个属性中保存了读入的数据
       ceph_assert(req_iter != rop.to_read.find(i->first)->second.to_read.end());
       ceph_assert(riter != rop.complete[i->first].returned.end());
-      pair<uint64_t, uint64_t> adjusted;
-      if (is_aggregate_enabled()) {
-        adjusted = make_pair(0, sinfo.get_chunk_size());
-        if (req_iter->get<1>() > sinfo.get_chunk_size()) {
-        // 如果是Volume对象修复  或是  RMW覆盖写，那么需要对"所有chunk"，读取整个chunk的数据
-          adjusted = make_pair(0, sinfo.get_chunk_size());
-        } else {
-        // 如果是上层下发的RGW对象的部分读，那么只读取"某个chunk"的一部分数据
-          adjusted = make_pair(req_iter->get<0>() % sinfo.get_chunk_size(),
-                               req_iter->get<1>());
-        }
-      } else {
-        adjusted = sinfo.aligned_offset_len_to_chunk(
-          make_pair(req_iter->get<0>(), req_iter->get<1>()));
-      }
+      auto adjusted = aggregate_ec.shard_read_extent(
+        req_iter->get<0>(), req_iter->get<1>());
       ceph_assert(adjusted.first == j->first);
       riter->get<2>()[from] = std::move(j->second); 
       // 将从from分片（或者说从OSD）上读到的数据填入riter指向的bufferlist中
@@ -2100,23 +2087,8 @@ void ECBackend::do_read_op(ReadOp &op)
 	   i->second.to_read.begin();
 	 j != i->second.to_read.end();
 	 ++j) {
-      pair<uint64_t, uint64_t> chunk_off_len;
-      if (is_aggregate_enabled()) {
-        // aggregateEC中，Volume对象只对应一条EC条带，所以每个OSD上也只会保存该对象的单个数据块（或者编码块）
-        // 不需要调用aligned_offset_len_to_chunk计算具体需要读取OSD上的哪些chunk（毕竟只有1个chunk）
-        // chunk_off_len的取值有2种情况：
-        if (j->get<1>() > sinfo.get_chunk_size()) {
-        // 如果是Volume对象修复  或是  RMW覆盖写，那么需要对"所有chunk"，读取整个chunk的数据
-          chunk_off_len = make_pair(0, sinfo.get_chunk_size());
-        } else {
-        // 如果是上层下发的RGW对象的部分读，那么只读取"某个chunk"的一部分数据
-          chunk_off_len = make_pair(j->get<0>() % sinfo.get_chunk_size(),
-                                    j->get<1>());
-        }
-      } else {
-        // 把stripe的id和length,转换为分片内的chunk offset和length
-        chunk_off_len = sinfo.aligned_offset_len_to_chunk(make_pair(j->get<0>(), j->get<1>()));
-      }
+      auto chunk_off_len =
+        aggregate_ec.shard_read_extent(j->get<0>(), j->get<1>());
       for (auto k = i->second.need.begin();
 	   k != i->second.need.end();
 	   ++k) {
@@ -2307,13 +2279,11 @@ bool ECBackend::try_state_to_reads()
       if (!pending_read.empty()) {
         op->pending_read[hpair.first] = std::move(pending_read);
       }
-      // 直接获取已缓存的EC数据块，越过Read过程
-      auto aggregate_buffer = (dynamic_cast<PrimaryLogPG*>(get_parent()))->get_aggregate_buffer();
       if (!hpair.second.empty() &&
-          is_aggregate_enabled() && 
-          aggregate_buffer->is_volume_cached(hpair.first)) {
+          aggregate_ec.read_cached_volume(
+            dynamic_cast<PrimaryLogPG*>(get_parent()), hpair.first,
+            op->remote_read_result[hpair.first])) {
         op->remote_read.erase(hpair.first);
-        aggregate_buffer->ec_cache_read(op->remote_read_result[hpair.first]);
       }
     }
   } else {
@@ -2379,60 +2349,10 @@ bool ECBackend::try_reads_to_commit()
 
   map<hobject_t,extent_map> written;
   if (op->plan.t) {
-    std::optional<map<int, size_t>> compress_off = std::nullopt;
-    if(auto client_op = dynamic_cast<OpRequest*>(op->client_op.get());
-      client_op != nullptr && client_op->need_aggregateEC_storage_optimize()) {
-      
-      auto pg = dynamic_cast<PrimaryLogPG*>(get_parent());
-      ceph_assert(pg != nullptr && pg->is_aggregate_enabled());
-
-      compress_off = map<int, size_t>();
-      auto &volume_info = pg->get_aggregate_buffer()->get_inflight_volume();
-      auto chunks = volume_info.get_all_chunks();
-      const std::vector<int> &chunk_mapping = ec_impl->get_chunk_mapping();
-
-      [[maybe_unused]] bool oid_match = false;
-
-      size_t max_data_length = 0;
-      for(const auto& chunk: chunks) {
-        int chunk_id = chunk->get_chunk_id().id;
-        if(chunk_id < chunk_mapping.size()) chunk_id = chunk_mapping[chunk_id];
-        
-	compress_off->insert(make_pair(chunk_id, chunk->get_offset()));
-        max_data_length = std::max(max_data_length, chunk->get_offset());
-
-	dout(20) << __func__ << " aggregate void=" << op->hoid << ", object #" << chunk_id << ", size=" << chunk->get_offset() << dendl;
-
-	if(chunk->get_oid() == op->hoid) oid_match = true;
-      }
-
-      // 根据Reed-Solomon编码规则，假定条带中前k个为顺序的原始数据块，后m个为纠删码块
-      for(int i = 0; i < get_ec_data_chunk_count(); ++i) {
-        int chunk_id = i < chunk_mapping.size() ? chunk_mapping[i] : i;
-        if(compress_off->find(chunk_id) == compress_off->end()) {
-          compress_off->insert(make_pair(chunk_id, 0));
-        }
-      }
-
-      // 纠删码编码也有粒度，目前常见的有1/2/4字节，没找到获取配置的接口，这里直接按最大粒度对齐
-      int ec_encode_unit = 4;
-      if(max_data_length & (ec_encode_unit - 1)) {
-        max_data_length = (max_data_length & ~(ec_encode_unit - 1)) + ec_encode_unit;
-      }
-
-      // 根据纠删码编码规律，直接将纠删码裁剪到数据长度
-      for(int i = 0; i < ec_impl->get_coding_chunk_count(); ++i) {
-        int chunk_id = get_ec_data_chunk_count() + i;
-        if(chunk_id < chunk_mapping.size()) {
-          chunk_id = chunk_mapping[chunk_id];
-        }
-
-        compress_off->insert(make_pair(chunk_id, max_data_length));
-      }
-
-      if(!oid_match)
-        dout(20) << __func__ << " warning: object " << op->hoid << " not found in volume " << volume_info.get_oid() << dendl;
-    }
+    auto compress_off = aggregate_ec.storage_optimization_offsets(
+        dynamic_cast<PrimaryLogPG*>(get_parent()),
+        op->client_op, op->hoid,
+        get_ec_data_chunk_count(), ec_impl->get_coding_chunk_count());
     ECTransaction::generate_transactions(
       op->plan,
       ec_impl,
@@ -2643,17 +2563,9 @@ void ECBackend::objects_read_async(
 	 to_read.begin();
        i != to_read.end();
        ++i) {
-    if (is_aggregate_enabled()) {
-      // 这里的offset和length不需要对齐到stripe，因为aggregateEC中的读操作不以条带为单位
-      es.union_insert(i->first.get<0>(), i->first.get<1>());
-    } else {
-      pair<uint64_t, uint64_t> tmp =
-        sinfo.offset_len_to_stripe_bounds(
-    make_pair(i->first.get<0>(), i->first.get<1>()));
-      // 这里将对象的offset和length对齐到stripe_width
-      // reads oid -> {起始offset所在的条带起始地址，本次需要读取的条带数，flag}
-      es.union_insert(tmp.first, tmp.second);
-    }
+    auto extent = aggregate_ec.backend_read_extent(
+      i->first.get<0>(), i->first.get<1>());
+    es.union_insert(extent.first, extent.second);
     flags |= i->first.get<2>();
   }
 
@@ -2775,7 +2687,7 @@ void ECBackend::object_degrade_call_async(
 
 
 int ECBackend::object_locate(MOSDOp* m, pg_shard_t &target_shard) {
-  ceph_assert(is_aggregate_enabled());
+  ceph_assert(aggregate_ec.enabled());
   for (auto iter = m->ops.begin(); iter != m->ops.end(); ++iter) {
     if (iter->op.op == CEPH_OSD_OP_READ        ||  
         iter->op.op == CEPH_OSD_OP_SPARSE_READ ||
@@ -2787,7 +2699,8 @@ int ECBackend::object_locate(MOSDOp* m, pg_shard_t &target_shard) {
       auto chunk_size = sinfo.get_chunk_size();
       auto logical_data_chunk_id = iter->op.extent.offset / chunk_size;
       logical_data_chunk_set.insert(logical_data_chunk_id);
-      get_want_to_read_shards_aggregateEC(logical_data_chunk_set, &want_to_read);
+      aggregate_ec.map_logical_shards(
+        logical_data_chunk_set, want_to_read);
       int r = get_min_avail_to_read_shards(
         m->get_hobj().get_head(),
         want_to_read,
@@ -2833,19 +2746,10 @@ void ECBackend::object_call_async(
       logical_data_chunk_set.insert(logical_data_chunk_id);
     }
   }
-  get_want_to_read_shards_aggregateEC(logical_data_chunk_set, &want_to_read);
-  if (is_aggregate_enabled() &&
-      aggregateEC_redirect_read_enabled() &&
-      !is_primary()) {
-    // aggregateEC balance read过程中，replicate OSD执行get_shard_missing获取不同OSD的对象缺失列表时，会触发assert
-    // 可能只有primary OSD才会记录PG内其他OSD的对象缺失信息
-    // aggregateEC balance read实际上只会读当前replicate OSD的本地数据，所以只需要检查自身的missing_loc就能判断数据是否丢失
-    // 这一部分的检查工作在do_op中的is_unreadable_object已经完成了
-    vector<pair<int, int>> default_subchunks;
-    default_subchunks.push_back(make_pair(0, ec_impl->get_sub_chunk_count()));
-    ceph_assert(want_to_read.size() == 1);
-    shards.insert(make_pair(get_parent()->whoami_shard(), default_subchunks));
-  } else {
+  aggregate_ec.map_logical_shards(logical_data_chunk_set, want_to_read);
+  if (!aggregate_ec.select_local_redirect_read(
+        is_primary(), get_parent()->whoami_shard(),
+        ec_impl->get_sub_chunk_count(), want_to_read, shards)) {
     int r = get_min_avail_to_read_shards(
       hoid,
       want_to_read,
@@ -2857,7 +2761,8 @@ void ECBackend::object_call_async(
     ceph_assert(r == 0);
   }
 
-  if (shards.size() == get_ec_data_chunk_count()) {
+  if (aggregate_ec.needs_full_reconstruction(
+        shards.size(), get_ec_data_chunk_count())) {
     // 数据块丢失，需要恢复整个条带
     // 选择将整个条带读入Primary OSD再进行Cls操作
     dout(10) << __func__ << " degrade call aysnc obj = " << hoid
@@ -3025,8 +2930,8 @@ struct CallClientContexts :
     ceph_assert(res.returned.size() == to_read.size());
     ceph_assert(res.errors.empty());
     // TODO(zhengfuyu) 类型不匹配，可能出现溢出错误
-    if (res.returned.front().get<2>().size() == 1 &&
-        ec->is_aggregate_enabled()) {
+    if (ec->aggregate_ec.can_return_without_decode(
+          res.returned.front().get<2>().size())) {
       // aggregateEC的正常读取链路
       dout_impl(ec->cct, dout_subsys, 20) _prefix(_dout, ec) << __func__ << ": entering partial read logic"
           << ", oid=" << hoid.oid << ", read extent count=" << res.returned.size() << dendl;
@@ -3097,38 +3002,15 @@ void ECBackend::objects_read_and_reconstruct(
   map<hobject_t, read_request_t> for_read_op;
   for (auto &&to_read: reads) {
     map<pg_shard_t, vector<pair<int, int>>> shards;
-    // aggregateEC正常情况下，to_read中每个offset都是chunk对齐的
-    if (is_aggregate_enabled()) {
-      set<int> logical_data_chunk_set;
-      // 即使是在aggregateEC的配置下，volume覆盖写也会调用objects_read_and_reconstruct
-      // 注意代码的兼容性
-      for (auto &read_range : to_read.second) {
-        uint32_t first_chunk_id = read_range.get<0>() / sinfo.get_chunk_size();
-        uint32_t last_chunk_id = (read_range.get<0>() + read_range.get<1>() - 1) / sinfo.get_chunk_size();
-        for (uint32_t i = first_chunk_id; i <= last_chunk_id; i++) {
-          if (logical_data_chunk_set.count(i) == 0) {
-            logical_data_chunk_set.insert(i);
-          }
-        }
-      }
-      get_want_to_read_shards_aggregateEC(logical_data_chunk_set, &want_to_read);
-    } else if (want_to_read.size() == 0) {
+    if (!aggregate_ec.select_data_shards(
+          to_read.second, want_to_read) && want_to_read.empty()) {
       // 正常情况下就是得到一个含k个编号的数组
       // 只执行一次即可。
       get_want_to_read_shards(&want_to_read);
     }
-    if (is_aggregate_enabled() &&
-        aggregateEC_redirect_read_enabled() &&
-        !is_primary()) {
-      // aggregateEC balance read过程中，replicate OSD执行get_shard_missing获取不同OSD的对象缺失列表时，会触发assert
-      // 可能只有primary OSD才会记录PG内其他OSD的对象缺失信息
-      // 由于aggregateEC balance read实际上只会读当前replicate OSD的本地数据，所以只需要检查自身的missing_loc就能判断数据是否丢失
-      // 这一部分的检查工作在do_op中的is_unreadable_object已经完成了
-      vector<pair<int, int>> default_subchunks;
-      default_subchunks.push_back(make_pair(0, ec_impl->get_sub_chunk_count()));
-      ceph_assert(want_to_read.size() == 1);
-      shards.insert(make_pair(get_parent()->whoami_shard(), default_subchunks));
-    } else {
+    if (!aggregate_ec.select_local_redirect_read(
+          is_primary(), get_parent()->whoami_shard(),
+          ec_impl->get_sub_chunk_count(), want_to_read, shards)) {
       int r = get_min_avail_to_read_shards(
         to_read.first,
         want_to_read,
@@ -3140,36 +3022,9 @@ void ECBackend::objects_read_and_reconstruct(
       ceph_assert(r == 0);
     }
 
-    if (is_aggregate_enabled() && shards.size() == get_ec_data_chunk_count()) {
-      // 正常情况下只需要读取一个chunk
-      // 所以reads中只记录了要读取的单个chunk的off和len,没有将off和len向stripe对齐
-      // 但是如果chunk不可达（集群降级），那么就需要读取整个条带
-      // 此时就需要把reads中记录的off和len对齐到stripe
-      for (auto i = reads.begin(); i != reads.end(); ++i) {
-        // i-> (soid, list< pair<off, len, flag> >)
-        extent_set es;
-        uint32_t flags = 0;
-        for (auto j = i->second.begin(); j != i->second.end(); ++j) {
-          // j-> pair<off, len, flag>
-          // 将对象的offset和length对齐到stripe_width
-          // reads oid -> {起始offset所在的条带起始地址，本次需要读取的条带数，flag}
-          pair<uint64_t, uint64_t> tmp =
-            sinfo.offset_len_to_stripe_bounds(make_pair((*j).get<0>(),
-                                                        (*j).get<1>()));
-          es.union_insert(tmp.first, tmp.second);
-          flags |= (*j).get<2>();
-        }
-        if (!es.empty()) {
-          auto &offsets = i->second;
-          offsets.clear();
-          for (auto j = es.begin(); j != es.end(); ++j) {
-            offsets.push_back(
-              boost::make_tuple(j.get_start(),
-                                j.get_len(),
-                                flags));
-          }
-        }
-      }
+    if (aggregate_ec.needs_full_reconstruction(
+          shards.size(), get_ec_data_chunk_count())) {
+      aggregate_ec.align_for_full_reconstruction(reads);
     }
 
     CallClientContexts *c = new CallClientContexts(

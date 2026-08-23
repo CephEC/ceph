@@ -399,10 +399,12 @@ set_target_properties(cls_parquet_scan PROPERTIES
   INSTALL_RPATH ""
   CXX_VISIBILITY_PRESET hidden)
 target_include_directories(cls_parquet_scan SYSTEM BEFORE PRIVATE ${arrow_INCLUDE_DIR})
+find_library(RE2_LIBRARIES NAMES re2)
+find_library(UTF8PROC_LIBRARIES NAMES utf8proc)
 target_link_libraries(cls_parquet_scan
 	PRIVATE
-	/usr/lib64/libre2.so
-	/usr/lib64/libutf8proc.so.2
+	${RE2_LIBRARIES}
+	${UTF8PROC_LIBRARIES}
 	${ARROW_LIBRARIES}
 	)
 install(TARGETS cls_parquet_scan DESTINATION ${cls_dir})

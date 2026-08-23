@@ -55,7 +55,6 @@
 #include "common/Finisher.h"
 #include "scrubber/osd_scrub_sched.h"
 
-// #include "AggregateBuffer.h"
 
 #define CEPH_OSD_PROTOCOL    10 /* cluster internal */
 
@@ -1702,7 +1701,6 @@ protected:
   friend class PG;
   friend struct OSDShard;
   friend class PrimaryLogPG;
- // friend class AggregateBuffer;
 
   friend class PgScrubber;
 
