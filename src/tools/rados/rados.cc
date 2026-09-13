@@ -53,6 +53,7 @@
 #include "cls/lock/cls_lock_client.h"
 #include "cls/opencv_thumbnail/cls_opencv_thumbnail_client.hh"
 #include "cls/graph/cls_graph_client.hh"
+#include "cls/parquet_scan/cls_parquet_scan_types.h"
 
 #include "include/compat.h"
 #include "include/util.h"
@@ -106,7 +107,25 @@ void usage(ostream& out)
 "OBJECT COMMANDS\n"
 "   cls_thumbnail <photo-graph-name>  <thumbnail-outfile>  ratio  <shape.ratio.x>(emg., 0.1) <shape.ratio.x>(emg., 0.1)\n"
 "   cls_openssl_md5 <obj-name> <md5-code-outfile>\n"
-"   cls_parquet_filter <obj-name> <filter-row-num> <filter-outfile>\n"
+"   cls_parquet_scan <obj-name> <request.json> <result.arrow>\n"
+"                                    scan one Parquet object; write Arrow IPC, print JSON stats\n"
+"                                    requires this build's aggregateEC object-local CLS path\n"
+"                                    request: raw JSON, version:1 required, at most 1 MiB\n"
+"                                    rows: {\"version\":1,\"projection\":[\"id\"],\"limit\":10}\n"
+"                                    predicate: {\"op\":\"ge\",\"column\":\"id\",\"value\":100}\n"
+"                                    predicate ops: eq/ne/lt/le/gt/ge, is_null/is_not_null;\n"
+"                                    and/or use {\"op\":\"and\",\"args\":[predicate,...]}\n"
+"                                    aggregates instead of projection/limit, for example:\n"
+"                                    {\"version\":1,\"aggregates\":[{\"op\":\"count\",\"as\":\"n\"}]}\n"
+"                                    aggregate ops: count/sum/min/max/avg; column required\n"
+"                                    except count(*); every aggregate needs a unique as name\n"
+"                                    flat numeric/bool/string columns only; unknown fields rejected\n"
+"                                    batch_size: 1..65536 (default 8192)\n"
+"                                    max_output_bytes: 1..67108864 (default 16777216)\n"
+"                                    byte limit errors, never truncates; stats cover this object\n"
+"                                    signed integer ranges/null counts prune Row Groups when safe\n"
+"                                    input is already buffered; pruning saves decoding, not prior disk IO\n"
+"                                    aggregates are object-local; avg is not a mergeable partial state\n"
 "   get <obj-name> <outfile>         fetch object\n"
 "   put <obj-name> <infile> [--offset offset]\n"
 "                                    write object with start offset (default:0)\n"
@@ -2802,46 +2821,105 @@ static int rados_tool_common(const std::map < std::string, std::string > &opts,
     if (fd != 1)
       VOID_TEMP_FAILURE_RETRY(::close(fd));
 
-  } else if (strcmp(nargs[0], "cls_parquet_filter") == 0) {
-    if(nargs.size() < 4) {
-      cerr << "cls_parquet_filter usage: <obj> <filter-row> <outfile>" << std::endl;
-      return -EINVAL;
-    }
-    if (!obj_name) { obj_name = nargs[1]; }
-    if (!out_file) { out_file = nargs[3]; }
-    bufferlist out;
-    std::chrono::duration<double> timePassed;
-    mono_time start_time = mono_clock::now();
-    uint64_t offset = 0;
-    char* endptr = NULL;
-    offset = strtoull(nargs[2], &endptr, 10);
-    if (*endptr) {
-      cerr << "Invalid value for size: '" << nargs[2] << "'" << std::endl;
+  } else if (strcmp(nargs[0], "cls_parquet_scan") == 0) {
+    if (!pool_name || nargs.size() != (obj_name ? 3u : 4u)) {
+      cerr << "usage: rados -p POOL cls_parquet_scan <obj> <request.json> "
+              "<result.arrow>" << std::endl;
       return 1;
     }
-    bufferlist parm;
-    encode(offset, parm);
-    
-    ret = io_ctx.exec(*obj_name, "parquet_scan", "filter", parm, out);
-    if (ret != 0) {
-      cerr << "error cls parquet_scan::filter :" << cpp_strerror(ret) << std::endl;
-      return 1;
+    const size_t request_arg = obj_name ? 1 : 2;
+    if (!obj_name) {
+      obj_name = nargs[1];
     }
-    cout << "cls process end, out.length = " << out.length() << std::endl;
-    int fd = TEMP_FAILURE_RETRY(::open(out_file, O_WRONLY|O_CREAT|O_TRUNC|O_BINARY, 0644));
+    const char* request_file = nargs[request_arg];
+    const char* result_file = nargs[request_arg + 1];
+    int fd = TEMP_FAILURE_RETRY(::open(request_file, O_RDONLY | O_BINARY));
     if (fd < 0) {
-      int err = errno;
-      cerr << "failed to open file: " << cpp_strerror(err) << std::endl;
-      return -err;
+      cerr << "error opening scan request " << request_file << ": "
+           << cpp_strerror(errno) << std::endl;
+      return 1;
     }
-    ret = out.write_fd(fd);
-    timePassed = mono_clock::now() - start_time;
-    cout << "Cls complete and total get time: " << timePassed.count() << std::endl;
+    bufferlist request;
+    // Read one byte beyond the bound to reject oversized files, never truncate.
+    const auto count = request.read_fd(
+        fd, ceph::parquet_scan::MAX_REQUEST_BYTES + 1);
+    const int close_result = ::close(fd);
+    const int close_error = errno;
+    if (count < 0) {
+      cerr << "error reading scan request " << request_file << ": "
+           << cpp_strerror(count) << std::endl;
+      return 1;
+    }
+    if (close_result < 0) {
+      cerr << "error closing scan request " << request_file << ": "
+           << cpp_strerror(close_error) << std::endl;
+      return 1;
+    }
+    if (count == 0 || count > ceph::parquet_scan::MAX_REQUEST_BYTES) {
+      cerr << "scan request must contain 1.."
+           << ceph::parquet_scan::MAX_REQUEST_BYTES << " bytes of JSON"
+           << std::endl;
+      return 1;
+    }
+
+    bufferlist out;
+    ret = io_ctx.exec(*obj_name, "parquet_scan", "scan", request, out);
     if (ret < 0) {
-      cerr << "error writing to file: " << cpp_strerror(ret) << std::endl;
+      cerr << "error calling parquet_scan::scan on " << prettify(*obj_name)
+           << ": " << cpp_strerror(ret);
+      if (ret == -EINVAL) {
+        cerr << " (invalid JSON request, column/type mismatch, or malformed Parquet)";
+      } else if (ret == -EOPNOTSUPP) {
+        cerr << " (unsupported scan operation or column type)";
+      } else if (ret == -EOVERFLOW) {
+        cerr << " (scan capacity exceeded: output byte limit or numeric overflow)";
+      }
+      cerr << "; see the OSD log for details" << std::endl;
+      return 1;
     }
-    if (fd != 1)
-      VOID_TEMP_FAILURE_RETRY(::close(fd));
+
+    ceph::parquet_scan::ScanResponse response;
+    try {
+      auto p = out.cbegin();
+      decode(response, p);
+      if (!p.end()) {
+        cerr << "invalid parquet_scan response: trailing bytes" << std::endl;
+        return 1;
+      }
+      if (response.ipc.length() == 0) {
+        cerr << "invalid parquet_scan response: missing Arrow IPC stream" << std::endl;
+        return 1;
+      }
+    } catch (const ceph::buffer::error& error) {
+      cerr << "invalid parquet_scan response: " << error.what() << std::endl;
+      return 1;
+    }
+
+    fd = TEMP_FAILURE_RETRY(::open(
+        result_file, O_WRONLY | O_CREAT | O_TRUNC | O_BINARY, 0644));
+    if (fd < 0) {
+      cerr << "error opening scan result " << result_file << ": "
+           << cpp_strerror(errno) << std::endl;
+      return 1;
+    }
+    ret = response.ipc.write_fd(fd);
+    const int result_close = ::close(fd);
+    const int result_close_error = errno;
+    if (ret < 0) {
+      cerr << "error writing scan result " << result_file << ": "
+           << cpp_strerror(ret) << std::endl;
+      return 1;
+    }
+    if (result_close < 0) {
+      cerr << "error closing scan result " << result_file << ": "
+           << cpp_strerror(result_close_error) << std::endl;
+      return 1;
+    }
+    cout << response.stats_json << std::endl;
+    if (!cout) {
+      cerr << "error writing scan statistics to stdout" << std::endl;
+      return 1;
+    }
 
   } else if (strcmp(nargs[0], "cls_thumbnail") == 0) {
     if(nargs.size() < 6) {

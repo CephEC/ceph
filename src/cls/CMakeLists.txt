@@ -390,8 +390,10 @@ target_link_libraries(cls_openssl_md5 PRIVATE OpenSSL::Crypto)
 install(TARGETS cls_openssl_md5 DESTINATION ${cls_dir})
 
 #cls_parquet_scan
-set(cls_parquet_scan_srcs parquet_scan/cls_parquet_scan.cc)
-set(ARROW_LIBRARIES Arrow::Arrow Arrow::Parquet)
+set(cls_parquet_scan_srcs
+  parquet_scan/cls_parquet_scan.cc
+  parquet_scan/scan.cc)
+set(ARROW_LIBRARIES Arrow::Parquet Arrow::Arrow)
 add_library(cls_parquet_scan SHARED ${cls_parquet_scan_srcs})
 set_target_properties(cls_parquet_scan PROPERTIES
   VERSION "1.0.0"
@@ -399,11 +401,14 @@ set_target_properties(cls_parquet_scan PROPERTIES
   INSTALL_RPATH ""
   CXX_VISIBILITY_PRESET hidden)
 target_include_directories(cls_parquet_scan SYSTEM BEFORE PRIVATE ${arrow_INCLUDE_DIR})
+find_library(RE2_LIBRARIES NAMES re2)
+find_library(UTF8PROC_LIBRARIES NAMES utf8proc)
 target_link_libraries(cls_parquet_scan
 	PRIVATE
-	/usr/lib64/libre2.so
-	/usr/lib64/libutf8proc.so.2
+	json_spirit
 	${ARROW_LIBRARIES}
+	${RE2_LIBRARIES}
+	${UTF8PROC_LIBRARIES}
 	)
 install(TARGETS cls_parquet_scan DESTINATION ${cls_dir})
 install(TARGETS cls_graph DESTINATION ${cls_dir})
