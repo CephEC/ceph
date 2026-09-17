@@ -122,6 +122,7 @@ const string PREFIX_SUPER = "S";       // field -> value
 const string PREFIX_STAT = "T";        // field -> value(int64 array)
 const string PREFIX_COLL = "C";        // collection name -> cnode_t
 const string PREFIX_OBJ = "O";         // object name -> onode_t
+const string PREFIX_VOLUME = "V";      // object name -> _volume_meta
 const string PREFIX_OMAP = "M";        // u64 + keyname -> value
 const string PREFIX_PGMETA_OMAP = "P"; // u64 + keyname -> value(for meta coll)
 const string PREFIX_PERPOOL_OMAP = "m"; // s64 + u64 + keyname -> value
@@ -3718,6 +3719,7 @@ BlueStore::Onode* BlueStore::Onode::decode(
   on->exists = true;
   auto p = v.front().begin_deep();
   on->onode.decode(p);
+  on->volume_indexed = on->onode.attrs.count("_volume_meta") != 0;
   for (auto& i : on->onode.attrs) {
     i.second.reassign_to_mempool(mempool::mempool_bluestore_cache_meta);
   }
@@ -7646,6 +7648,11 @@ int BlueStore::_mount()
   });
 
   r = _deferred_replay();
+  if (r < 0) {
+    return r;
+  }
+
+  r = _open_volume_index();
   if (r < 0) {
     return r;
   }
@@ -11612,48 +11619,48 @@ int BlueStore::getattrs(
 
 int BlueStore::load_volume_attrs(
   CollectionHandle &c_,
-  std::vector<bufferlist> &volume_meta)
+  std::vector<std::pair<hobject_t, bufferlist>>& volume_meta)
 {
   Collection *c = static_cast<Collection *>(c_.get());
+  c->flush();
+  std::shared_lock l(c->lock);
   if (!c->exists)
     return -ENOENT;
-  dout(10) << __func__ << " start to read volume_attrs " <<  dendl;
-  std::shared_lock l(c->lock);
-  // 遍历得到Onode
-  KeyValueDB::Iterator it = db->get_iterator(PREFIX_OBJ, KeyValueDB::ITERATOR_NOCACHE);
-  for (it->lower_bound(string());
-       it->valid();
-       it->next()) {
-    if (is_extent_shard_key(it->key())) {
-	    continue;
+
+  ghobject_t temp_start, temp_end, start, end;
+  get_coll_range(c->cid, c->cnode.bits,
+                 &temp_start, &temp_end, &start, &end, false);
+  auto it = db->get_iterator(PREFIX_VOLUME, KeyValueDB::ITERATOR_NOCACHE);
+  auto load_range = [&](const ghobject_t& first, const ghobject_t& last) {
+    if (first == last)
+      return 0;
+    string lower, upper;
+    _key_encode_prefix(first, &lower);
+    _key_encode_prefix(last, &upper);
+    if (!end.hobj.nspace.empty()) {
+      // The range includes the final hash. Escaped namespaces are ASCII,
+      // so this includes every object at that hash, in either pool.
+      upper.push_back('\xff');
     }
-    bufferlist v;
-    ghobject_t vol_oid;
-    get_key_object(it->key(), &vol_oid);
-    dout(10) << __func__ << " decode object " << vol_oid
-      << " value.length =  " << it->value().length() << dendl;
-    OnodeRef o;
-    if (!c->contains(vol_oid)) {
-      continue;
+    int r = it->lower_bound(lower);
+    for (; r >= 0 && it->valid(); r = it->next()) {
+      const auto key = it->key();
+      if (key >= upper)
+        break;
+      ghobject_t oid;
+      if (get_key_object(key, &oid) < 0)
+        return -EIO;
+      // Recovery temporaries and rollback generations are not published heads.
+      if (oid.generation == ghobject_t::NO_GEN &&
+          oid.hobj.snap == CEPH_NOSNAP && oid.hobj.pool >= 0)
+        volume_meta.emplace_back(std::move(oid.hobj), it->value());
     }
-    o.reset(Onode::decode(c, vol_oid, it->key(), it->value()));
-    if (!o || !o->exists) {
-      continue;
-    }
-    bufferlist bl;
-    // 解析Onode的attr,找到chunk_meta信息并保存
-    for (auto& attr : o->onode.attrs) {
-      if (boost::starts_with(attr.first, "_volume_meta")) {
-        // onode释放后,指向attr的bufferptr是否会失效？可能改成bufferlist传回更合适
-        bl.push_back(attr.second);
-        dout(10) << __func__ << " vol_meta loaded: " << attr.first <<  dendl;
-      }
-    }
-    if (bl.begin() != bl.end()) {
-      volume_meta.push_back(bl);
-    }
-  }
-  return 0;
+    return r < 0 ? r : it->status();
+  };
+  int r = load_range(temp_start, temp_end);
+  if (r < 0)
+    return r;
+  return load_range(start, end);
 }
 
 int BlueStore::list_collections(vector<coll_t>& ls)
@@ -12230,6 +12237,77 @@ void BlueStore::_prepare_ondisk_format_super(KeyValueDB::Transaction& t)
     encode(min_compat_ondisk_format, bl);
     t->set(PREFIX_SUPER, "min_compat_ondisk_format", bl);
   }
+}
+
+int BlueStore::_open_volume_index()
+{
+  constexpr uint32_t version = 1;
+  const string marker = "weave_volume_index";
+  bufferlist bl;
+  int r = db->get(PREFIX_SUPER, marker, &bl);
+  if (r == 0) {
+    uint32_t stored_version;
+    auto p = bl.cbegin();
+    try {
+      decode(stored_version, p);
+    } catch (const ceph::buffer::error&) {
+      return -EIO;
+    }
+    return stored_version == version && p.end() ? 0 : -EOPNOTSUPP;
+  }
+  if (r != -ENOENT)
+    return r;
+
+  // No foreground transactions run yet. An interrupted bootstrap leaves
+  // no marker and is rebuilt from the authoritative onodes on the next mount.
+  dout(1) << __func__ << " building Volume index" << dendl;
+  auto txn = db->get_transaction();
+  txn->rmkeys_by_prefix(PREFIX_VOLUME);
+  r = db->submit_transaction_sync(txn);
+  if (r < 0)
+    return r;
+  txn = db->get_transaction();
+  auto it = db->get_iterator(PREFIX_OBJ, KeyValueDB::ITERATOR_NOCACHE);
+  uint64_t count = 0;
+  for (r = it->seek_to_first(); r >= 0 && it->valid(); r = it->next()) {
+    string key = it->key();
+    if (is_extent_shard_key(key))
+      continue;
+    bluestore_onode_t onode;
+    bl = it->value();
+    auto p = bl.cbegin();
+    try {
+      decode(onode, p);
+    } catch (const ceph::buffer::error&) {
+      derr << __func__ << " malformed onode "
+           << pretty_binary_string(key) << dendl;
+      return -EIO;
+    }
+    auto attr = onode.attrs.find("_volume_meta");
+    if (attr == onode.attrs.end())
+      continue;
+    bufferlist metadata;
+    metadata.push_back(attr->second);
+    txn->set(PREFIX_VOLUME, key, metadata);
+    if (++count % 1024 == 0) {
+      r = db->submit_transaction_sync(txn);
+      if (r < 0)
+        return r;
+      txn = db->get_transaction();
+    }
+  }
+  if (r < 0)
+    return r;
+  r = it->status();
+  if (r < 0)
+    return r;
+  bl.clear();
+  encode(version, bl);
+  txn->set(PREFIX_SUPER, marker, bl);
+  r = db->submit_transaction_sync(txn);
+  dout(1) << __func__ << " indexed " << count << " Volumes, result " << r
+          << dendl;
+  return r;
 }
 
 int BlueStore::_open_super_meta()
@@ -16344,6 +16422,10 @@ int BlueStore::_do_remove(
     );
   }
   txc->t->rmkey(PREFIX_OBJ, o->key.c_str(), o->key.size());
+  if (o->volume_indexed) {
+    txc->t->rmkey(PREFIX_VOLUME, o->key.c_str(), o->key.size());
+    o->volume_indexed = false;
+  }
   txc->note_removed_object(o);
   o->extent_map.clear();
   o->onode = bluestore_onode_t();
@@ -16952,6 +17034,10 @@ int BlueStore::_rename(TransContext *txc,
   }
 
   txc->t->rmkey(PREFIX_OBJ, oldo->key.c_str(), oldo->key.size());
+  if (oldo->volume_indexed) {
+    txc->t->rmkey(PREFIX_VOLUME, oldo->key.c_str(), oldo->key.size());
+    oldo->volume_indexed = false;
+  }
 
   // rewrite shards
   {
@@ -17633,6 +17719,20 @@ void BlueStore::_record_onode(OnodeRef &o, KeyValueDB::Transaction &txn)
 
 
   txn->set(PREFIX_OBJ, o->key.c_str(), o->key.size(), bl);
+
+  // Keep the projection in the same transaction as its authoritative attr.
+  // Carrying the bytes here lets catalog loads use one iterator snapshot,
+  // without racing separate onode lookups against metadata updates/removal.
+  auto attr = o->onode.attrs.find("_volume_meta");
+  if (attr != o->onode.attrs.end()) {
+    bufferlist metadata;
+    metadata.push_back(attr->second);
+    txn->set(PREFIX_VOLUME, o->key.c_str(), o->key.size(), metadata);
+    o->volume_indexed = true;
+  } else if (o->volume_indexed) {
+    txn->rmkey(PREFIX_VOLUME, o->key.c_str(), o->key.size());
+    o->volume_indexed = false;
+  }
 }
 
 void BlueStore::_log_alerts(osd_alert_list_t& alerts)

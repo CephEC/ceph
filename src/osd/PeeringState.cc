@@ -128,33 +128,6 @@ PeeringState::PeeringState(
   machine.initiate();
 }
 
-PeeringState::PeeringState(
-  CephContext *cct,
-  pg_shard_t pg_whoami,
-  spg_t spgid,
-  const PGPool &_pool,
-  OSDMapRef curmap,
-  DoutPrefixProvider *dpp,
-  PeeringListener *pl,
-  std::function<void()> on_active)
-  : state_history(*pl),
-    cct(cct),
-    spgid(spgid),
-    dpp(dpp),
-    pl(pl),
-    orig_ctx(0),
-    osdmap_ref(curmap),
-    pool(_pool),
-    pg_whoami(pg_whoami),
-    info(spgid),
-    pg_log(cct),
-    last_require_osd_release(curmap->require_osd_release),
-    missing_loc(spgid, this, dpp, cct),
-    machine(this, cct, spgid, dpp, pl, &state_history, on_active)
-{
-  machine.initiate();
-}
-
 void PeeringState::start_handle(PeeringCtx *new_ctx) {
   ceph_assert(!rctx);
   ceph_assert(!orig_ctx);
@@ -5921,11 +5894,6 @@ PeeringState::Active::Active(my_context ctx)
     }
   }
   pl->publish_stats_to_osd();
-  /*
-  if (context< PeeringMachine >().on_active_ != nullptr) {
-    context< PeeringMachine >().on_active_(); // 从rocksdb中读取属于当前PG的元数据
-  }
-  */
   psdout(10) << "Activate Finished" << dendl;
 }
 

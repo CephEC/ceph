@@ -1,6 +1,47 @@
 >=17.2.4
 --------
 
+* OSD: Weave, the experimental background EC packing mechanism, now keeps
+  foreground writes on the ordinary EC path and groups stable same-PG
+  objects in the background using the pool's fixed stripe unit. Member
+  deletion now persists sparse membership without rewriting the Volume;
+  other mutations restore active members to native EC. The foreground
+  aggregator, its buffer metadata and client-forwarding message extensions
+  have been removed. Configuration now uses ``osd_aggregate_ec_enabled``,
+  ``osd_aggregate_background_enabled`` and ``osd_aggregate_data_classes``;
+  old option names are not retained as aliases. Optional daily UTC cleanup
+  (``osd_aggregate_cleanup_time``) and the asynchronous ``ceph tell osd.N
+  aggregate_ec cleanup`` command share a live-slot percentage threshold
+  (``osd_aggregate_cleanup_live_percent``, default 50) and the existing
+  background worker/concurrency limit. Empty Volumes are removed; eligible
+  sparse Volumes restore surviving members for ordinary reaggregation.
+  Metadata version 4 also persists each member's original snapshot sequence.
+  Snapshot access and mutations in pools with snapshot history materialize
+  native heads before native clone lookup or copy-on-write. Background
+  versions 2 and 3 remain readable, but cannot reconstruct snapshot history
+  already lost by those formats; foreground version 1 is not supported.
+  Feature code is isolated under ``osd/weave``. Service, PG and EC facades
+  isolate native integration; conversion jobs own cancellation and resource
+  release through an explicit host interface. Published-member deletion is
+  durable; full publication/transition crash recovery remains experimental.
+  BlueStore now maintains a transactional Volume metadata index and
+  bootstraps it once for existing stores, avoiding per-PG scans of ordinary
+  onodes. Catalog restoration checks the actual source object, fails closed
+  on load errors, and defers logical access until local metadata recovery is
+  applied. Retried member requests retain logical authorization, and pending
+  EC data-class calls release their contexts on PG reset. Objects with
+  native truncate history remain on the ordinary EC path. Weave is enabled
+  only on BlueStore; other backends retain native EC access. Compound
+  data-class calls now honor operation order and FAILOK short-circuit rules;
+  logical STAT output is generated only when execution reaches it.
+  Execution-shard class loading errors and invalid thumbnail parameters
+  return errors instead of asserting. Filtered listings use logical member
+  attributes, including during stale-replica source deletion recovery.
+  Candidate admission follows configured size/stripe limits and is bounded
+  to 4096 objects per PG. Excluded objects are reconsidered on their next
+  committed change. Scans skip busy objects and wake when a PG becomes
+  clean.
+
 * Cephfs: The 'AT_NO_ATTR_SYNC' macro is deprecated, please use the standard
   'AT_STATX_DONT_SYNC' macro. The 'AT_NO_ATTR_SYNC' macro will be removed in
   the future.

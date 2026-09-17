@@ -31,7 +31,7 @@
 
 class MOSDOpReply final : public Message {
 private:
-  static constexpr int HEAD_VERSION = 9;
+  static constexpr int HEAD_VERSION = 10;
   static constexpr int COMPAT_VERSION = 2;
 
   object_t oid;
@@ -47,6 +47,7 @@ private:
   int32_t retry_attempt = -1;
   bool do_redirect;
   request_redirect_t redirect;
+  std::optional<ceph::weave::WeaveReadRoute> weave_read_route;
 
 public:
   const object_t& get_oid() const { return oid; }
@@ -93,8 +94,11 @@ public:
   void set_redirect(const request_redirect_t& redir) { redirect = redir; }
   const request_redirect_t& get_redirect() const { return redirect; }
   bool is_redirect_reply() const { return do_redirect; }
+  void set_weave_read_route(const ceph::weave::WeaveReadRoute& route) {
+    weave_read_route = route;
+  }
+  const auto& get_weave_read_route() const { return weave_read_route; }
 
-  const std::vector<OSDOp>& get_ops() { return ops; }
   void add_flags(int f) { flags |= f; }
 
   void claim_op_out_data(std::vector<OSDOp>& o) {
@@ -142,7 +146,7 @@ public:
     do_redirect = false;
   }
   MOSDOpReply(const MOSDOp *req, int r, epoch_t e, int acktype,
-	      bool ignore_out_data, bool ignore_in_data = true)
+	      bool ignore_out_data)
     : Message{CEPH_MSG_OSD_OPREPLY, HEAD_VERSION, COMPAT_VERSION},
       oid(req->hobj.oid), pgid(req->pgid.pgid), ops(req->ops),
       bdata_encode(false) {
@@ -150,7 +154,7 @@ public:
     set_tid(req->get_tid());
     result = r;
     flags =
-      (req->flags & ~(CEPH_OSD_FLAG_ONDISK|CEPH_OSD_FLAG_ONNVRAM|CEPH_OSD_FLAG_ACK|CEPH_OSD_FLAG_AGGREGATE)) | acktype;
+      (req->flags & ~(CEPH_OSD_FLAG_ONDISK|CEPH_OSD_FLAG_ONNVRAM|CEPH_OSD_FLAG_ACK)) | acktype;
     osdmap_epoch = e;
     user_version = 0;
     retry_attempt = req->get_retry_attempt();
@@ -158,38 +162,13 @@ public:
 
     for (unsigned i = 0; i < ops.size(); i++) {
       // zero out input data
-      if (ignore_in_data) {
-        ops[i].indata.clear();
-      }
+      ops[i].indata.clear();
       if (ignore_out_data) {
         // original request didn't set the RETURNVEC flag
         ops[i].outdata.clear();
       }
     }
   }
-
-  MOSDOpReply(const MOSDOp *req, MOSDOpReply* reply, bool ignore_out_data)
-    : Message{CEPH_MSG_OSD_OPREPLY, HEAD_VERSION, COMPAT_VERSION},
-      oid(req->hobj.oid), pgid(req->pgid.pgid), ops(req->ops),
-      bdata_encode(false) {
-    set_tid(req->get_tid());
-    result = reply->get_result();
-    flags = reply->get_flags();
-    osdmap_epoch = reply->get_map_epoch();
-    user_version = reply->get_user_version();
-    retry_attempt = req->get_retry_attempt();
-    do_redirect = false;
-    set_reply_versions(reply->get_replay_version(), reply->get_user_version());
-    for (unsigned i = 0; i < ops.size(); i++) {
-      // zero out input data
-      ops[i].indata.clear();
-      if (ignore_out_data) {
-      // original request didn't set the RETURNVEC flag
-	 ops[i].outdata.clear();
-      }
-    }    
-  }
-
 
 private:
   ~MOSDOpReply() final {}
@@ -199,8 +178,6 @@ public:
     using ceph::encode;
     if(false == bdata_encode) {
       OSDOp::merge_osd_op_vector_out_data(ops, data);
-      // 重定向时需要将转译后的indata返回client，经由client转发
-      OSDOp::merge_osd_op_vector_in_data_for_aggregateEC(ops, data);
       bdata_encode = true;
     }
 
@@ -221,7 +198,8 @@ public:
       }
       ceph::encode_nohead(oid.name, payload);
     } else {
-      header.version = HEAD_VERSION;
+      header.version = (HAVE_FEATURE(features, WEAVE_READ_REDIRECT) &&
+                        HAVE_FEATURE(features, SERVER_QUINCY)) ? HEAD_VERSION : 8;
       encode(oid, payload);
       encode(pgid, payload);
       encode(flags, payload);
@@ -252,10 +230,7 @@ public:
         }
       }
       encode_trace(payload, features);
-      for (unsigned i = 0; i < num_ops; i++) {
-        uint64_t indata_len = ops[i].indata.length();
-	      encode(indata_len, payload);
-      }
+      if (header.version >= 10) encode(weave_read_route, payload);
     }
   }
   void decode_payload() override {
@@ -281,27 +256,14 @@ public:
       for (unsigned i = 0; i < num_ops; ++i)
 	decode(ops[i].rval, p);
 
-
+      OSDOp::split_osd_op_vector_out_data(ops, data);
       decode(replay_version, p);
       decode(user_version, p);
       decode(do_redirect, p);
       if (do_redirect)
 	decode(redirect, p);
       decode_trace(p);
-
-      uint64_t off = OSDOp::split_osd_op_vector_out_data(ops, data);
-      if (header.version == 9) {
-        // 重定向时需要将转译后xattr命令的indata返回client
-        // 经由client转发到对应replicateOSD处理
-        std::vector<uint64_t> indata_lens(ops.size());
-        for (unsigned i = 0; i < ops.size(); i++) {
-          decode(indata_lens[i], p);
-        }
-        bufferlist tmp_bl;
-        tmp_bl.substr_of(data, off, data.length() - off);
-        OSDOp::split_osd_op_vector_in_data_for_aggregateEC(ops, tmp_bl, indata_lens);
-      }
-
+      if (header.version >= 10) decode(weave_read_route, p);
     } else if (header.version < 2) {
       ceph_osd_reply_head head;
       decode(head, p);

@@ -24,7 +24,7 @@
 #include "ECUtil.h"
 #include "ECTransaction.h"
 #include "ExtentCache.h"
-#include "osd/ClassHandler.h"
+#include "osd/weave/WeaveECAdapter.h"
 
 //forward declaration
 struct ECSubWrite;
@@ -190,19 +190,14 @@ public:
     Context *on_complete,
     bool fast_read = false) override;
 
-  // 当RGW对象所在的数据块无法访问时，需要将其所在的volume对象在primary OSD处恢复出来
-  // 然后再针对恢复出的数据块进行Cls操作
-  void object_degrade_call_async(
+  // Gather ordinary EC data, or reconstruct a missing member, before CLS.
+  void object_read_and_execute_class_async(
     const hobject_t &hoid,
     const std::pair<boost::tuple<uint64_t, uint64_t, uint32_t>,
               std::pair<ClsParmContext*, OSDOp*> > &call_ctx,
     Context *on_complete);
 
 
-  // 对RGW对象的读请求转译为对volume对象的部分读之后
-  // 在ECBackend确定所需读取的volume数据块在哪个OSD，
-  // 直接将转译后的volume部分读请求转发到指定OSD上执行（减少读过程中的一次网络时延）
-   int object_locate(MOSDOp* m, pg_shard_t &target_shard) override;
 
   void object_call_async(
     const hobject_t &hoid,
@@ -231,8 +226,9 @@ public:
   void kick_reads() {
     while (in_progress_client_reads.size() &&
 	   in_progress_client_reads.front().is_complete()) {
-      in_progress_client_reads.front().run();
+      auto completed = std::move(in_progress_client_reads.front());
       in_progress_client_reads.pop_front();
+      completed.run();
     }
   }
 
@@ -247,18 +243,6 @@ private:
     const std::vector<int> &chunk_mapping = ec_impl->get_chunk_mapping();
     for (int i = 0; i < (int)ec_impl->get_data_chunk_count(); ++i) {
       int chunk = (int)chunk_mapping.size() > i ? chunk_mapping[i] : i;
-      want_to_read->insert(chunk);
-    }
-  }
-
-  void get_want_to_read_shards_aggregateEC(
-    std::set<int>& logical_data_chunk_set,
-    std::set<int> *want_to_read) {
-    const std::vector<int> &chunk_mapping = ec_impl->get_chunk_mapping();
-    for(std::set<int>::iterator iter=logical_data_chunk_set.begin();
-        iter != logical_data_chunk_set.end();
-        iter++){
-      int chunk = (int)chunk_mapping.size() > *iter ? chunk_mapping[*iter] : *iter;
       want_to_read->insert(chunk);
     }
   }
@@ -718,6 +702,9 @@ public:
   int get_ec_data_chunk_count() const override {
     return ec_impl->get_data_chunk_count();
   }
+  int get_ec_data_shard(unsigned logical) const override {
+    return weave.data_shard(logical);
+  }
   int get_ec_stripe_chunk_size() const override {
     return sinfo.get_chunk_size();
   }
@@ -744,13 +731,13 @@ public:
 
 
   const ECUtil::stripe_info_t sinfo;
+  // Request-local member geometry; native EC paths remain unchanged.
+  ceph::weave::WeaveECAdapter weave;
   /// If modified, ensure that the ref is held until the update is applied
   SharedPtrRegistry<hobject_t, ECUtil::HashInfo> unstable_hashinfo_registry;
   ECUtil::HashInfoRef get_hash_info(const hobject_t &hoid, bool create = false,
 				    const std::map<std::string, ceph::buffer::ptr, std::less<>> *attr = NULL);
   
-  bool aggregate_enabled = false;
-  bool aggregateEC_redirect_read = false;
 public:
   ECBackend(
     PGBackend::Listener *pg,
@@ -759,14 +746,8 @@ public:
     ObjectStore *store,
     CephContext *cct,
     ceph::ErasureCodeInterfaceRef ec_impl,
-    uint64_t stripe_width,
-    bool _aggregate_enabled = false,
-    bool _aggregateEC_redirect_read = false);
+    uint64_t stripe_width);
 
-  bool is_aggregate_enabled() { return aggregate_enabled; }
-
-  bool aggregateEC_redirect_read_enabled() { return aggregateEC_redirect_read; }
-  
   /// Returns to_read replicas sufficient to reconstruct want
   int get_min_avail_to_read_shards(
     const hobject_t &hoid,     ///< [in] object

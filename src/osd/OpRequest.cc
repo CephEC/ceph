@@ -11,6 +11,7 @@
 #include "messages/MOSDRepOp.h"
 #include "messages/MOSDRepOpReply.h"
 #include "include/ceph_assert.h"
+#include "osd/weave/detail/WeaveRequestContext.h"
 #include "osd/osd_types.h"
 
 #ifdef WITH_LTTNG
@@ -48,6 +49,37 @@ OpRequest::OpRequest(Message* req, OpTracker* tracker)
     reqid = static_cast<MOSDRepOpReply*>(req)->reqid;
   }
   req_src_inst = req->get_source_inst();
+}
+
+OpRequest::~OpRequest() {
+  request->put();
+}
+
+bool OpRequest::is_aggregate_member_op() const {
+  return weave_context && weave_context->volume_metadata();
+}
+
+ceph::weave::WeaveRequestContext*
+OpRequest::get_weave_context() {
+  return weave_context.get();
+}
+
+const ceph::weave::WeaveRequestContext*
+OpRequest::get_weave_context() const {
+  return weave_context.get();
+}
+
+ceph::weave::WeaveRequestContext&
+OpRequest::ensure_weave_context() {
+  if (!weave_context) {
+    weave_context =
+      std::make_unique<ceph::weave::WeaveRequestContext>();
+  }
+  return *weave_context;
+}
+
+void OpRequest::clear_weave_context() {
+  weave_context.reset();
 }
 
 void OpRequest::_dump(Formatter *f) const
@@ -167,4 +199,3 @@ bool OpRequest::filter_out(const set<string>& filters)
 
   return false;
 }
-

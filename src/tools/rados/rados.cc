@@ -109,7 +109,7 @@ void usage(ostream& out)
 "   cls_openssl_md5 <obj-name> <md5-code-outfile>\n"
 "   cls_parquet_scan <obj-name> <request.json> <result.arrow>\n"
 "                                    scan one Parquet object; write Arrow IPC, print JSON stats\n"
-"                                    requires this build's aggregateEC object-local CLS path\n"
+"                                    requires this build's object-local data-class execution path\n"
 "                                    request: raw JSON, version:1 required, at most 1 MiB\n"
 "                                    rows: {\"version\":1,\"projection\":[\"id\"],\"limit\":10}\n"
 "                                    predicate: {\"op\":\"ge\",\"column\":\"id\",\"value\":100}\n"

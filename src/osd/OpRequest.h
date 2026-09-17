@@ -18,6 +18,13 @@
 #include "osd/osd_types.h"
 #include "common/TrackedOp.h"
 #include "common/tracer.h"
+
+#include <memory>
+
+namespace ceph::weave {
+class WeaveRequestContext;
+}
+
 /**
  * The OpRequest takes in a Message* and takes over a single reference
  * to it, which it puts() when destroyed.
@@ -47,18 +54,13 @@ public:
   bool need_skip_promote() const { return op_info.need_skip_promote(); }
   bool allows_returnvec() const { return op_info.allows_returnvec(); }
 
-  bool is_requeued_op() const { return is_requeued; }
-  void set_requeued() { is_requeued = true; }
-  void unset_requeued() { is_requeued = false; }
-  bool is_write_volume_op() const { return is_write_volume; }
-  void set_write_volume() { is_write_volume = true; }
-  void unset_write_volume() { is_write_volume = false; }
-  bool need_aggregateEC_storage_optimize() const { return aggregateEC_storage_optimize; }
-  void set_aggregateEC_storage_optimize() { aggregateEC_storage_optimize = true; }
-  void unset_aggregateEC_storage_optimize() { aggregateEC_storage_optimize = false; }
-  bool is_aggregateEC_translated_op() { return aggregateEC_translated_op; }
-  void set_aggregateEC_translated_op() { aggregateEC_translated_op = true; }
-  void unset_aggregateEC_translated_op() { aggregateEC_translated_op = false; }
+  bool is_background_aggregate_io() const { return background_aggregate_io; }
+  void set_background_aggregate_io() { background_aggregate_io = true; }
+  bool is_aggregate_member_op() const;
+  ceph::weave::WeaveRequestContext* get_weave_context();
+  const ceph::weave::WeaveRequestContext* get_weave_context() const;
+  ceph::weave::WeaveRequestContext& ensure_weave_context();
+  void clear_weave_context();
   std::vector<OpInfo::ClassInfo> classes() const {
     return op_info.get_classes();
   }
@@ -76,10 +78,8 @@ private:
   uint8_t hit_flag_points;
   uint8_t latest_flag_point;
   utime_t dequeued_time;
-  bool is_requeued = false;
-  bool is_write_volume = false;
-  bool aggregateEC_storage_optimize = false;
-  bool aggregateEC_translated_op = false;
+  bool background_aggregate_io = false;
+  std::unique_ptr<ceph::weave::WeaveRequestContext> weave_context;
   static const uint8_t flag_queued_for_pg=1 << 0;
   static const uint8_t flag_reached_pg =  1 << 1;
   static const uint8_t flag_delayed =     1 << 2;
@@ -95,9 +95,7 @@ protected:
   bool filter_out(const std::set<std::string>& filters) override;
 
 public:
-  ~OpRequest() override {
-    request->put();
-  }
+  ~OpRequest() override;
 
   bool check_send_map = true; ///< true until we check if sender needs a map
   epoch_t sent_epoch = 0;     ///< client's map epoch

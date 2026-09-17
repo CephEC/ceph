@@ -466,7 +466,7 @@ int PGBackend::objects_get_attr(
   return r;
 }
 
-int PGBackend::load_volume_attrs(std::vector<bufferlist> &out)
+int PGBackend::load_volume_attrs(std::vector<std::pair<hobject_t, bufferlist>>& out)
 {
   return store->load_volume_attrs(ch, out);
 }
@@ -581,8 +581,7 @@ PGBackend *PGBackend::build_pg_backend(
   coll_t coll,
   ObjectStore::CollectionHandle &ch,
   ObjectStore *store,
-  CephContext *cct,
-  bool aggregate_enabled)
+  CephContext *cct)
 {
   ErasureCodeProfile ec_profile = profile;
   switch (pool.type) {
@@ -606,9 +605,7 @@ PGBackend *PGBackend::build_pg_backend(
       store,
       cct,
       ec_impl,
-      pool.stripe_width,
-      aggregate_enabled,
-      cct->_conf.get_val<bool>("aggregateEC_redirect_read"));
+      pool.stripe_width);
   }
   default:
     ceph_abort();

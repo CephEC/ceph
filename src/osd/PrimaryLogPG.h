@@ -32,13 +32,10 @@
 #include "PGTransaction.h"
 #include "cls/cas/cls_cas_ops.h"
 
-#include "AggregateBuffer.h"
-
 class CopyFromCallback;
 class PromoteCallback;
 struct RefCountCallback;
 
-class AggregateBuffer;
 class PrimaryLogPG;
 class PGLSFilter;
 class HitSet;
@@ -200,7 +197,6 @@ public:
   friend class PromoteCallback;
   friend struct PromoteFinisher;
   friend struct C_gather;
-  friend class AggregateBuffer;
   
   struct ProxyReadOp {
     OpRequestRef op;
@@ -1255,6 +1251,9 @@ protected:
 
   int prepare_transaction(OpContext *ctx);
   std::list<std::pair<OpRequestRef, OpContext*> > in_progress_async_reads;
+  // CALLs may complete out of order, unlike native async reads.
+  std::set<OpContext*> in_progress_async_calls;
+  void cancel_async_calls(bool requeue);
   void complete_read_ctx(int result, OpContext *ctx);
 
   // pg on-disk content
@@ -1499,16 +1498,11 @@ public:
     return info.pgid.hash_to_shard(osd->get_num_shards());
   }
 
-  AggregateBuffer* get_aggregate_buffer() {
-    return m_aggregate_buffer.get();
-  }
 
-  bool is_aggregate_enabled() { return enable_aggregateEC && pool.info.is_erasure(); }
 
   void do_request(
     OpRequestRef& op,
     ThreadPool::TPHandle &handle) override;
-  void load_volume_attrs() override;
   void do_op(OpRequestRef& op);
   void reply_op_error(OpRequestRef op, int err, eversion_t v = eversion_t(), version_t uv = 0,
 				std::vector<pg_log_op_return_item_t> op_returns = {});
@@ -1537,7 +1531,6 @@ public:
   int do_tmapup_slow(OpContext *ctx, ceph::buffer::list::const_iterator& bp, OSDOp& osd_op, ceph::buffer::list& bl);
 
   void do_osd_op_effects(OpContext *ctx, const ConnectionRef& conn);
-  void do_osd_op_effects_split(OpContext* ctx);
 
   int start_cls_gather(OpContext *ctx, std::map<std::string, bufferlist> *src_objs, const std::string& pool,
 		       const char *cls, const char *method, bufferlist& inbl);
@@ -1946,21 +1939,20 @@ public:
   void set_dynamic_perf_stats_queries(
       const std::list<OSDPerfMetricQuery> &queries)  override;
   void get_dynamic_perf_stats(DynamicPerfStats *stats)  override;
+  // Caller holds the PG lock; completion also runs under that lock.
+  void request_weave_reclaim(unsigned live_percent,
+                             std::function<void()> on_finish);
+  void schedule_aggregate_work();
+  Context* on_clean() override;
 
 private:
   DynamicPerfStats m_dynamic_perf_stats;
 
-  // ----
-  /**
-   * aggregate_buffer - aggregate op for NDP
-   * 
-   * std::make_shared<AggregateBuffer>
-  */
-  typedef std::shared_ptr<AggregateBuffer> AggregateBufferRef;
-  AggregateBufferRef m_aggregate_buffer;
-  bool enable_aggregateEC = false;
-  bool aggregate_initialized = false;
-  std::list<OpRequestRef> waiting_for_all_object_recovery;
+  // PG lifecycle and request hooks stay here; aggregation state and policy
+  // live in weave, not in the native transaction engine.
+  class WeaveHost;
+  std::unique_ptr<ceph::weave::WeavePGHost> make_weave_host();
+  std::unique_ptr<ceph::weave::WeavePGController> m_weave;
 };
 
 inline ostream& operator<<(ostream& out, const PrimaryLogPG::RepGather& repop)

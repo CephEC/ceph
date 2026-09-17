@@ -2909,7 +2909,10 @@ int Objecter::_calc_target(op_target_t *t, Connection *con, bool any_change)
     t->pgid != pgid ||
       is_pg_changed(
 	t->acting_primary, t->acting, acting_primary, acting,
-	t->used_replica || any_change);
+		t->used_replica || any_change);
+  // A route is valid only in the map in which the primary issued it. Remap
+  // the original logical request on any change, including split/merge/down.
+  legacy_change |= t->weave_read.refresh(osdmap->get_epoch(), acting, acting_primary);
   bool split_or_merge = false;
   if (t->pg_num) {
     split_or_merge =
@@ -2990,6 +2993,11 @@ int Objecter::_calc_target(op_target_t *t, Connection *con, bool any_change)
     } else {
       t->osd = acting_primary;
     }
+  }
+  if (const auto& route = t->weave_read.route()) {
+    t->osd = route->target.osd;
+    t->actual_pgid.reset_shard(route->target.shard);
+    t->used_replica = true;
   }
   if (legacy_change || unpaused || force_resend) {
     return RECALC_OP_TARGET_NEED_RESEND;
@@ -3211,6 +3219,10 @@ Objecter::MOSDOp *Objecter::_prepare_osd_op(Op *op)
   m->set_snaps(op->snapc.snaps);
 
   m->ops = op->ops;
+  m->allow_weave_redirect(op->target.weave_read.may_redirect());
+  if (const auto& route = op->target.weave_read.route()) {
+    m->set_weave_read_route(*route);
+  }
   m->set_mtime(op->mtime);
   m->set_retry_attempt(op->attempts++);
 
@@ -3359,96 +3371,6 @@ int Objecter::take_linger_budget(LingerOp *info)
   return 1;
 }
 
-void Objecter::redirect_to_replicateOSD(MOSDOpReply *m, Op *op, shunique_lock<ceph::shared_mutex>& sul) {
-  // rwlock is locked
-  ceph_assert(op->session == NULL);
-  int redirect_osd = m->get_redirect().get_redirect_osd();
-  m->get_redirect().combine_with_locator(op->target.redirect_oloc,
-              op->target.redirect_oid.name);
-  auto translated_ops = m->get_ops();                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              
-  // 将op设置为转译后的op
-  op->translated_ops.clear();
-  op->translated_ops.reserve(translated_ops.size());
-  for (uint32_t i = 0; i < translated_ops.size(); i++) {
-    op->translated_ops.push_back(translated_ops[i]);
-    op->translated_ops[i].op.payload_len = 0; 
-    // 清空payload_len，别把MOSDOpReply的payload_len(表示outdata的长度)
-    // 带入到MOSDOp中（表示indata的长度)
-  }
-  op->ops.swap(op->translated_ops);
-  op->target.base_oid.swap(op->target.redirect_oid);
-  op->target.base_oloc.swap(op->target.redirect_oloc);
-  op->target.flags |= CEPH_OSD_FLAG_BALANCE_READS;
-
-  bool check_for_latest_map = false;
-  int r = _calc_target(&op->target, nullptr);
-  switch(r) {
-  case RECALC_OP_TARGET_POOL_DNE:
-    check_for_latest_map = true;
-    break;
-  case RECALC_OP_TARGET_POOL_EIO:
-    if (op->has_completion()) {
-      op->complete(osdc_errc::pool_eio, -EIO);
-    }
-    return;
-  }
-
-  op->target.osd = redirect_osd;
-  op->target.actual_pgid = spg_t(m->get_pg(), m->get_redirect().get_redirect_shard());
-  OSDSession *s = NULL;
-  // 建立到replicate OSD的连接；
-  r = _get_session(op->target.osd, &s, sul);
-  if (r == -EAGAIN ||
-      (check_for_latest_map && sul.owns_lock_shared()) ||
-      cct->_conf->objecter_debug_inject_relock_delay) {
-    epoch_t orig_epoch = osdmap->get_epoch();
-    sul.unlock();
-    if (cct->_conf->objecter_debug_inject_relock_delay) {
-      sleep(1);
-    }
-    sul.lock();
-    if (orig_epoch != osdmap->get_epoch()) {
-      // map changed; recalculate mapping
-      ldout(cct, 10) << __func__ << " relock raced with osdmap, recalc target"
-		     << dendl;
-      check_for_latest_map = _calc_target(&op->target, nullptr)
-	== RECALC_OP_TARGET_POOL_DNE;
-      if (s) {
-	put_session(s);
-	s = NULL;
-	r = -EAGAIN;
-      }
-    }
-  }
-  if (r == -EAGAIN) {
-    ceph_assert(s == NULL);
-    r = _get_session(op->target.osd, &s, sul);
-  }
-  ceph_assert(r == 0);
-  ceph_assert(s);  // may be homeless
-
-  _send_op_account(op);
-  unique_lock sl(s->lock);
-
-  if (op->tid == 0)
-    op->tid = ++last_tid;
-
-  _session_op_assign(s, op);
-  _send_op(op);
-
-  if (check_for_latest_map) {
-    _send_op_map_check(op);
-  }
-  // 在将redirect op发出后，将请求的oid和ops还原，如果redirect OSD不可访问
-  // 下一次重发请求就会再发送给primary OSD请求再次转译
-  op->ops.swap(op->translated_ops);
-  op->target.base_oid.swap(op->target.redirect_oid);
-  op->target.base_oloc.swap(op->target.redirect_oloc);
-
-  op = NULL;
-  sl.unlock();
-  put_session(s);
-}
 
 /* This function DOES put the passed message before returning */
 void Objecter::handle_osd_op_reply(MOSDOpReply *m)
@@ -3532,32 +3454,52 @@ void Objecter::handle_osd_op_reply(MOSDOpReply *m)
   int rc = m->get_result();
   // FIXME: two redirects could race and reorder
 
+  if (m->get_weave_read_route()) {
+    const auto& route = *m->get_weave_read_route();
+    const bool accepted = rc == -EAGAIN && s->osd == op->target.acting_primary &&
+      m->get_pg() == op->target.actual_pgid.pgid &&
+      route.volume.pool == op->target.target_oloc.pool &&
+      !(op->target.flags & (CEPH_OSD_FLAG_WRITE | CEPH_OSD_FLAG_RWORDERED)) &&
+      op->snapid == CEPH_NOSNAP && op->target.weave_read.redirect(route);
+    if (!accepted) op->target.weave_read.fallback();
+    ldout(cct, 10) << "Weave redirect " << op->target.base_oid
+      << " to " << route.target << " accepted=" << accepted << dendl;
+    if (op->has_completion()) num_in_flight--;
+    _session_op_remove(s, op);
+    sl.unlock();
+    op->tid = 0;
+    op->target.pgid = pg_t();
+    _op_submit(op, sul, nullptr);
+    m->put();
+    return;
+  }
+
+  if (op->target.weave_read.route() &&
+      (rc == -EAGAIN || rc == -ESTALE || rc == -ENOENT || rc == -EIO ||
+       rc == -EOPNOTSUPP)) {
+    ldout(cct, 10) << "Weave direct read fallback " << op->target.base_oid
+      << " result=" << rc << dendl;
+    op->target.weave_read.fallback();
+    // Reuse the native retry path without exposing the physical failure.
+    rc = -EAGAIN;
+  }
+
   if (m->is_redirect_reply()) {
     ldout(cct, 5) << " got redirect reply; redirecting" << dendl;
+    if (op->target.weave_read.route()) op->target.weave_read.fallback();
     if (op->has_completion())
       num_in_flight--;
     _session_op_remove(s, op);
     sl.unlock();
 
     op->tid = 0;
-    // 原来修改target.target_oid没有意义，
-    // 因为在后续_calc_target函数中会使用base_oid为target_oid赋值
     m->get_redirect().combine_with_locator(op->target.target_oloc,
               op->target.target_oid.name);
 
     op->target.flags |= (CEPH_OSD_FLAG_REDIRECTED |
 			 CEPH_OSD_FLAG_IGNORE_CACHE |
 			 CEPH_OSD_FLAG_IGNORE_OVERLAY);
-    // 只有在aggregateEC配置下才会使用到redirect_osd和redirect_shard
-    int redirect_osd = m->get_redirect().get_redirect_osd();
-    if (cct->_conf->enable_aggregateEC &&
-        cct->_conf->aggregateEC_redirect_read &&
-        redirect_osd != -1) {
-      // 请求重定向到实际存储对象数据的OSD上
-      redirect_to_replicateOSD(m, op, sul);
-    } else {
-      _op_submit(op, sul, NULL);
-    }
+    _op_submit(op, sul, NULL);
     m->put();
     return;
   }
@@ -4556,11 +4498,27 @@ bool Objecter::ms_handle_reset(Connection *con)
 	return false;
       }
       map<uint64_t, LingerOp *> lresend;
+      std::vector<Op*> direct_reads;
       unique_lock sl(session->lock);
+      for (auto i = session->ops.begin(); i != session->ops.end();) {
+        auto* op = (i++)->second;
+        if (!op->target.weave_read.route()) continue;
+        op->target.weave_read.fallback();
+        op->target.pgid = pg_t();
+        if (op->has_completion()) num_in_flight--;
+        _session_op_remove(session, op);
+        op->tid = 0;
+        direct_reads.push_back(op);
+      }
       _reopen_session(session);
       _kick_requests(session, lresend);
       sl.unlock();
       _linger_ops_resend(lresend, wl);
+      if (!direct_reads.empty()) {
+        shunique_lock sul(std::move(wl));
+        for (auto* op : direct_reads) _op_submit(op, sul, nullptr);
+        wl = sul.release_to_unique();
+      }
       wl.unlock();
       maybe_request_map();
     }

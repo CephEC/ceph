@@ -416,6 +416,7 @@ typedef std::shared_ptr<const OSDMap> OSDMapRef;
    virtual IsPGRecoverablePredicate *get_is_recoverable_predicate() const = 0;
    virtual IsPGReadablePredicate *get_is_readable_predicate() const = 0;
    virtual int get_ec_data_chunk_count() const { return 0; };
+   virtual int get_ec_data_shard(unsigned logical) const { return -1; }
    virtual int get_ec_stripe_chunk_size() const { return 0; };
 
    virtual void dump_recovery_info(ceph::Formatter *f) const = 0;
@@ -555,7 +556,7 @@ typedef std::shared_ptr<const OSDMap> OSDMapRef;
      const std::string &attr,
      ceph::buffer::list *out);
 
-   int load_volume_attrs(std::vector<bufferlist> &out);
+   int load_volume_attrs(std::vector<std::pair<hobject_t, bufferlist>>& out);
 
    virtual int objects_get_attrs(
      const hobject_t &hoid,
@@ -573,10 +574,6 @@ typedef std::shared_ptr<const OSDMap> OSDMapRef;
      std::map<uint64_t, uint64_t>&& m,
      uint32_t op_flags,
      ceph::buffer::list *bl) {
-     return -EOPNOTSUPP;
-   }
-
-   virtual int object_locate(MOSDOp* m, pg_shard_t &target_shard) {
      return -EOPNOTSUPP;
    }
 
@@ -647,8 +644,7 @@ typedef std::shared_ptr<const OSDMap> OSDMapRef;
      coll_t coll,
      ObjectStore::CollectionHandle &ch,
      ObjectStore *store,
-     CephContext *cct,
-     bool aggregate_enabled = false);
+     CephContext *cct);
 };
 
 #endif

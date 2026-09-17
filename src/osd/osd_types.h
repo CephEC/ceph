@@ -335,8 +335,6 @@ struct request_redirect_t {
 private:
   object_locator_t redirect_locator; ///< this is authoritative
   std::string redirect_object; ///< If non-empty, the request goes to this object name
-  int redirect_osd = -1; // 如果redirect_osd不是-1表示本次需要重定向到pg内的指定OSD上
-  shard_id_t redirect_shard;
 
   friend std::ostream& operator<<(std::ostream& out, const request_redirect_t& redir);
 public:
@@ -346,18 +344,12 @@ public:
       redirect_locator(orig) { redirect_locator.pool = rpool; }
   explicit request_redirect_t(const object_locator_t& rloc) :
       redirect_locator(rloc) {}
-  explicit request_redirect_t(const object_locator_t& orig, const std::string& robj, int osd, shard_id_t shard) :
-      redirect_locator(orig), redirect_object(robj), redirect_osd(osd), redirect_shard(shard) {}
   explicit request_redirect_t(const object_locator_t& orig,
                               const std::string& robj) :
       redirect_locator(orig), redirect_object(robj) {}
 
   bool empty() const { return redirect_locator.empty() &&
-			      redirect_object.empty() && redirect_osd == -1; }
-
-  int get_redirect_osd() const { return redirect_osd; }
-
-  shard_id_t get_redirect_shard() const { return redirect_shard; }
+                              redirect_object.empty(); }
 
   void combine_with_locator(object_locator_t& orig, std::string& obj) const {
     orig = redirect_locator;
@@ -373,8 +365,8 @@ public:
 WRITE_CLASS_ENCODER(request_redirect_t)
 
 inline std::ostream& operator<<(std::ostream& out, const request_redirect_t& redir) {
-  out << "object " << redir.redirect_object << ", locator{" << redir.redirect_locator << "}"
-    << " redirect_osd " << redir.redirect_osd << " redirect_shard " << redir.redirect_shard << std::endl;
+  out << "object " << redir.redirect_object
+      << ", locator{" << redir.redirect_locator << "}";
   return out;
 }
 
@@ -4170,26 +4162,12 @@ struct OSDOp {
    * @param in  [in] combined data buffer
    */
   template<typename V>
-  static uint64_t split_osd_op_vector_in_data(V& ops,
+  static void split_osd_op_vector_in_data(V& ops,
 					  ceph::buffer::list& in) {
-    uint64_t off = 0;
     ceph::buffer::list::iterator datap = in.begin();
     for (unsigned i = 0; i < ops.size(); i++) {
       if (ops[i].op.payload_len) {
 	datap.copy(ops[i].op.payload_len, ops[i].indata);
-  off += ops[i].op.payload_len;
-      }
-    }
-    return off;
-  }
-
-  template<typename V>
-  static void split_osd_op_vector_in_data_for_aggregateEC(V& ops,
-					  ceph::buffer::list& in, std::vector<uint64_t> &indata_lens) {
-    ceph::buffer::list::iterator datap = in.begin();
-    for (unsigned i = 0; i < ops.size(); i++) {
-      if (indata_lens[i]) {
-	      datap.copy(indata_lens[i], ops[i].indata);
       }
     }
   }
@@ -4213,33 +4191,13 @@ struct OSDOp {
     }
   }
 
-  template<typename V>
-  static void merge_osd_op_vector_in_data_for_aggregateEC(V& ops, ceph::buffer::list& out) {
-    for (unsigned i = 0; i < ops.size(); i++) {
-      if (ops[i].indata.length()) {
-	      out.append(ops[i].indata);
-      }
-    }
-  }
-
   /**
    * split a ceph::buffer::list into constituent outdata members of a vector of OSDOps
    *
    * @param ops [out] vector of OSDOps
    * @param in  [in] combined data buffer
    */
-  static uint64_t split_osd_op_vector_out_data(std::vector<OSDOp>& ops, ceph::buffer::list& in);
-
-  template<typename V>
-  static void split_osd_op_vector_out_data_for_AggregateEC(V& ops, ceph::buffer::list& in,
-    std::vector<uint64_t> &outdata_lens) {
-    auto datap = in.begin();
-    for (unsigned i = 0; i < ops.size(); i++) {
-      if (outdata_lens[i]) {
-        datap.copy(outdata_lens[i], ops[i].outdata);
-      }
-    }
-  }
+  static void split_osd_op_vector_out_data(std::vector<OSDOp>& ops, ceph::buffer::list& in);
 
   /**
    * merge outdata members of a vector of OSDOps into a single ceph::buffer::list
@@ -4248,15 +4206,6 @@ struct OSDOp {
    * @param out [out] combined data buffer
    */
   static void merge_osd_op_vector_out_data(std::vector<OSDOp>& ops, ceph::buffer::list& out);
-
-  template<typename V>
-  static void merge_osd_op_vector_out_data_for_AggregateEC(V& ops, ceph::buffer::list& out) {
-    for (unsigned i = 0; i < ops.size(); i++) {
-      if (ops[i].outdata.length()) {
-        out.append(ops[i].outdata);
-      }
-    }
-  }
 
   /**
    * Clear data as much as possible, leave minimal data for historical op dump
@@ -6739,387 +6688,6 @@ using missing_map_t = std::map<hobject_t,
     std::optional<uint32_t>>>;
 
 // -----
-
-/**
- * chunk_t - information about chunk
-*/
-
-//chunk id
-struct chunk_id_t {
-  // 在volume中的位置编号
-  uint8_t id;
-
-public:
-  chunk_id_t() : id(0) {}
-  chunk_id_t(uint8_t _id) : id(_id) {}
-
-  operator uint8_t() const { return id; }
-
-  // TODO: 加解码函数
-  void encode(ceph::buffer::list &bl) const {
-    using ceph::encode;
-    encode(id, bl);
-  }
-  void decode(ceph::buffer::list::const_iterator &bl) {
-     using ceph::decode;
-     decode(id, bl);
-  }
-
-  void dump(ceph::Formatter *f) const {}
-
-  static void generate_test_instances(std::list<chunk_id_t*>& o) {}
-};
-WRITE_CLASS_ENCODER(chunk_id_t)
-WRITE_EQ_OPERATORS_1(chunk_id_t, id)
-WRITE_CMP_OPERATORS_1(chunk_id_t, id)
-
-class chunk_t {
-public:
-  typedef uint8_t state_t;
-  static const int32_t NO_OSD = 0x7fffffff;
-  // 全0
-  static constexpr state_t EMPTY = 0;
-  // 有效数据
-  static constexpr state_t VALID = 1;
-  // 填充但删除的数据
-  static constexpr state_t INVALID = 2;
-
-  chunk_t() : chunk_id(chunk_id_t()), chunk_state(EMPTY),
-              chunk_fill_offset(0), pg_id(spg_t()),
-              soid(hobject_t()) {}
-  
-  chunk_t(uint8_t _id, const spg_t& _pg_id, bool _is_erasure = false) : 
-          chunk_id(_id), chunk_state(EMPTY),
-          chunk_fill_offset(0), pg_id(_pg_id), 
-          soid(hobject_t()) {}
-
-  void set_from_op(uint8_t _chunk_id, uint64_t _offset, const hobject_t& _soid)  
-  {
-    chunk_id = chunk_id_t(_chunk_id);
-    chunk_fill_offset = _offset;
-    soid = _soid;
-    chunk_state = VALID;
-    mtime = ceph_clock_now();
-  }
-
-  chunk_id_t get_chunk_id() const { return chunk_id; }
-  spg_t get_spg() const { return pg_id; }
-  uint64_t get_offset() const { return chunk_fill_offset; }
-
-  void set_offset(uint64_t _offset) { chunk_fill_offset = _offset; }
-  void set_seq(uint8_t _seq) { chunk_id = chunk_id_t(_seq); }
-  uint8_t get_seq() const { return uint8_t(chunk_id); }
-  void set_empty() { chunk_state = EMPTY; }
-  void set_oid(hobject_t& _oid) { soid = _oid; }
-  void set_mtime(utime_t _mtime)  { mtime = _mtime; }
-  utime_t get_mtine() { return mtime; }
-
-   bool is_empty() { return chunk_state == EMPTY; }
-   bool is_valid() { return chunk_state == VALID; }
-   bool is_invalid() { return chunk_state == INVALID; }
-   hobject_t get_oid() const { return soid; }
-
-  void clear() {
-    chunk_state = (chunk_fill_offset != 0)? INVALID: EMPTY;
-  }
-   // TODO: 加解码函数
-   void encode(ceph::buffer::list &bl) const {
-    using ceph::encode;
-    ENCODE_START(1, 1, bl);
-    encode(chunk_id, bl);
-    encode(chunk_state, bl);
-    encode(chunk_fill_offset, bl);
-    encode(mtime, bl);
-    encode(soid, bl);
-    ENCODE_FINISH(bl);
-  }
-  void decode(ceph::buffer::list::const_iterator &bl) {
-    // using ceph::decode;
-    DECODE_START(1, bl);
-    decode(chunk_id, bl);
-    decode(chunk_state, bl);
-    decode(chunk_fill_offset, bl);
-    decode(mtime, bl);
-    decode(soid, bl);
-    DECODE_FINISH(bl);
-  }
-  chunk_t& operator=(const chunk_t& rhs) {
-    this->chunk_id = rhs.chunk_id;
-    this->chunk_state = rhs.chunk_state;
-    this->chunk_fill_offset = rhs.chunk_fill_offset;
-    this->pg_id = rhs.pg_id;
-    this->soid = rhs.soid;
-    this->mtime = rhs.mtime;
-    return *this;
-  }
-
-  bool operator==(const chunk_t& rhs) const {
-    return get_chunk_id() == rhs.get_chunk_id() && chunk_state == rhs.chunk_state &&
-      chunk_fill_offset == rhs.chunk_fill_offset && mtime == rhs.mtime && soid == rhs.soid;
-  }
-  bool operator!=(const chunk_t& rhs) const {
-    return get_chunk_id() != rhs.get_chunk_id() || chunk_state != rhs.chunk_state ||
-      chunk_fill_offset != rhs.chunk_fill_offset || mtime != rhs.mtime || soid != rhs.soid;
-  }
-  friend std::ostream& operator<<(std::ostream& out, const chunk_t& o) {
-    out << "chunk_id = " << int8_t(o.chunk_id) << std::endl;
-    out << "chunk_state = " << o.chunk_state << std::endl;
-    out << "chunk_fill_offset = " << o.chunk_fill_offset << std::endl;
-    out << "pg_id = " << o.pg_id << std::endl;
-    out << "soid = " << o.soid << std::endl;
-    out << "mtime = " << o.mtime << std::endl;
-    return out;
-  }
-  void dump(ceph::Formatter *f) const {
-  }
-
-  static void generate_test_instances(std::list<chunk_t*>& o) {}
-private:
-  chunk_id_t chunk_id;    // chunk id
-
-  state_t chunk_state;
-  // 计算填0部分开始的偏移
-  uint64_t chunk_fill_offset;
-  // pgid信息
-  spg_t pg_id;
-  // object元数据
-  hobject_t soid;
-  // 写入时间
-  utime_t mtime;
-};
-WRITE_CLASS_ENCODER(chunk_t)
-
-/**
- * volume_t - information about volume buffer
- *
- */
-
-class volume_t {
-public:
-  volume_t(uint32_t _cap, const spg_t& _pg_id): size(0), cap(_cap), pg_id(_pg_id) {
-    chunk_is_full.resize(cap);
-    chunk_is_full.assign(cap, false);
-  }
-  volume_t(): volume_id(hobject_t()), chunk_size(0), size(0), cap(4), pg_id(spg_t()) {
-    chunk_is_full.resize(cap);
-    chunk_is_full.assign(cap, false);
-  }
-  volume_t(const hobject_t& _oid, uint32_t _cap, const spg_t& _pg_id, uint64_t _chunk_size): 
-    volume_id(_oid), chunk_size(_chunk_size), size(0), cap(_cap), pg_id(_pg_id) {
-    chunk_is_full.resize(cap);
-    chunk_is_full.assign(cap, false);
-  }
-  void set_volume_id(const hobject_t& oid) { volume_id = oid; }
-  void set_cap(uint64_t _cap) { cap = _cap; }
-  void set_chunk_size(uint64_t _chunk_size) { chunk_size = _chunk_size; }
-  void reset_chunk_bitmap() {
-    chunk_is_full.resize(cap);
-    chunk_is_full.assign(cap, false);
-  }
-  uint64_t get_chunk_size() { return chunk_size; }
-  bool full() const { return size == cap; }
-  bool empty() const { return size == 0; }
-  uint32_t get_size() const { return size; }
-  uint32_t get_cap() const { return cap; }
-  const spg_t get_spg() const { return pg_id; }
-
-  void set_oid(const hobject_t& _oid) { volume_id = _oid; }
-  hobject_t get_oid() { return volume_id; }
-
-  const std::vector<bool>& get_chunk_bitmap() const { return chunk_is_full; }
-  // 对象是否存在
-  bool exist(hobject_t& soid) { return chunks.count(soid); }
-  // 获取指定soid所在chunk（元数据）
-  chunk_t& get_chunk(const hobject_t& soid) { return chunks[soid]; }
-  
-  // 外层已经确认过_oid存在这个volume内
-  bool is_only_valid_object(const hobject_t& _oid) {
-    for (auto &chunk_meta : chunks) {
-      if (chunk_meta.second.is_valid() &&
-          chunk_meta.second.get_oid() != _oid ) {
-        return false;
-      }
-    }
-    return true;
-  }
-
-  /**
-   * @brief 生成volume元数据的Op（SETXATTR）
-   *
-   */
-  void generate_write_meta_op(OSDOp& op) {
-    op.op.op = CEPH_OSD_OP_SETXATTR;
-    std::string name("volume_meta");
-    bufferlist bl;
-    encode(bl);
-    op.op.xattr.name_len = name.size();
-    op.indata.append(name.c_str(), op.op.xattr.name_len);
-    op.indata.append(bl);
-    op.op.xattr.value_len = bl.length();
-  }
-
-  OSDOp generate_write_meta_op() {
-    OSDOp op{};
-    op.op.op = CEPH_OSD_OP_SETXATTR;
-    std::string name("volume_meta");
-    bufferlist bl;
-    encode(bl);
-    op.op.xattr.name_len = name.size();
-    op.indata.append(name.c_str(), op.op.xattr.name_len);
-    op.indata.append(bl);
-    op.op.xattr.value_len = bl.length();
-    return op;
-  }
-
-  std::vector<const hobject_t*> get_all_soid() {
-    std::vector<const hobject_t*> out;
-    out.reserve(cap);
-    for (auto &kv : chunks) {
-      out.push_back(&(kv.first));
-    }
-    return out;
-  }
-
-  std::vector<const chunk_t*> get_all_chunks() {
-    std::vector<const chunk_t*> out;
-    for(auto& kv: chunks) {
-      out.push_back(&(kv.second));
-    }
-    return out;
-  }
-
-  uint32_t find_free_chunk() {
-    for (uint32_t i = 0; i < cap; i++) {
-      if (!chunk_is_full[i]) {
-        return i;
-      }
-    }
-    return cap;
-  }
-
-  // chunk加入volume（元数据）
-  void add_chunk(const hobject_t& soid, const chunk_t& chunk) 
-  {
-    chunks[soid] = chunk;
-    chunk_is_full[chunk.get_seq()] = true;
-    size++;
-  }
-  // 从volume中移除chunk（元数据）
-  void remove_chunk(const hobject_t& soid) 
-  {
-    auto o = chunks.find(soid);
-    if(o != chunks.end()) {
-      chunk_is_full[(*o).second.get_seq()] = false;
-      chunks.erase(o); 
-    }
-    size--;
-  }
-  // 指定soid的对象出现覆盖写，改变chunk内部数据的有效长度
-  void update_chunk(hobject_t soid, uint64_t chunk_fill_offset)
-  {
-    auto o = chunks.find(soid);
-    ceph_assert(o != chunks.end());
-    o->second.set_offset(chunk_fill_offset);
-  }
-
-  // 清空volume map, cap和pgid由pool配置决定，osd运行期间不改变
-  void clear()
-  {
-    chunks.clear();
-    for (auto i: chunk_is_full) {
-      i = false;
-    }
-    size = 0;
-  }
-
-  // TODO: 加解码
-  void encode(ceph::buffer::list &bl) const {
-    using ceph::encode;
-    ENCODE_START(1, 1, bl);
-    encode(cap, bl);
-    encode(size, bl);
-    encode(volume_id, bl);
-    encode(chunk_size, bl);
-    encode(chunks, bl);
-    encode(chunk_is_full, bl);
-    ENCODE_FINISH(bl);
-  }
-  void decode(ceph::buffer::list::const_iterator &bl) {
-    using ceph::decode;
-    DECODE_START(1, bl);
-    decode(cap, bl);
-    decode(size, bl);
-    decode(volume_id, bl);
-    decode(chunk_size, bl);
-    decode(chunks, bl);
-    decode(chunk_is_full, bl);
-    DECODE_FINISH(bl);
-  }
-  volume_t& operator=(const volume_t& rhs) {
-    this->chunks.clear();
-    for (auto chunk : rhs.chunks) {
-      this->chunks[chunk.first] = chunk.second;
-    }
-    for (uint32_t i = 0; i < cap; i++) {
-      this->chunk_is_full[i] = rhs.chunk_is_full[i];
-    }
-    this->volume_id = rhs.volume_id;
-    this->chunk_size = rhs.chunk_size;
-    this->size = rhs.size;
-    this->cap = rhs.cap;
-    this->pg_id = rhs.pg_id;
-    return *this;
-  }
-
-  bool operator==(const volume_t& rhs) const {
-    if (rhs.chunks.size() != chunks.size()) {
-      return false;
-    }
-    for(auto &kv: rhs.chunks) {
-      auto it = chunks.find(kv.first);
-      if (it == chunks.end()) {
-        return false;
-      }
-      if (it->second != kv.second) {
-        return false;
-      }
-    }
-    for (uint32_t i = 0; i < cap; i++) {
-      if (this->chunk_is_full[i] != rhs.chunk_is_full[i]) {
-        return false;
-      }
-    }
-    return volume_id == rhs.volume_id && chunk_size == rhs.chunk_size &&
-      size == rhs.size && cap == rhs.cap;
-  }
-
-  friend std::ostream& operator<<(std::ostream& out, const volume_t& o) {
-    for(auto &kv: o.chunks) {
-      out << "oid = " << kv.first << std::endl;
-      out << "chunk_meta = " << kv.second << std::endl;
-    }
-    return out;
-  }
-
-  void dump(ceph::Formatter *f) const {
-  }
-  static void generate_test_instances(std::list<volume_t*>& o) {}
-
-private:
-  // 通过oid索引，其顺序作为chunk id保存在chunk_t中，在chunk创建时赋值
-  std::unordered_map<hobject_t, chunk_t> chunks;
-  std::vector<bool> chunk_is_full;
-  hobject_t volume_id;
-  // 内部每个chunk的最大可容纳空间
-  uint64_t chunk_size;
-  // volume现有的chunk数
-  uint32_t size;
-  // volume容量
-  uint32_t cap;
-  // 所属pg编号
-  spg_t pg_id;
-};
-WRITE_CLASS_ENCODER(volume_t)
 
 struct ClsParmContext {
 public:

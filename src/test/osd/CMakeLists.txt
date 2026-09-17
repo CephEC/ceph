@@ -124,11 +124,28 @@ target_link_libraries(unittest_mclock_scheduler
   global osd dmclock os
 )
 
-# unittest_ec_aggregate
-add_executable(unittest_ec_aggregate
-  test_ec_aggregate.cc
-)
-add_ceph_unittest(unittest_ec_aggregate)
-target_link_libraries(unittest_ec_aggregate
-  global osd os
-)
+# unittest_weave
+add_executable(unittest_weave
+  ${CMAKE_SOURCE_DIR}/src/test/weave/test_weave.cc
+  ${CMAKE_SOURCE_DIR}/src/test/weave/test_weave_conversion.cc
+  ${CMAKE_SOURCE_DIR}/src/test/weave/test_weave_reclaim_timer.cc)
+target_include_directories(unittest_weave PRIVATE
+  ${CMAKE_SOURCE_DIR}/src)
+add_ceph_unittest(unittest_weave)
+target_link_libraries(unittest_weave
+  osd global ceph-common)
+add_dependencies(unittest_weave ec_jerasure)
+set_tests_properties(unittest_weave PROPERTIES
+  ENVIRONMENT "CEPH_ARGS=--admin-socket= --erasure-code-dir=${CMAKE_LIBRARY_OUTPUT_DIRECTORY}")
+
+add_test(NAME weave_boundaries
+  COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_SOURCE_DIR}/src/test/weave/check_boundaries.py ${CMAKE_SOURCE_DIR})
+
+# Explicit integration clients: require an isolated running EC cluster.
+add_executable(ceph_test_weave_compound
+  ${CMAKE_SOURCE_DIR}/src/test/weave/compound_calls.cc)
+target_link_libraries(ceph_test_weave_compound librados ceph-common)
+add_executable(ceph_test_weave_regressions
+  ${CMAKE_SOURCE_DIR}/src/test/weave/regression_client.cc)
+target_link_libraries(ceph_test_weave_regressions librados ceph-common)

@@ -2988,6 +2988,290 @@ TEST_P(StoreTest, SimpleAttrTest) {
   }
 }
 
+namespace {
+
+int commit_volume_transaction(
+  ObjectStore *store, ObjectStore::CollectionHandle& ch,
+  ObjectStore::Transaction&& t)
+{
+  C_SaferCond committed;
+  t.register_on_commit(&committed);
+  int r = store->queue_transaction(ch, std::move(t));
+  return r < 0 ? r : committed.wait();
+}
+
+::testing::AssertionResult volume_attrs_equal(
+  ObjectStore *store, ObjectStore::CollectionHandle& ch,
+  const multiset<string>& expected)
+{
+  vector<pair<hobject_t, bufferlist>> attrs;
+  int r = store->load_volume_attrs(ch, attrs);
+  if (r != 0) {
+    return ::testing::AssertionFailure() << "load_volume_attrs returned " << r;
+  }
+  multiset<string> actual;
+  for (const auto& attr : attrs) {
+    actual.insert(attr.second.to_str());
+  }
+  if (actual != expected) {
+    return ::testing::AssertionFailure()
+      << "expected " << ::testing::PrintToString(expected)
+      << ", got " << ::testing::PrintToString(actual);
+  }
+  return ::testing::AssertionSuccess();
+}
+
+} // anonymous namespace
+
+TEST_P(StoreTest, BlueStoreVolumeAttrsCollectionIsolation) {
+  if (string(GetParam()) != "bluestore")
+    return;
+
+  const int64_t pool = 447;
+  vector<coll_t> collections = {
+    coll_t(spg_t(pg_t(0, pool), shard_id_t(1))),
+    coll_t(spg_t(pg_t(1, pool), shard_id_t(1))),
+    coll_t(spg_t(pg_t(0, pool), shard_id_t(2)))
+  };
+  vector<ObjectStore::CollectionHandle> handles;
+  vector<vector<ghobject_t>> objects(collections.size());
+  bufferlist opaque, empty_members, other;
+  opaque.append("opaque\0metadata", 15);
+  other.append("other collection");
+  for (unsigned i = 0; i < collections.size(); ++i) {
+    const auto& cid = collections[i];
+    handles.push_back(store->create_new_collection(cid));
+    ObjectStore::Transaction t;
+    t.create_collection(cid, 1);
+    for (unsigned j = 0; j < 6; ++j) {
+      const bool last_hash = i == 1 && j == 0;
+      ghobject_t oid(
+        hobject_t("object_" + stringify(j), "", CEPH_NOSNAP,
+                  last_hash ? 0xffffffffu : 2 * j + (i == 1), pool,
+                  last_hash ? string(1, char(0xff)) : ""),
+        ghobject_t::NO_GEN, shard_id_t(i == 2 ? 2 : 1));
+      objects[i].push_back(oid);
+      t.touch(cid, oid);
+      if (j == 0) {
+        t.setattr(cid, oid, "_volume_meta", i == 0 ? opaque : other);
+      } else if (i == 0 && j == 1) {
+        // Version 3 Volume metadata with zero members. The store must
+        // return these bytes unchanged, not decide whether it is live.
+        ENCODE_START(3, 3, empty_members);
+        encode(oid.hobj, empty_members);
+        encode(uint32_t(2), empty_members);
+        encode(uint64_t(4096), empty_members);
+        encode(uint32_t(0), empty_members);
+        ENCODE_FINISH(empty_members);
+        t.setattr(cid, oid, "_volume_meta", empty_members);
+      } else {
+        t.setattr(cid, oid, "_volume_meta_extra", other);
+        t.setattr(cid, oid, "volume_meta", other);
+      }
+    }
+    ASSERT_EQ(0, commit_volume_transaction(store.get(), handles[i],
+                                           std::move(t)));
+  }
+  ASSERT_TRUE(volume_attrs_equal(store.get(), handles[0],
+                                {opaque.to_str(), empty_members.to_str()}));
+  ASSERT_TRUE(volume_attrs_equal(store.get(), handles[1], {other.to_str()}));
+  ASSERT_TRUE(volume_attrs_equal(store.get(), handles[2], {other.to_str()}));
+
+#if defined(WITH_BLUESTORE)
+  // Recreate a legacy store: persisted onodes, but no Volume index or
+  // completion marker. Only the subsequent mount may rebuild the catalog.
+  handles.clear();
+  ASSERT_EQ(0, store->umount());
+  auto bstore = static_cast<BlueStore*>(store.get());
+  KeyValueDB *db = nullptr;
+  ASSERT_EQ(0, bstore->open_db_environment(&db, false));
+  auto legacy = db->get_transaction();
+  legacy->rmkeys_by_prefix("V");
+  legacy->rmkey("S", "weave_volume_index");
+  int r = db->submit_transaction_sync(legacy);
+  ASSERT_EQ(0, bstore->close_db_environment());
+  ASSERT_EQ(0, r);
+  ASSERT_EQ(0, store->mount());
+  for (const auto& cid : collections) {
+    handles.push_back(store->open_collection(cid));
+    ASSERT_TRUE(handles.back());
+  }
+  ASSERT_TRUE(volume_attrs_equal(store.get(), handles[0],
+                                {opaque.to_str(), empty_members.to_str()}));
+  ASSERT_TRUE(volume_attrs_equal(store.get(), handles[1], {other.to_str()}));
+  ASSERT_TRUE(volume_attrs_equal(store.get(), handles[2], {other.to_str()}));
+#endif
+
+  for (unsigned i = 0; i < collections.size(); ++i) {
+    ObjectStore::Transaction t;
+    for (const auto& oid : objects[i]) {
+      t.remove(collections[i], oid);
+    }
+    t.remove_collection(collections[i]);
+    ASSERT_EQ(0, commit_volume_transaction(store.get(), handles[i],
+                                           std::move(t)));
+  }
+}
+
+TEST_P(StoreTest, BlueStoreVolumeAttrsLifecycle) {
+  if (string(GetParam()) != "bluestore")
+    return;
+
+  coll_t cid(spg_t(pg_t(0, 447), shard_id_t::NO_SHARD));
+  ghobject_t oid(hobject_t("volume", "", CEPH_NOSNAP, 0, 447, ""));
+  auto ch = store->create_new_collection(cid);
+  bufferlist first, updated;
+  first.append("first");
+  updated.append("updated\0metadata", 16);
+  {
+    ObjectStore::Transaction t;
+    t.create_collection(cid, 0);
+    t.touch(cid, oid);
+    t.setattr(cid, oid, "_volume_meta", first);
+    ASSERT_EQ(0, commit_volume_transaction(store.get(), ch, std::move(t)));
+  }
+  ASSERT_TRUE(volume_attrs_equal(store.get(), ch, {first.to_str()}));
+  {
+    ObjectStore::Transaction t;
+    map<string, bufferlist, less<>> attrs = {
+      {"_volume_meta", updated}, {"_volume_meta_extra", first}
+    };
+    t.setattrs(cid, oid, attrs);
+    ASSERT_EQ(0, commit_volume_transaction(store.get(), ch, std::move(t)));
+  }
+  ASSERT_TRUE(volume_attrs_equal(store.get(), ch, {updated.to_str()}));
+  {
+    ObjectStore::Transaction t;
+    t.rmattr(cid, oid, "_volume_meta");
+    ASSERT_EQ(0, commit_volume_transaction(store.get(), ch, std::move(t)));
+  }
+  ASSERT_TRUE(volume_attrs_equal(store.get(), ch, {}));
+  {
+    ObjectStore::Transaction t;
+    t.setattr(cid, oid, "_volume_meta", first);
+    ASSERT_EQ(0, commit_volume_transaction(store.get(), ch, std::move(t)));
+  }
+  ASSERT_TRUE(volume_attrs_equal(store.get(), ch, {first.to_str()}));
+  {
+    ObjectStore::Transaction t;
+    t.rmattrs(cid, oid);
+    ASSERT_EQ(0, commit_volume_transaction(store.get(), ch, std::move(t)));
+  }
+  ASSERT_TRUE(volume_attrs_equal(store.get(), ch, {}));
+  {
+    ObjectStore::Transaction t;
+    t.setattr(cid, oid, "_volume_meta", updated);
+    ASSERT_EQ(0, commit_volume_transaction(store.get(), ch, std::move(t)));
+  }
+  ASSERT_TRUE(volume_attrs_equal(store.get(), ch, {updated.to_str()}));
+  {
+    ObjectStore::Transaction t;
+    t.remove(cid, oid);
+    t.touch(cid, oid);
+    t.setattr(cid, oid, "_volume_meta_extra", first);
+    ASSERT_EQ(0, commit_volume_transaction(store.get(), ch, std::move(t)));
+  }
+  ASSERT_TRUE(volume_attrs_equal(store.get(), ch, {}));
+  ch.reset();
+  ASSERT_EQ(0, store->umount());
+  ASSERT_EQ(0, store->mount());
+  ch = store->open_collection(cid);
+  ASSERT_TRUE(ch);
+  ASSERT_TRUE(volume_attrs_equal(store.get(), ch, {}));
+  {
+    ObjectStore::Transaction t;
+    t.setattr(cid, oid, "_volume_meta", first);
+    ASSERT_EQ(0, commit_volume_transaction(store.get(), ch, std::move(t)));
+  }
+  ASSERT_TRUE(volume_attrs_equal(store.get(), ch, {first.to_str()}));
+  {
+    ObjectStore::Transaction t;
+    t.remove(cid, oid);
+    ASSERT_EQ(0, commit_volume_transaction(store.get(), ch, std::move(t)));
+  }
+  ASSERT_TRUE(volume_attrs_equal(store.get(), ch, {}));
+  {
+    ObjectStore::Transaction t;
+    t.remove_collection(cid);
+    ASSERT_EQ(0, commit_volume_transaction(store.get(), ch, std::move(t)));
+  }
+}
+
+TEST_P(StoreTest, BlueStoreVolumeAttrsCloneRenameRemount) {
+  if (string(GetParam()) != "bluestore")
+    return;
+
+  coll_t cid(spg_t(pg_t(0, 447), shard_id_t::NO_SHARD));
+  ghobject_t source(hobject_t("source", "", CEPH_NOSNAP, 0, 447, ""));
+  ghobject_t clone(hobject_t("clone", "", CEPH_NOSNAP, 0, 447, ""));
+  ghobject_t renamed(hobject_t("renamed", "", CEPH_NOSNAP, 4, 447, ""));
+  auto ch = store->create_new_collection(cid);
+  bufferlist original, replacement;
+  original.append("original");
+  replacement.append("replacement");
+  {
+    ObjectStore::Transaction t;
+    t.create_collection(cid, 0);
+    t.touch(cid, source);
+    t.setattr(cid, source, "_volume_meta", original);
+    t.clone(cid, source, clone);
+    ASSERT_EQ(0, commit_volume_transaction(store.get(), ch, std::move(t)));
+  }
+  // Multiplicity matters: both Volume objects must be returned.
+  ASSERT_TRUE(volume_attrs_equal(store.get(), ch,
+                                {original.to_str(), original.to_str()}));
+  {
+    ObjectStore::Transaction t;
+    t.collection_move_rename(cid, clone, cid, renamed);
+    t.touch(cid, clone);
+    t.setattr(cid, clone, "_volume_meta", replacement);
+    t.remove(cid, source);
+    ASSERT_EQ(0, commit_volume_transaction(store.get(), ch, std::move(t)));
+  }
+  ASSERT_TRUE(volume_attrs_equal(store.get(), ch,
+                                {original.to_str(), replacement.to_str()}));
+  ch.reset();
+  ASSERT_EQ(0, store->umount());
+  ASSERT_EQ(0, store->mount());
+  ch = store->open_collection(cid);
+  ASSERT_TRUE(ch);
+  ASSERT_TRUE(volume_attrs_equal(store.get(), ch,
+                                {original.to_str(), replacement.to_str()}));
+  {
+    ObjectStore::Transaction t;
+    t.remove(cid, renamed);
+    t.collection_move_rename(cid, clone, cid, renamed);
+    ASSERT_EQ(0, commit_volume_transaction(store.get(), ch, std::move(t)));
+  }
+  ASSERT_TRUE(volume_attrs_equal(store.get(), ch, {replacement.to_str()}));
+  ch.reset();
+  ASSERT_EQ(0, store->umount());
+  ASSERT_EQ(0, store->mount());
+  ch = store->open_collection(cid);
+  ASSERT_TRUE(ch);
+  ASSERT_TRUE(volume_attrs_equal(store.get(), ch, {replacement.to_str()}));
+  ghobject_t plain(hobject_t("plain", "", CEPH_NOSNAP, 4, 447, ""));
+  {
+    ObjectStore::Transaction t;
+    t.touch(cid, plain);
+    t.clone(cid, plain, renamed);
+    ASSERT_EQ(0, commit_volume_transaction(store.get(), ch, std::move(t)));
+  }
+  ASSERT_TRUE(volume_attrs_equal(store.get(), ch, {}));
+  {
+    ObjectStore::Transaction t;
+    t.remove(cid, renamed);
+    t.remove(cid, plain);
+    ASSERT_EQ(0, commit_volume_transaction(store.get(), ch, std::move(t)));
+  }
+  ASSERT_TRUE(volume_attrs_equal(store.get(), ch, {}));
+  {
+    ObjectStore::Transaction t;
+    t.remove_collection(cid);
+    ASSERT_EQ(0, commit_volume_transaction(store.get(), ch, std::move(t)));
+  }
+}
+
 TEST_P(StoreTest, SimpleListTest) {
   int r;
   coll_t cid(spg_t(pg_t(0, 1), shard_id_t(1)));

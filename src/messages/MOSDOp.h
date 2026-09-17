@@ -21,6 +21,8 @@
 #include "MOSDFastDispatchOp.h"
 #include "include/ceph_features.h"
 #include "common/hobject.h"
+#include "osd/weave/WeaveReadRoute.h"
+#include <optional>
 
 /*
  * OSD op
@@ -36,7 +38,7 @@ namespace _mosdop {
 template<typename V>
 class MOSDOp final : public MOSDFastDispatchOp {
 private:
-  static constexpr int HEAD_VERSION = 9;
+  static constexpr int HEAD_VERSION = 10;
   static constexpr int COMPAT_VERSION = 3;
 
 private:
@@ -63,6 +65,8 @@ private:
 
   uint64_t features;
   bool bdata_encode;
+  bool weave_redirect_allowed = false;
+  std::optional<ceph::weave::WeaveReadRoute> weave_read_route;
   osd_reqid_t reqid; // reqid explicitly set by sender
 
 public:
@@ -84,6 +88,12 @@ public:
   }
 
   void set_hobj(const hobject_t& h) { hobj = h; }
+  void allow_weave_redirect(bool allowed) { weave_redirect_allowed = allowed; }
+  bool allows_weave_redirect() const { return weave_redirect_allowed; }
+  void set_weave_read_route(const ceph::weave::WeaveReadRoute& route) {
+    weave_read_route = route;
+  }
+  const auto& get_weave_read_route() const { return weave_read_route; }
 
   // Fields decoded in partial decoding
   pg_t get_pg() const {
@@ -176,49 +186,6 @@ public:
       partial_decode_needed(true),
       final_decode_needed(true),
       bdata_encode(false) { }
-  MOSDOp(int inc, long tid, const hobject_t& ho, spg_t& _pgid,
-	 epoch_t _osdmap_epoch,
-	 int _flags, uint64_t feat)
-    : MOSDFastDispatchOp(CEPH_MSG_OSD_OP, HEAD_VERSION, COMPAT_VERSION),
-      client_inc(inc),
-      osdmap_epoch(_osdmap_epoch), flags(_flags), retry_attempt(-1),
-      hobj(ho),
-      pgid(_pgid),
-      partial_decode_needed(false),
-      final_decode_needed(false),
-      features(feat),
-      bdata_encode(false) {
-    set_tid(tid);
-
-    // also put the client_inc in reqid.inc, so that get_reqid() can
-    // be used before the full message is decoded.
-    reqid.inc = inc;
-  }
-
-  MOSDOp(MOSDOp * m)
-    : MOSDFastDispatchOp(*m),
-      client_inc(m->client_inc),
-      osdmap_epoch(m->osdmap_epoch),
-      flags(m->flags),
-      retry_attempt(m->retry_attempt),
-      hobj(m->hobj),
-      pgid(m->pgid),
-      p(m->p),
-      partial_decode_needed(m->partial_decode_needed.load()),
-      final_decode_needed(m->final_decode_needed.load()) {
-    features = m->features;
-    bdata_encode = m->bdata_encode;
-    set_tid(m->get_tid());
-    reqid.inc = m->reqid.inc;
-    reqid.name = m->reqid.name;
-    reqid.tid = m->reqid.tid;
-    snap_seq = m->snap_seq;
-    for (auto osd_op : m->ops) {
-      ops.push_back(osd_op);
-    }
-    set_mtime(m->mtime);
-  }
-
   MOSDOp(int inc, long tid, const hobject_t& ho, const spg_t& _pgid,
 	 epoch_t _osdmap_epoch,
 	 int _flags, uint64_t feat)
@@ -246,9 +213,6 @@ public:
   void set_mtime(ceph::real_time mt) {
     mtime = ceph::real_clock::to_timespec(mt);
   }
-
-  void set_final_decode_needed(bool val) { final_decode_needed = val; }
-  void set_partial_decode_needed(bool val) { partial_decode_needed = val; }
 
   // ops
   void add_simple_op(int o, uint64_t off, uint64_t len) {
@@ -301,8 +265,6 @@ public:
     using ceph::encode;
     if( false == bdata_encode ) {
       OSDOp::merge_osd_op_vector_in_data(ops, data);
-      // stat命令随着read命令转译后，需要将outdata的数据一路转发到replicateOSD再返回
-      OSDOp::merge_osd_op_vector_out_data_for_AggregateEC(ops, data);
       bdata_encode = true;
     }
 
@@ -414,9 +376,10 @@ struct ceph_osd_request_head {
     } else {
       // latest v8 encoding with hobject_t hash separate from pgid, no
       // reassert version
-
-      // v9相比v8，增加了对outdata的编码
-      header.version = HEAD_VERSION;
+      // Bit 38 had a different meaning before Octopus. Require the Quincy
+      // marker as well so an older peer can never be mistaken for Weave.
+      header.version = (HAVE_FEATURE(features, WEAVE_READ_REDIRECT) &&
+                        HAVE_FEATURE(features, SERVER_QUINCY)) ? HEAD_VERSION : 8;
 
       encode(pgid, payload);
       encode(hobj.get_hash(), payload);
@@ -443,9 +406,9 @@ struct ceph_osd_request_head {
 
       encode(retry_attempt, payload);
       encode(features, payload);
-      for (unsigned i = 0; i < ops.size(); i++) {
-        uint64_t outdata_len = ops[i].outdata.length();
-        encode(outdata_len, payload);
+      if (header.version >= 10) {
+        encode(weave_redirect_allowed, payload);
+        encode(weave_read_route, payload);
       }
     }
   }
@@ -616,25 +579,16 @@ struct ceph_osd_request_head {
 
     decode(features, p);
 
+    if (header.version >= 10) {
+      decode(weave_redirect_allowed, p);
+      decode(weave_read_route, p);
+    }
+
     hobj.pool = pgid.pgid.pool();
     hobj.set_key(oloc.key);
     hobj.nspace = oloc.nspace;
 
-    uint64_t off = OSDOp::split_osd_op_vector_in_data(ops, data);
-
-    if (header.version == HEAD_VERSION) {
-      std::vector<uint64_t> outdata_lens(ops.size());
-      uint64_t sum = 0;
-      for (unsigned i = 0; i < num_ops; i++) {
-        decode(outdata_lens[i], p);
-        sum += outdata_lens[i];
-      }
-      // stat命令随着read命令转译后，需要将outdata的数据一路转发到replicateOSD再返回
-      bufferlist tmp_bl;
-      tmp_bl.substr_of(data, off, data.length() - off);
-      ceph_assert(sum <= tmp_bl.length());
-      OSDOp::split_osd_op_vector_out_data_for_AggregateEC(ops, tmp_bl, outdata_lens);
-    }
+    OSDOp::split_osd_op_vector_in_data(ops, data);
 
     final_decode_needed = false;
     return true;

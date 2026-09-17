@@ -57,6 +57,7 @@
 #include "msg/Dispatcher.h"
 
 #include "osd/OSDMap.h"
+#include "WeaveReadSession.h"
 
 class Context;
 class Messenger;
@@ -1769,8 +1770,6 @@ public:
     object_locator_t base_oloc;
     object_t target_oid;
     object_locator_t target_oloc;
-    object_t redirect_oid;
-    object_locator_t redirect_oloc;
 
     ///< true if we are directed at base_pgid, not base_oid
     bool precalc_pgid = false;
@@ -1801,6 +1800,7 @@ public:
     int32_t peering_crush_mandatory_member = CRUSH_ITEM_NONE;
 
     bool used_replica = false;
+    ceph::weave::WeaveReadSession weave_read;
     bool paused = false;
 
     int osd = -1;      ///< the final target osd, or -1
@@ -1904,7 +1904,6 @@ public:
     uint64_t features = CEPH_FEATURES_SUPPORTED_DEFAULT; // explicitly specified op features
 
     osdc_opvec ops;
-    osdc_opvec translated_ops; // aggregateEC读优化中被使用(即被转译后的ops)
 
     snapid_t snapid = CEPH_NOSNAP;
     SnapContext snapc;
@@ -2715,7 +2714,6 @@ private:
   void emit_blocklist_events(const OSDMap &old_osd_map,
                              const OSDMap &new_osd_map);
 
-  void redirect_to_replicateOSD(MOSDOpReply *m, Op *op, shunique_lock<ceph::shared_mutex>& sul);
 
   // low-level
   void _op_submit(Op *op, ceph::shunique_lock<ceph::shared_mutex>& lc,

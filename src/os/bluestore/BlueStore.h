@@ -1140,6 +1140,7 @@ public:
 
     bluestore_onode_t onode;  ///< metadata stored as value in kv store
     bool exists;              ///< true if object logically exists
+    bool volume_indexed = false; ///< membership after the last recorded onode
     bool cached;              ///< Onode is logically in the cache
                               /// (it can be pinned and hence physically out
                               /// of it at the moment though)
@@ -2612,6 +2613,7 @@ private:
   int _set_bdev_label_size(const std::string& path, uint64_t size);
 
   int _open_super_meta();
+  int _open_volume_index();
 
   void _open_statfs();
   void _get_statfs_overall(struct store_statfs_t *buf);
@@ -3045,9 +3047,8 @@ public:
   int getattrs(CollectionHandle &c, const ghobject_t& oid,
 	       std::map<std::string,ceph::buffer::ptr, std::less<>>& aset) override;
 
-  // volume_meta Vol_id->chunk_meta list
   int load_volume_attrs(CollectionHandle &c,
-         std::vector<bufferlist> &volume_meta) override;
+         std::vector<std::pair<hobject_t, bufferlist>>& volume_meta) override;
 
   int list_collections(std::vector<coll_t>& ls) override;
 

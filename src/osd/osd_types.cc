@@ -307,8 +307,6 @@ void request_redirect_t::encode(ceph::buffer::list& bl) const
   ENCODE_START(1, 1, bl);
   encode(redirect_locator, bl);
   encode(redirect_object, bl);
-  encode(redirect_osd, bl);
-  encode(redirect_shard, bl);
   // legacy of the removed osd_instructions member
   encode((uint32_t)0, bl);
   ENCODE_FINISH(bl);
@@ -320,8 +318,6 @@ void request_redirect_t::decode(ceph::buffer::list::const_iterator& bl)
   uint32_t legacy_osd_instructions_len;
   decode(redirect_locator, bl);
   decode(redirect_object, bl);
-  decode(redirect_osd, bl);
-  decode(redirect_shard, bl);
   decode(legacy_osd_instructions_len, bl);
   if (legacy_osd_instructions_len) {
     bl += legacy_osd_instructions_len;
@@ -344,7 +340,6 @@ void request_redirect_t::generate_test_instances(list<request_redirect_t*>& o)
   o.push_back(new request_redirect_t(loc, 0));
   o.push_back(new request_redirect_t(loc, "redir_obj"));
   o.push_back(new request_redirect_t(loc));
-  o.push_back(new request_redirect_t(loc, "redir_obj", 0, shard_id_t()));
 }
 
 void objectstore_perf_stat_t::dump(Formatter *f) const
@@ -7158,17 +7153,14 @@ ostream& operator<<(ostream& out, const OSDOp& op)
 }
 
 
-uint64_t OSDOp::split_osd_op_vector_out_data(vector<OSDOp>& ops, ceph::buffer::list& in)
+void OSDOp::split_osd_op_vector_out_data(vector<OSDOp>& ops, ceph::buffer::list& in)
 {
-  uint64_t off = 0;
   auto datap = in.begin();
   for (unsigned i = 0; i < ops.size(); i++) {
     if (ops[i].op.payload_len) {
       datap.copy(ops[i].op.payload_len, ops[i].outdata);
-      off += ops[i].op.payload_len;
     }
   }
-  return off;
 }
 
 void OSDOp::merge_osd_op_vector_out_data(vector<OSDOp>& ops, ceph::buffer::list& out)

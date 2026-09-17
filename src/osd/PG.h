@@ -54,6 +54,10 @@
 
 class OSD;
 class OSDService;
+namespace ceph::weave {
+class WeavePGController;
+class WeavePGHost;
+}
 class OSDShard;
 class OSDShardPGSlot;
 
@@ -748,7 +752,6 @@ public:
     ThreadPool::TPHandle &handle
   ) = 0;
   
-  virtual void load_volume_attrs() = 0;
   virtual void clear_cache() = 0;
   virtual int get_cache_obj_count() = 0;
 

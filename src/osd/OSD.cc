@@ -47,6 +47,7 @@
 #include "OSDMap.h"
 #include "Watch.h"
 #include "osdc/Objecter.h"
+#include "weave/WeaveService.h"
 
 #include "common/errno.h"
 #include "common/ceph_argparse.h"
@@ -309,6 +310,14 @@ OSDService::OSDService(OSD *osd, ceph::async::io_context_pool& poolctx) :
     auto fin = make_unique<Finisher>(osd->client_messenger->cct, str.str(), "finisher");
     objecter_finishers.push_back(std::move(fin));
   }
+  weave_service =
+    make_unique<ceph::weave::WeaveService>(cct);
+}
+
+OSDService::~OSDService()
+{
+  // Also covers construction/init failure before the normal shutdown path.
+  weave_service->shutdown();
 }
 
 #ifdef PG_DEBUG_REFS
@@ -485,6 +494,8 @@ void OSDService::queue_renew_lease(epoch_t epoch, spg_t spgid)
 
 void OSDService::start_shutdown()
 {
+  weave_service->shutdown();
+
   {
     std::lock_guard l(agent_timer_lock);
     agent_timer.shutdown();
@@ -2530,6 +2541,23 @@ void OSD::asok_command(
   stringstream ss;   // stderr error message stream
   bufferlist outbl;  // if empty at end, we'll dump formatter as output
 
+  if (prefix == "aggregate_ec cleanup") {
+    {
+      std::lock_guard l(osd_lock);
+      if (is_stopping()) {
+        ret = -ESHUTDOWN;
+        ss << "OSD is stopping";
+      } else {
+        f->open_object_section("aggregate_cleanup");
+        f->dump_string("status", request_weave_reclaim()
+          ? "accepted" : "already_running");
+        f->close_section();
+      }
+    }
+    on_finish(ret, ss.str(), outbl);
+    return;
+  }
+
   // --- PG commands are routed here to PG::do_command ---
   if (prefix == "pg" ||
       prefix == "query" ||
@@ -3794,6 +3822,10 @@ int OSD::init()
   // start the heartbeat
   heartbeat_thread.create("osd_srv_heartbt");
 
+  ceph_assert(service.weave_service->update_reclaim_time(
+    cct->_conf.get_val<std::string>("osd_aggregate_cleanup_time"),
+    ceph_clock_now().sec()));
+
   // tick
   tick_timer.add_event_after(get_tick_interval(),
 			     new C_Tick(this));
@@ -3882,6 +3914,9 @@ void OSD::final_init()
   asok_hook = new OSDSocketHook(this);
   int r = admin_socket->register_command("status", asok_hook,
 					 "high-level status of OSD");
+  ceph_assert(r == 0);
+  r = admin_socket->register_command("aggregate_ec cleanup", asok_hook,
+    "enqueue sparse aggregate Volume cleanup (accepted or already_running)");
   ceph_assert(r == 0);
   r = admin_socket->register_command("flush_journal",
                                      asok_hook,
@@ -4302,6 +4337,12 @@ int OSD::shutdown()
 
   // don't accept new task for this OSD
   set_state(STATE_STOPPING);
+
+  // Join the background worker before draining PGs or stopping Objecter.
+  // Its callback may take PG/OSD locks, so do not join under osd_lock.
+  osd_lock.unlock();
+  service.weave_service->shutdown();
+  osd_lock.lock();
 
   // Disabled debugging during fast-shutdown
   if (!cct->_conf->osd_fast_shutdown && cct->_conf.get_val<bool>("osd_debug_shutdown")) {
@@ -6055,12 +6096,39 @@ bool OSD::heartbeat_reset(Connection *con)
 
 // =========================================
 
+ceph::weave::WeaveService::Dispatch OSD::snapshot_weave_reclaim()
+{
+  ceph_assert(ceph_mutex_is_locked(osd_lock));
+  std::vector<PGRef> pgs;
+  _get_pgs(&pgs);
+  return [pgs = std::move(pgs)](unsigned live_percent, std::function<void()> done) {
+    for (const auto& pg : pgs) {
+      std::lock_guard<PG> lock(*pg);
+      if (!pg->is_deleted() && pg->is_primary() && pg->get_pool().info.is_erasure())
+        static_cast<PrimaryLogPG*>(pg.get())->request_weave_reclaim(live_percent, done);
+    }
+  };
+}
+
+bool OSD::request_weave_reclaim()
+{
+  ceph_assert(ceph_mutex_is_locked(osd_lock));
+  ceph_assert(!is_stopping());
+  return service.weave_service->request_reclaim(
+    cct->_conf.get_val<uint64_t>("osd_aggregate_cleanup_live_percent"),
+    [this] { return snapshot_weave_reclaim(); }) ==
+      ceph::weave::WeaveService::ReclaimResult::kAccepted;
+}
+
 void OSD::tick()
 {
   ceph_assert(ceph_mutex_is_locked(osd_lock));
   dout(10) << "tick" << dendl;
 
   utime_t now = ceph_clock_now();
+  service.weave_service->tick(now.sec(), !is_stopping() && is_active(),
+    cct->_conf.get_val<uint64_t>("osd_aggregate_cleanup_live_percent"),
+    [this] { return snapshot_weave_reclaim(); });
   // throw out any obsolete markdown log
   utime_t grace = utime_t(cct->_conf->osd_max_markdown_period, 0);
   while (!osd_markdown_log.empty() &&
@@ -9957,6 +10025,13 @@ const char** OSD::get_tracked_conf_keys() const
     "osd_object_clean_region_max_num_intervals",
     "osd_scrub_min_interval",
     "osd_scrub_max_interval",
+    "osd_aggregate_cleanup_time",
+    "osd_aggregate_background_enabled",
+    "osd_aggregate_min_object_size",
+    "osd_aggregate_max_volume_size",
+    "osd_aggregate_quiet_period",
+    "osd_aggregate_scan_interval",
+    "osd_aggregate_max_padding_percent",
     NULL
   };
   return KEYS;
@@ -9966,6 +10041,31 @@ void OSD::handle_conf_change(const ConfigProxy& conf,
 			     const std::set <std::string> &changed)
 {
   std::lock_guard l{osd_lock};
+  if (changed.count("osd_aggregate_cleanup_time")) {
+    ceph_assert(service.weave_service->update_reclaim_time(
+      conf.get_val<std::string>("osd_aggregate_cleanup_time"),
+      ceph_clock_now().sec()));
+  }
+  if ((changed.count("osd_aggregate_background_enabled") ||
+       changed.count("osd_aggregate_min_object_size") ||
+       changed.count("osd_aggregate_max_volume_size") ||
+       changed.count("osd_aggregate_quiet_period") ||
+       changed.count("osd_aggregate_scan_interval") ||
+       changed.count("osd_aggregate_max_padding_percent")) &&
+      service.weave_service && !is_stopping()) {
+    // Candidates restored while scanning was disabled must not require a new
+    // foreground commit to wake up. Do not acquire PG locks under osd_lock.
+    std::vector<PGRef> pgs;
+    _get_pgs(&pgs);
+    service.weave_service->wake_candidates([pgs = std::move(pgs)] {
+      for (const auto& pg : pgs) {
+        std::lock_guard<PG> l(*pg);
+        if (!pg->is_deleted() && pg->is_primary() &&
+            pg->get_pool().info.is_erasure())
+          static_cast<PrimaryLogPG*>(pg.get())->schedule_aggregate_work();
+      }
+    });
+  }
 
   if (changed.count("osd_max_backfills") ||
       changed.count("osd_delete_sleep") ||

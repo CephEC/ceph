@@ -628,11 +628,12 @@ public:
     return r;
   }
 
-  /*
-   * load_volume_attrs -- 将磁盘中的映射表信息加载到内存中
-   */
+  // Return current head objects with their exact _volume_meta attribute.
+  // The object identity, not an identity claimed by the payload, is authoritative.
   virtual int load_volume_attrs(CollectionHandle &c,
-         std::vector<bufferlist> &volume_meta) { return 0; };
+         std::vector<std::pair<hobject_t, bufferlist>>& volume_meta) {
+    return -EOPNOTSUPP;
+  }
 
   // collections
 

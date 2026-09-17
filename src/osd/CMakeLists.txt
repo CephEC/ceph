@@ -13,9 +13,17 @@ set(osd_srcs
   OSD.cc
   Watch.cc
   ClassHandler.cc
-  AggregateChunk.cc
-  AggregateVolume.cc
-  AggregateBuffer.cc
+  weave/detail/WeaveMemberAccess.cc
+  weave/detail/WeaveReadRouter.cc
+  weave/detail/WeaveScheduler.cc
+  weave/detail/WeaveCandidateIndex.cc
+  weave/WeaveECAdapter.cc
+  weave/WeavePGController.cc
+  weave/detail/WeavePGControllerImpl.cc
+  weave/detail/WeaveConversionJob.cc
+  weave/WeaveCephHost.cc
+  weave/WeaveService.cc
+  weave/detail/WeaveCatalog.cc
   PG.cc
   PGLog.cc
   PrimaryLogPG.cc

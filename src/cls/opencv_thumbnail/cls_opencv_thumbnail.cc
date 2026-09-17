@@ -2,6 +2,8 @@
 #include "include/rados/objclass.h"
 
 #include <vector>
+#include <cmath>
+#include <limits>
 
 #include <opencv2/opencv.hpp>
 
@@ -26,51 +28,63 @@ using ceph::decode;
 // 4. cls算子decode param，获取客户端指定的参数，进行对应处理
 
 // the implementation accepts an in-memory file, reshape it according to 
-static void downscale_impl(bufferlist *in, bufferlist *out, opencv_thumbnail_op_t &op) {
+static int downscale_impl(bufferlist *in, bufferlist *out, const opencv_thumbnail_op_t &op) {
   using cv::Mat;
   using cv::resize;
   using cv::imdecode;
   using cv::imencode;
 
   // read and decode image
+  if (!in->length() || in->length() > std::numeric_limits<int>::max())
+    return -EINVAL;
   Mat file_buf(1, in->length(), CV_8U, in->c_str());
 
   Mat img_raw;
   imdecode(file_buf, cv::ImreadModes::IMREAD_UNCHANGED, &img_raw);
+  if (img_raw.empty()) return -EINVAL;
 
   Mat img_out;
   if(op.is_ratio_shape) {
     // ensure that we are not upscaling the image
-    ceph_assert(op.shape.ratio.x * op.shape.ratio.y <= 1);
+    if (!std::isfinite(op.shape.ratio.x) || !std::isfinite(op.shape.ratio.y) ||
+        op.shape.ratio.x <= 0 || op.shape.ratio.x > 1 ||
+        op.shape.ratio.y <= 0 || op.shape.ratio.y > 1)
+      return -EINVAL;
     resize(img_raw, img_out, cv::Size(), op.shape.ratio.x, op.shape.ratio.y);
   } else {
-    ceph_assert(op.shape.fixed.x <= static_cast<uint32_t>(img_raw.cols)
-      && op.shape.fixed.y <= static_cast<uint32_t>(img_raw.rows));
+    if (!op.shape.fixed.x || !op.shape.fixed.y ||
+        op.shape.fixed.x > static_cast<uint32_t>(img_raw.cols) ||
+        op.shape.fixed.y > static_cast<uint32_t>(img_raw.rows))
+      return -EINVAL;
     resize(img_raw, img_out, cv::Size(op.shape.fixed.x, op.shape.fixed.y), 0, 0);
   }
 
   vector<unsigned char> file_out; 
-  imencode(".jpg", img_out, file_out);
+  if (!imencode(".jpg", img_out, file_out)) return -EINVAL;
 
   out->append(reinterpret_cast<char*>(file_out.data()), file_out.size());
 
   cls_log(20, "in %s: mode %s, in data size %u, out data size %u", __func__, op.is_ratio_shape ? "ratio" : "fixed", in->length(), out->length());
+  return 0;
 }
 
 static int downscale(cls_method_context_t hctx, bufferlist *in, bufferlist *out) {
   opencv_thumbnail_op_t op;
-  decode(op, reinterpret_cast<ClsParmContext*>(hctx)->parm_data);
 
   // in modified EC cls, in is target object data instead of cls data
   try {
-    downscale_impl(in, out, op);
+    auto p = reinterpret_cast<ClsParmContext*>(hctx)->parm_data.cbegin();
+    decode(op, p);
+    if (!p.end()) return -EINVAL;
+    return downscale_impl(in, out, op);
+  } catch (const ceph::buffer::error&) {
+    return -EINVAL;
   } catch (const cv::Exception& e) {
     // OpenCV failed to perform the resize operation
     CLS_ERR("in %s: opencv image resize failed: %s", __func__, e.what());
     return -EINVAL;
   }
 
-  return 0;
 }
 
 CLS_INIT(opencv_thumbnail) {

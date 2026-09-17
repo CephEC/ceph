@@ -184,10 +184,6 @@ void PG::dump_live_ids()
 }
 #endif
 
-void on_active_state(PG *pg) {
-  pg->load_volume_attrs();
-}
-
 PG::PG(OSDService *o, OSDMapRef curmap,
        const PGPool &_pool, spg_t p) :
   pg_whoami(o->whoami, p.shard),
@@ -220,8 +216,7 @@ PG::PG(OSDService *o, OSDMapRef curmap,
     _pool,
     curmap,
     this,
-    this,
-    std::bind(on_active_state, this)),
+    this),
   pool(recovery_state.get_pool()),
   info(recovery_state.get_info())
 {
@@ -2269,10 +2264,6 @@ ostream& operator<<(ostream& out, const PG& pg)
 
 bool PG::can_discard_op(OpRequestRef& op)
 {
-  if (op->is_requeued_op()) { 
-    dout(4) << "requeued op, skip." << dendl;	  
-    return false; 
-  }
   auto m = op->get_req<MOSDOp>();
   if (cct->_conf->osd_discard_disconnected_ops && OSD::op_is_discardable(m)) {
     dout(20) << " discard " << *m << dendl;

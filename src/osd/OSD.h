@@ -39,6 +39,7 @@
 #include "Session.h"
 
 #include "osd/scheduler/OpScheduler.h"
+#include "osd/weave/WeaveService.h"
 
 #include <atomic>
 #include <map>
@@ -55,7 +56,6 @@
 #include "common/Finisher.h"
 #include "scrubber/osd_scrub_sched.h"
 
-// #include "AggregateBuffer.h"
 
 #define CEPH_OSD_PROTOCOL    10 /* cluster internal */
 
@@ -95,6 +95,10 @@ class MOSDForceRecovery;
 class MMonGetPurgedSnapsReply;
 
 class OSD;
+
+namespace ceph::weave {
+class WeaveService;
+}
 
 class OSDService {
   using OpSchedulerItem = ceph::osd::scheduler::OpSchedulerItem;
@@ -457,6 +461,7 @@ public:
   std::unique_ptr<Objecter> objecter;
   int m_objecter_finishers;
   std::vector<std::unique_ptr<Finisher>> objecter_finishers;
+  std::unique_ptr<ceph::weave::WeaveService> weave_service;
 
   // -- Watch --
   ceph::mutex watch_lock = ceph::make_mutex("OSDService::watch_lock");
@@ -904,7 +909,7 @@ public:
 #endif
 
   explicit OSDService(OSD *osd, ceph::async::io_context_pool& poolctx);
-  ~OSDService() = default;
+  ~OSDService();
 };
 
 /*
@@ -1084,6 +1089,11 @@ class OSD : public Dispatcher,
   ceph::mutex tick_timer_lock = ceph::make_mutex("OSD::tick_timer_lock");
   SafeTimer tick_timer_without_osd_lock;
   std::string gss_ktfile_client{};
+
+  // The dispatch and PG completions own the pass; no asynchronous completion
+  // touches the OSD. Expiration also handles discarded work during shutdown.
+  ceph::weave::WeaveService::Dispatch snapshot_weave_reclaim();
+  bool request_weave_reclaim(); // osd_lock held
 
 public:
   // config observer bits
@@ -1702,7 +1712,6 @@ protected:
   friend class PG;
   friend struct OSDShard;
   friend class PrimaryLogPG;
- // friend class AggregateBuffer;
 
   friend class PgScrubber;
 
