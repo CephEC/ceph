@@ -13,8 +13,6 @@ WeavePGController::~WeavePGController() = default;
 
 void WeavePGController::initialize() { impl_->initialize(); }
 
-void WeavePGController::reload_metadata() { impl_->reload_metadata(); }
-
 void WeavePGController::on_recovery_progress() {
   impl_->on_recovery_progress();
 }

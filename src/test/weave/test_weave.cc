@@ -242,7 +242,7 @@ TEST(WeaveCatalog, SnapshotSequenceSurvivesReload) {
   bufferlist encoded;
   encode(layout, encoded);
   WeaveCatalog catalog;
-  ASSERT_EQ(catalog.load_from_disk(encoded), 0);
+  ASSERT_EQ(catalog.load_from_disk(layout.volume_oid, encoded), 0);
   EXPECT_EQ(catalog.lookup(first)->members.at(first).snap_sequence, 17u);
   EXPECT_EQ(catalog.lookup(second)->members.at(second).snap_sequence, 29u);
 }
@@ -350,7 +350,7 @@ TEST(WeaveCatalog, RemappingObjectDetachesItFromOldVolume) {
   bufferlist encoded;
   detached->encode(encoded);
   WeaveCatalog restored;
-  ASSERT_EQ(restored.load_from_disk(encoded), 0);
+  ASSERT_EQ(restored.load_from_disk(first_volume, encoded), 0);
   EXPECT_EQ(restored.lookup(member), nullptr);
   EXPECT_NE(restored.lookup(old_peer), nullptr);
 
@@ -394,7 +394,7 @@ TEST(WeaveCatalog, SparseAndEmptyVolumesReloadWithoutChangingPinnedReaders) {
   EXPECT_EQ(struct_v, 1);
   EXPECT_EQ(struct_compat, 1);
   WeaveCatalog restored;
-  ASSERT_EQ(restored.load_from_disk(encoded), 0);
+  ASSERT_EQ(restored.load_from_disk(volume_oid, encoded), 0);
   EXPECT_EQ(restored.lookup(first), nullptr);
   const auto reloaded = restored.lookup(second);
   ASSERT_NE(reloaded, nullptr);
@@ -420,7 +420,7 @@ TEST(WeaveCatalog, SparseAndEmptyVolumesReloadWithoutChangingPinnedReaders) {
 
   bufferlist empty_encoded;
   empty->encode(empty_encoded);
-  std::vector<bufferlist> snapshot{empty_encoded};
+  std::vector<std::pair<hobject_t, bufferlist>> snapshot{{volume_oid, empty_encoded}};
   ASSERT_EQ(restored.replace_from_disk(snapshot), 0);
   EXPECT_TRUE(restored.list_objects(hobject_t(), 10, next).empty());
   const auto volumes = restored.list_volumes();
@@ -461,7 +461,7 @@ TEST(WeaveMemberTranslator, ReloadedSparseMetadataClampsReadAndPreservesLogicalS
   auto layout = metadata(volume_oid, first, second);
   layout.members.erase(first);
   layout.encode(encoded);
-  std::vector<bufferlist> snapshot{encoded};
+  std::vector<std::pair<hobject_t, bufferlist>> snapshot{{volume_oid, encoded}};
   WeaveCatalog catalog;
   WeaveMemberTranslator translator(g_ceph_context, catalog);
   translator.activate(2, UNIT);
@@ -649,7 +649,7 @@ TEST(WeaveCatalog, RejectsOverlappingAndOutOfRangeShardAssignments) {
   for (const auto* invalid : {&overlapping, &out_of_range}) {
     bufferlist encoded;
     invalid->encode(encoded);
-    EXPECT_EQ(catalog.load_from_disk(encoded), -EINVAL);
+    EXPECT_EQ(catalog.load_from_disk(volume_oid, encoded), -EINVAL);
   }
   EXPECT_EQ(catalog.lookup(first), nullptr);
   EXPECT_EQ(catalog.lookup(second), nullptr);
@@ -667,7 +667,7 @@ TEST(WeaveCatalog, RejectsMemberAndVolumeSizeOverflow) {
   for (const auto* invalid : {&oversized_member, &overflowing_volume}) {
     bufferlist encoded;
     invalid->encode(encoded);
-    EXPECT_EQ(catalog.load_from_disk(encoded), -EINVAL);
+    EXPECT_EQ(catalog.load_from_disk(volume_oid, encoded), -EINVAL);
   }
   EXPECT_EQ(catalog.lookup(second), nullptr);
 }
@@ -687,7 +687,7 @@ TEST(WeaveCatalog, RejectsDuplicateLogicalObjectsBeforePublishing) {
   }
   ENCODE_FINISH(encoded);
   WeaveCatalog catalog;
-  EXPECT_EQ(catalog.load_from_disk(encoded), -EINVAL);
+  EXPECT_EQ(catalog.load_from_disk(volume_oid, encoded), -EINVAL);
   EXPECT_EQ(catalog.lookup(member), nullptr);
 }
 
@@ -711,7 +711,7 @@ TEST(WeaveCatalog, RejectsForeignCodecVersionAndTrailingData) {
     encode(layout.members, foreign);
     ENCODE_FINISH(foreign);
     WeaveCatalog catalog;
-    EXPECT_EQ(catalog.load_from_disk(foreign), -EINVAL);
+    EXPECT_EQ(catalog.load_from_disk(volume_oid, foreign), -EINVAL);
     EXPECT_EQ(catalog.lookup(first), nullptr);
   }
 
@@ -719,7 +719,7 @@ TEST(WeaveCatalog, RejectsForeignCodecVersionAndTrailingData) {
   layout.encode(trailing);
   trailing.append("extra");
   WeaveCatalog catalog;
-  EXPECT_EQ(catalog.load_from_disk(trailing), -EINVAL);
+  EXPECT_EQ(catalog.load_from_disk(volume_oid, trailing), -EINVAL);
   EXPECT_EQ(catalog.lookup(first), nullptr);
 }
 
@@ -743,7 +743,7 @@ TEST(WeaveCatalog, RejectsTruncatedMemberWithoutReplacingPublishedVolume) {
   encode(first, encoded);
   encode(member, encoded);
   ENCODE_FINISH(encoded);
-  EXPECT_EQ(catalog.load_from_disk(encoded), -EINVAL);
+  EXPECT_EQ(catalog.load_from_disk(volume_oid, encoded), -EINVAL);
 
   ASSERT_NE(catalog.lookup(first), nullptr);
   EXPECT_EQ(catalog.lookup(first)->members.at(first).user_version, 11u);
@@ -761,7 +761,7 @@ TEST(WeaveCatalog, RejectsInvalidEmptyGeometryAndExcessMembers) {
        {&no_shards, &no_slot, &too_many_shards, &too_many_members}) {
     bufferlist encoded;
     invalid->encode(encoded);
-    EXPECT_EQ(catalog.load_from_disk(encoded), -EINVAL);
+    EXPECT_EQ(catalog.load_from_disk(volume_oid, encoded), -EINVAL);
   }
   EXPECT_EQ(catalog.lookup_volume(volume_oid), nullptr);
 }
@@ -787,8 +787,8 @@ TEST(WeaveCatalog, ReplacingSnapshotDropsMissingVolumes) {
   catalog.upsert(metadata(old_volume, old_member, object("old-peer")));
   bufferlist encoded;
   metadata(new_volume, new_member, object("new-peer")).encode(encoded);
-  std::vector<bufferlist> snapshot;
-  snapshot.push_back(std::move(encoded));
+  std::vector<std::pair<hobject_t, bufferlist>> snapshot{
+    {new_volume, std::move(encoded)}};
   ASSERT_EQ(catalog.replace_from_disk(snapshot), 0);
   EXPECT_EQ(catalog.lookup(old_member), nullptr);
   EXPECT_NE(catalog.lookup(new_member), nullptr);
@@ -803,11 +803,33 @@ TEST(WeaveCatalog, ConflictingDiskOwnershipRejectsBothScanOrdersAtomically) {
   for (const bool reverse : {false, true}) {
     WeaveCatalog catalog;
     catalog.upsert(metadata(old_volume, object("old-member"), object("old-peer")));
-    std::vector<bufferlist> snapshot{first, second};
+    std::vector<std::pair<hobject_t, bufferlist>> snapshot{
+      {object("volume-a"), first}, {object("volume-b"), second}};
     if (reverse) std::reverse(snapshot.begin(), snapshot.end());
     EXPECT_EQ(catalog.replace_from_disk(snapshot), -EEXIST);
     EXPECT_NE(catalog.lookup_volume(old_volume), nullptr);
     EXPECT_FALSE(catalog.contains(member));
+  }
+}
+
+TEST(WeaveCatalog, MismatchedDiskIdentityRejectsBothScanOrdersAtomically) {
+  const auto old_volume = object("old-volume");
+  const auto new_volume = object("new-volume");
+  const auto new_member = object("new-member");
+  bufferlist valid, mismatched;
+  metadata(new_volume, new_member, object("new-peer")).encode(valid);
+  metadata(object("claimed-volume"), object("member"), object("peer")).encode(mismatched);
+  for (const bool reverse : {false, true}) {
+    WeaveCatalog catalog;
+    catalog.upsert(metadata(old_volume, object("old-member"), object("old-peer")));
+    const auto original = catalog.lookup_volume(old_volume);
+    std::vector<std::pair<hobject_t, bufferlist>> snapshot{
+      {new_volume, valid}, {object("actual-volume"), mismatched}};
+    if (reverse) std::reverse(snapshot.begin(), snapshot.end());
+    EXPECT_EQ(catalog.replace_from_disk(snapshot), -EINVAL);
+    EXPECT_EQ(catalog.lookup_volume(old_volume), original);
+    EXPECT_FALSE(catalog.contains(new_member));
+    EXPECT_FALSE(catalog.contains(object("member")));
   }
 }
 
@@ -818,7 +840,8 @@ TEST(WeaveCatalog, DamagedDiskSnapshotDoesNotPublishPartialMappings) {
   bufferlist valid, broken;
   metadata(object("new-volume"), object("new-member"), object("new-peer")).encode(valid);
   broken.append("broken");
-  std::vector<bufferlist> snapshot{valid, broken};
+  std::vector<std::pair<hobject_t, bufferlist>> snapshot{
+    {object("new-volume"), valid}, {object("broken-volume"), broken}};
   EXPECT_EQ(catalog.replace_from_disk(snapshot), -EINVAL);
   EXPECT_NE(catalog.lookup_volume(original.volume_oid), nullptr);
   EXPECT_FALSE(catalog.contains(object("new-member")));

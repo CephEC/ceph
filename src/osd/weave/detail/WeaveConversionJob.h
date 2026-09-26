@@ -72,7 +72,6 @@ private:
 
   void materialize();
   bool extract_member(size_t index, const ObjectData& volume);
-  void submit_members();
   void write_member(size_t);
   void retire_volume();
 

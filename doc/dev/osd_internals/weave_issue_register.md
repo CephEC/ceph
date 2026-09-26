@@ -94,7 +94,7 @@
 - **触发／根因：**首次解释将多个异步 CALL 排队，并在第一个结果未知时处理后续操作；即使首个非 FAILOK CALL 失败，后续已排队 CALL 仍可能执行。
 - **修复：**未完成 CALL 成为解释屏障；前置 READ 完成并经过错误处理后才建立当前 CALL finisher；每次仅派发一个 CALL，回放后再决定后继操作。
 - **追加发现：**READ 错误注入暴露成员预处理提前填充 STAT 输出。已将 STAT 编码延迟到实际执行对应子操作时。
-- **代码：**PrimaryLogPG 的 `do_osd_ops`／`execute_ctx`；MemberAccess 的 `encode_logical_stat`。
+- **代码：**PrimaryLogPG 的 `do_osd_ops`／`execute_ctx`；WeaveMemberTranslator 的 `encode_logical_stat`。
 - **证据：**原生、聚合直读、primary 下推的不同参数 CALL、FAILOK、READ→CALL、CALL→READ；原生及聚合 READ→CALL→STAT 注入 `-EIO`，后继无输出；CALL 在途 PG 重置后写锁释放。
 - **审查重点：**不能把“整体错误码正确”当作后继操作没有执行的证据；永久客户端明确检查结果 buffer 和 STAT 哨兵值。
 

@@ -34,7 +34,6 @@ public:
   // Lifecycle and role changes. initialize() is the only place that loads the
   // catalog from disk; everything else assumes it has already run.
   void initialize();
-  bool reload_metadata();
   void on_recovery_progress();
   void on_pg_change(bool requeue = true);
 
@@ -81,14 +80,10 @@ private:
     std::function<void()> on_finish;
   };
 
-  // Outcome of decoding one stored Volume attribute.
-  enum class StoredVolume { kLoaded, kInvalid };
-
   // Lifecycle.
+  bool reload_metadata();
   bool can_work() const;
   bool can_scan() const;
-  StoredVolume decode_stored_volume(const hobject_t& source,
-                                    ceph::buffer::list& encoded);
   void fail_recovery_waiters();
 
   // Background work.
@@ -152,7 +147,6 @@ private:
   void refresh_candidate(const object_info_t&, bool exists);
 
   // Native query surface.
-  void restore_client_reply_ops(const OpRequestRef&, MOSDOpReply*) const;
   void drop_private_entries(std::vector<hobject_t>&) const;
 
   std::unique_ptr<WeavePGHost> host_;

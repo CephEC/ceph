@@ -10,7 +10,7 @@ namespace ceph::weave {
 
 /**
  * Owns server-side routing policy. The host supplies native placement and
- * durability checks; MemberAccess owns all logical-to-physical translation.
+ * durability checks; the member translator owns all logical-to-physical translation.
  */
 class WeaveReadRouter {
 public:

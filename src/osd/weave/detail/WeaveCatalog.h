@@ -55,8 +55,10 @@ public:
   void upsert(const WeaveVolumeMeta &info);
   void remove_member(const hobject_t &volume_oid, const hobject_t &member_oid);
   void remove_volume(const hobject_t &volume_oid);
-  int load_from_disk(ceph::buffer::list &encoded);
-  int replace_from_disk(std::vector<ceph::buffer::list> &encoded);
+  // The source identity must match the encoded Volume; decode each row once.
+  int load_from_disk(const hobject_t& source, const ceph::buffer::list& encoded);
+  int replace_from_disk(
+    const std::vector<std::pair<hobject_t, ceph::buffer::list>>& stored);
   void clear();
 
 private:

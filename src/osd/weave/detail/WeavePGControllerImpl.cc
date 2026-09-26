@@ -71,21 +71,13 @@ bool WeavePGController::Impl::reload_metadata()
     translator_.shutdown();
     return false;
   }
-  std::vector<bufferlist> metadata;
+  WeaveVolumeAttrs metadata;
   metadata.reserve(stored.size());
-  // Disk metadata is authoritative, even if the committing job lost its reply.
-  for (auto& [source, encoded] : stored) {
-    // Ordinary clients may store an attribute called volume_meta. Its contents
-    // cannot grant authority to publish mappings for a private Volume.
-    if (source.nspace != kVolumeNamespace) continue;
-
-    switch (decode_stored_volume(source, encoded)) {
-    case StoredVolume::kInvalid:
-      translator_.shutdown();
-      return false;
-    case StoredVolume::kLoaded:
-      metadata.push_back(std::move(encoded));
-      break;
+  // Ordinary clients may store an attribute called volume_meta. Only physical
+  // Volumes in the private namespace can publish member mappings.
+  for (auto& entry : stored) {
+    if (entry.first.nspace == kVolumeNamespace) {
+      metadata.push_back(std::move(entry));
     }
   }
   // Publish the snapshot as a whole: readers observe either the previous
@@ -96,28 +88,6 @@ bool WeavePGController::Impl::reload_metadata()
     return false;
   }
   return true;
-}
-
-// Decodes one stored Volume attribute. The codec accepts the current layout
-// only, so an unreadable attribute is an error rather than a downgrade.
-WeavePGController::Impl::StoredVolume
-WeavePGController::Impl::decode_stored_volume(const hobject_t& source,
-                                              bufferlist& encoded)
-{
-  try {
-    WeaveVolumeMeta info;
-    auto p = encoded.cbegin();
-    decode(info, p);
-    // The attribute must be a complete snapshot of this very Volume.
-    if (!p.end() || info.volume_oid != source) {
-      metadata_error_ = -EIO;
-      return StoredVolume::kInvalid;
-    }
-    return StoredVolume::kLoaded;
-  } catch (const buffer::error&) {
-    metadata_error_ = -EIO;
-    return StoredVolume::kInvalid;
-  }
 }
 
 void WeavePGController::Impl::fail_recovery_waiters()
@@ -166,8 +136,8 @@ void WeavePGController::Impl::on_pg_change(bool requeue)
   // committed changes.
   candidates_.clear();
 
-  // A replica can initialize MemberAccess for a direct request without loading
-  // the primary catalog. Promotion must always reload that catalog.
+  // A replica can initialize the member translator for a direct request
+  // without loading the primary catalog. Promotion must reload that catalog.
   translator_.shutdown();
   finish_cleanup();
 
@@ -921,14 +891,8 @@ int WeavePGController::Impl::prepare_member_delete(const OpRequestRef& op,
 void WeavePGController::Impl::finish_reply(const OpRequestRef& op,
                                            MOSDOpReply* reply)
 {
-  restore_client_reply_ops(op, reply);
-  finish_request(op);
-}
-
-void WeavePGController::Impl::restore_client_reply_ops(
-  const OpRequestRef& op, MOSDOpReply* reply) const
-{
   translator_.restore_client_reply_ops(op, reply);
+  finish_request(op);
 }
 
 void WeavePGController::Impl::finish_request(const OpRequestRef& op)

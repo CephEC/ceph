@@ -73,7 +73,6 @@ public:
     ++redirects;
   }
   WeaveObjectState inspect(const hobject_t& id) override { return objects[id].state; }
-  bool unreadable(const hobject_t&) const override { return false; }
   bool wait_for_available(const hobject_t&, OpRequestRef&) override { return false; }
   int load_metadata(WeaveVolumeAttrs& out) override {
     if (metadata_result < 0) return metadata_result;
@@ -860,7 +859,7 @@ TEST(WeavePGController, ListingUsesCurrentMemberAttributesAndDeletionIdentity) {
   layout.members.erase(a);
   auto& encoded = host.objects[v].attrs["volume_meta"];
   encoded.clear(); encode(layout, encoded);
-  controller.reload_metadata();
+  controller.on_recovery_progress();
   EXPECT_FALSE(controller.is_logical_member(a));
   EXPECT_TRUE(controller.is_logical_member(b));
   EXPECT_EQ(controller.listing_attribute(a, "_tag"),

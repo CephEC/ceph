@@ -90,7 +90,6 @@ public:
   virtual bool current(epoch_t) const = 0;
   virtual int osd_id() const = 0;
   virtual WeaveObjectState inspect(const hobject_t&) = 0;
-  virtual bool unreadable(const hobject_t&) const = 0;
   virtual bool wait_for_available(const hobject_t&, OpRequestRef&) = 0;
   virtual int load_metadata(WeaveVolumeAttrs&) = 0;
   virtual hobject_t new_volume(const hobject_t& seed) = 0;

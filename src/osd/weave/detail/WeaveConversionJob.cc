@@ -260,12 +260,12 @@ void WeaveConversionJob::materialize() {
     valid = extract_member(i, volume);
   }
 
-  // submit_members() writes objects, so it needs the PG lock back.
+  // Writing restored members requires the PG lock.
   host_.serialized([self = shared_from_this(), valid] {
     if (!self->current()) return;
     if (!valid) { self->finish({false, -EIO}); return; }
 
-    self->submit_members();
+    self->write_member(0);
   });
 }
 
@@ -295,10 +295,6 @@ bool WeaveConversionJob::extract_member(
     data_[index].attrs.emplace(p->first.substr(prefix.size()), p->second);
   }
   return true;
-}
-
-void WeaveConversionJob::submit_members() {
-  write_member(0);
 }
 
 // Enters kWritingMembers, one member per round trip.

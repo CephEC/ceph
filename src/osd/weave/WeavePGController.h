@@ -36,7 +36,6 @@ public:
   ~WeavePGController();
 
   void initialize();
-  void reload_metadata();
   void on_recovery_progress();
   void on_pg_change(bool requeue = true);
   void schedule_work();

@@ -194,14 +194,16 @@ void WeaveCatalog::clear() {
   volumes_.clear();
 }
 
-int WeaveCatalog::load_from_disk(ceph::buffer::list &encoded) {
+int WeaveCatalog::load_from_disk(
+  const hobject_t& source, const ceph::buffer::list& encoded) {
   if (encoded.length() == 0) return -EINVAL;
 
   WeaveVolumeMeta info;
   try {
     auto p = encoded.cbegin();
     info.decode(p);
-    if (!p.end()) return -EINVAL;
+    // A complete attribute must name the physical object it came from.
+    if (!p.end() || info.volume_oid != source) return -EINVAL;
   } catch (const ceph::buffer::error &) {
     return -EINVAL;
   }
@@ -216,12 +218,13 @@ int WeaveCatalog::load_from_disk(ceph::buffer::list &encoded) {
   return 0;
 }
 
-int WeaveCatalog::replace_from_disk(std::vector<ceph::buffer::list> &encoded) {
+int WeaveCatalog::replace_from_disk(
+  const std::vector<std::pair<hobject_t, ceph::buffer::list>>& stored) {
   // Decode into a separate catalog so readers observe either the previous
   // complete snapshot or the replacement, never a partially loaded mixture.
   WeaveCatalog replacement;
-  for (auto &entry : encoded) {
-    const int r = replacement.load_from_disk(entry);
+  for (const auto& [source, encoded] : stored) {
+    const int r = replacement.load_from_disk(source, encoded);
     if (r < 0) return r;
   }
 

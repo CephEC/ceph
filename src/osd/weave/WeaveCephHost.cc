@@ -102,10 +102,6 @@ public:
     return result;
   }
 
-  bool unreadable(const hobject_t& oid) const override {
-    return pg_.is_unreadable_object(oid);
-  }
-
   bool wait_for_available(const hobject_t& oid, OpRequestRef& op) override {
     // The first condition the object meets decides which wait list takes it;
     // each wait returns true so the caller stops processing the request.

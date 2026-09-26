@@ -106,9 +106,9 @@ WeaveVolumeMeta { hobject_t volume_oid; uint32 data_shards; uint64 slot_size;
 1. `DECODE_START(1, p)`（`encoding.h:1442-1461`）：`struct_v >= compatv` 时才读 `struct_compat`，且当 `v(1) < struct_compat` 时抛 `malformed_input("old version")`；凡声明了更高最低兼容版本的 blob 都在此失败。
 2. 显式 `if (struct_v != 1) throw malformed_input("unsupported Weave metadata version")`（`WeaveCatalog.cc:65-75`）：denc 默认会放行 `struct_v=3, compat=1` 这类**前向兼容**的版本，这一行把它也拒掉，使「只接受当前布局」双向成立。这是 fail-closed 语义，不是旧版本解析；`test_weave.cc` 的 `RejectsForeignCodecVersionAndTrailingData` 分别用 `{2,2}`（被第 1 道门拦）与 `{3,1}`（只被第 2 道门拦）钉住两者。
 
-**2026-09-26 的编号变更**：`4 → 1` 只改了两个版本字节，字段布局不变，但等价于一次磁盘格式断代——此前由 `4` 版二进制写过的 `volume_meta` 现在不可解码（`decode_stored_volume` → `-EIO` → 入口关闭），没有迁移路径；旧测试数据目录不可再读。
+**2026-09-26 的编号变更**：`4 → 1` 只改了两个版本字节，字段布局不变，但等价于一次磁盘格式断代——此前由 `4` 版二进制写过的 `volume_meta` 现在不可解码（Catalog 解码失败 → 控制器 `-EIO` → 入口关闭），没有迁移路径；旧测试数据目录不可再读。
 
-失败路径：任何 `buffer::error` 都由 `decode_stored_volume` 归为 `-EIO` → `metadata_error_ = -EIO` → `reload_metadata()` 失败 → `translator_.shutdown()`，请求以 `-EIO` 被拒（`WeavePGControllerImpl.cc:103-121,65-101,604-625`）。这与「关闭解释层」是两种不同后果：后者根本不加载 Catalog、按原生路径查找，逻辑对象表现为 `ENOENT`。
+加载时 Controller 筛选私有 namespace 中的记录，保留实际来源对象；Catalog 在一次解码中验证完整载荷和 `volume_oid == source`，再检查成员归属并整体发布。`buffer::error` 或身份不匹配返回 `-EINVAL`，归属冲突返回 `-EEXIST`；控制器统一记为 `metadata_error_ = -EIO` 并关闭 translator，阻止损坏映射进入原生路径。原 Catalog 在失败时保持完整。
 
 可辨识版本的方法：Volume 是普通 RADOS 对象（命名空间 `.ceph-internal-weave`），取其 `_volume_meta` 属性的第一个字节即 `struct_v`（当前为 `0x01`；2026-09-26 之前写出的为 `0x04`，现已不可解码）。
 
@@ -333,9 +333,9 @@ sequenceDiagram
 
 | 主题 | 机制 | 锚点 |
 |---|---|---|
-| 磁盘权威 | `reload_metadata` 全量解码后 `replace_from_disk` 原子 swap；读者只见旧集合或新集合 | `WeavePGControllerImpl.cc:65-101`、`WeaveCatalog.cc:203-222` |
+| 磁盘权威 | `reload_metadata` 筛选记录，`replace_from_disk` 一次解码并原子 swap；失败不发布部分映射 | `WeavePGControllerImpl.cc::reload_metadata`、`WeaveCatalog.cc::replace_from_disk` |
 | 冲突归属 | 两个磁盘 Volume 声称同一成员 → `-EEXIST` → 控制器 `-EIO` 关闭入口，不按扫描顺序或版本大小猜测 | `WeaveCatalog.cc:184-201`、`:103-121` |
-| 反伪造 | `volume_meta` 属性只有在对象确实位于私有 namespace 时才被采信；`decode_stored_volume` 要求完整解码且 `volume_oid == source` | `WeavePGControllerImpl.cc:81-121`（I7） |
+| 反伪造 | Controller 只采信私有 namespace 的属性；Catalog 要求完整解码且 `volume_oid == source` | `WeavePGControllerImpl.cc::reload_metadata`、`WeaveCatalog.cc::load_from_disk`（I7） |
 | 迟到回执 | `completion()` 用单调 `io_sequence_` 丢弃被取代/重复的回调；`authenticates(tid)` 只认当前 tid | `WeaveConversionJob.cc:34-36,87-101` |
 | 角色/任期 | 唤醒闭包比对 `generation_`；I/O 用 `host_.current(epoch_)` 判 `pg_has_reset_since` | `WeavePGControllerImpl.cc:197-211`、`WeaveCephHost.cc:68-72` |
 | 超时写 | `resolve_volume` 等 Volume `busy()` 释放（已获准事务结束）后才允许重载，绝不把超时当回滚 | `WeaveConversionJob.cc:221-234` |
