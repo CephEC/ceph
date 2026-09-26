@@ -1,5 +1,5 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-#include "WeaveMemberAccess.h"
+#include "WeaveMemberTranslator.h"
 
 #include <algorithm>
 #include <utility>
@@ -15,26 +15,26 @@
 
 namespace ceph::weave {
 
-WeaveMemberAccess::WeaveMemberAccess(CephContext* cct,
+WeaveMemberTranslator::WeaveMemberTranslator(CephContext* cct,
                                      const WeaveCatalog& catalog)
   : cct_(cct), catalog_(catalog) {}
 
-WeaveMemberAccess::~WeaveMemberAccess() {
+WeaveMemberTranslator::~WeaveMemberTranslator() {
   shutdown();
 }
 
-void WeaveMemberAccess::activate(uint8_t data_chunks, uint64_t stripe_unit) {
+void WeaveMemberTranslator::activate(uint8_t data_chunks, uint64_t stripe_unit) {
   data_chunks_ = data_chunks;
   stripe_unit_ = stripe_unit;
   initialized_ = data_chunks_ != 0 && stripe_unit_ != 0;
 }
 
-void WeaveMemberAccess::shutdown() {
+void WeaveMemberTranslator::shutdown() {
   initialized_ = false;
 }
 
-int WeaveMemberAccess::preprocess(OpRequestRef op) {
-  if (!initialized_ || op->is_aggregate_member_op()) {
+int WeaveMemberTranslator::preprocess(OpRequestRef op) {
+  if (!initialized_ || op->is_weave_member_op()) {
     return kPreprocessContinue;
   }
 
@@ -44,14 +44,14 @@ int WeaveMemberAccess::preprocess(OpRequestRef op) {
   return translate(op, message->ops);
 }
 
-bool WeaveMemberAccess::supports_member_ops(
+bool WeaveMemberTranslator::supports_member_ops(
   const std::vector<OSDOp>& ops) const {
   // Malformed supported operations still go through translate() to return
   // their validation error without needlessly materializing a healthy Volume.
   return validate_member_ops(ops) != -EOPNOTSUPP;
 }
 
-int WeaveMemberAccess::validate_member_ops(
+int WeaveMemberTranslator::validate_member_ops(
   const std::vector<OSDOp>& ops) const {
   for (std::size_t subop = 0; subop < ops.size(); ++subop) {
     const int result = validate_op(ops[subop], subop + 1 == ops.size());
@@ -61,7 +61,7 @@ int WeaveMemberAccess::validate_member_ops(
   return 0;
 }
 
-int WeaveMemberAccess::validate_op(const OSDOp& entry, bool is_last) const {
+int WeaveMemberTranslator::validate_op(const OSDOp& entry, bool is_last) const {
   switch (entry.op.op) {
   case CEPH_OSD_OP_READ:
   case CEPH_OSD_OP_SPARSE_READ:
@@ -83,7 +83,7 @@ int WeaveMemberAccess::validate_op(const OSDOp& entry, bool is_last) const {
     return 0;
   case CEPH_OSD_OP_CALL: {
     std::string name;
-    const int result = aggregate_class_name(entry, name);
+    const int result = data_class_name(entry, name);
     if (result < 0) return result;
 
     return class_is_allowed(name) ? 0 : -EOPNOTSUPP;
@@ -93,7 +93,7 @@ int WeaveMemberAccess::validate_op(const OSDOp& entry, bool is_last) const {
   }
 }
 
-int WeaveMemberAccess::aggregate_class_name(const OSDOp& entry,
+int WeaveMemberTranslator::data_class_name(const OSDOp& entry,
                                             std::string& name) const {
   if (uint64_t{entry.op.cls.class_len} + entry.op.cls.method_len +
       entry.op.cls.indata_len > entry.indata.length()) {
@@ -104,12 +104,12 @@ int WeaveMemberAccess::aggregate_class_name(const OSDOp& entry,
   return 0;
 }
 
-bool WeaveMemberAccess::class_is_allowed(const std::string& name) const {
+bool WeaveMemberTranslator::class_is_allowed(const std::string& name) const {
   return ClassHandler::get_instance().in_class_list(
-    name, cct_->_conf->osd_aggregate_data_classes);
+    name, cct_->_conf->osd_weave_data_classes);
 }
 
-std::optional<WeaveMemberAccess::Target> WeaveMemberAccess::resolve_target(
+std::optional<WeaveMemberTranslator::Target> WeaveMemberTranslator::resolve_target(
   const OpRequestRef& op, const MOSDOp& message, int& error) const {
   error = 0;
   // A weave context that already resolved wins over the catalog: it names the
@@ -140,7 +140,7 @@ std::optional<WeaveMemberAccess::Target> WeaveMemberAccess::resolve_target(
   return Target{origin, metadata, &found->second};
 }
 
-int WeaveMemberAccess::translate(OpRequestRef& op, std::vector<OSDOp>& ops) {
+int WeaveMemberTranslator::translate(OpRequestRef& op, std::vector<OSDOp>& ops) {
   if (!initialized_) return kPreprocessContinue;
   auto* message = static_cast<MOSDOp*>(op->get_nonconst_req());
 
@@ -167,7 +167,7 @@ int WeaveMemberAccess::translate(OpRequestRef& op, std::vector<OSDOp>& ops) {
   return kPreprocessContinue;
 }
 
-void WeaveMemberAccess::rewrite_ops(std::vector<OSDOp>& ops,
+void WeaveMemberTranslator::rewrite_ops(std::vector<OSDOp>& ops,
                                    const Target& target,
                                    WeaveRequestContext& ctx) const {
   // Sub-ops are rewritten in place: reply results are merged back by index.
@@ -201,7 +201,7 @@ void WeaveMemberAccess::rewrite_ops(std::vector<OSDOp>& ops,
   }
 }
 
-int WeaveMemberAccess::rewrite_xattr_key_op(OSDOp& entry,
+int WeaveMemberTranslator::rewrite_xattr_key_op(OSDOp& entry,
                                             const Target& target) const {
   // Delegates to the namespace-scope helper, which rebuilds the payload
   // because the renamed key shifts the value boundary.
@@ -209,7 +209,7 @@ int WeaveMemberAccess::rewrite_xattr_key_op(OSDOp& entry,
     entry, target.origin, entry.op.op == CEPH_OSD_OP_CMPXATTR);
 }
 
-void WeaveMemberAccess::rewrite_getxattrs_op(OSDOp& entry,
+void WeaveMemberTranslator::rewrite_getxattrs_op(OSDOp& entry,
                                              const Target& target) const {
   // The reply is filtered by this prefix, so the physical read must use it.
   const auto prefix = xattr_prefix(target.origin);
@@ -218,7 +218,7 @@ void WeaveMemberAccess::rewrite_getxattrs_op(OSDOp& entry,
   entry.op.xattr.name_len = prefix.size();
 }
 
-void WeaveMemberAccess::rewrite_read_op(OSDOp& entry,
+void WeaveMemberTranslator::rewrite_read_op(OSDOp& entry,
                                         const Target& target) const {
   if (entry.op.op == CEPH_OSD_OP_SYNC_READ) {
     entry.op.op = CEPH_OSD_OP_READ;
@@ -238,7 +238,7 @@ void WeaveMemberAccess::rewrite_read_op(OSDOp& entry,
   // this marked zero-length extent without expanding it to container EOF.
 }
 
-void WeaveMemberAccess::rewrite_class_call_op(OSDOp& entry,
+void WeaveMemberTranslator::rewrite_class_call_op(OSDOp& entry,
                                               const Target& target,
                                               WeaveRequestContext& ctx,
                                               std::size_t subop) const {
@@ -253,7 +253,7 @@ void WeaveMemberAccess::rewrite_class_call_op(OSDOp& entry,
   entry.op.flags = member_read_flags(entry.op.flags, target.member->shard);
 }
 
-void WeaveMemberAccess::finish_request(const OpRequestRef& op) {
+void WeaveMemberTranslator::finish_request(const OpRequestRef& op) {
   if (!op) return;
   const auto* ctx = op->get_weave_context();
   if (!ctx) return;
@@ -268,15 +268,14 @@ void WeaveMemberAccess::finish_request(const OpRequestRef& op) {
   op->clear_weave_context();
 }
 
-ClsParmContext* WeaveMemberAccess::get_cls_ctx(
+ClsParmContext* WeaveMemberTranslator::get_cls_ctx(
   const OpRequestRef& op, std::size_t subop) const {
   const auto* ctx = op ? op->get_weave_context() : nullptr;
   return ctx ? ctx->cls_context(subop) : nullptr;
 }
 
-int WeaveMemberAccess::prepare_member_delete(
-  const OpRequestRef& op, const bufferlist& encoded, version_t fallback,
-  bufferlist& updated) {
+int WeaveMemberTranslator::prepare_member_delete(
+  const OpRequestRef& op, const bufferlist& encoded, bufferlist& updated) {
   auto* context = op ? op->get_weave_context() : nullptr;
   if (!context || !context->original_oid() || !context->volume_metadata()) {
     return -EINVAL;
@@ -298,11 +297,6 @@ int WeaveMemberAccess::prepare_member_delete(
   // object lock. Concurrent deletes cannot overwrite each other's membership.
   if (!metadata.members.erase(*context->original_oid())) return -ENOENT;
 
-  // Members without a recorded version inherit the caller's fallback.
-  for (auto& [oid, member] : metadata.members) {
-    if (!member.user_version) member.user_version = fallback;
-  }
-
   encode(metadata, updated);
 
   // The PG controller applies this deletion once the request completes.
@@ -310,7 +304,7 @@ int WeaveMemberAccess::prepare_member_delete(
   return 0;
 }
 
-void WeaveMemberAccess::restore_client_reply_ops(const OpRequestRef& op,
+void WeaveMemberTranslator::restore_client_reply_ops(const OpRequestRef& op,
                                                  MOSDOpReply* reply) const {
   if (!op || !reply) return;
   const auto* ctx = op->get_weave_context();
@@ -330,7 +324,7 @@ void WeaveMemberAccess::restore_client_reply_ops(const OpRequestRef& op,
   reply->claim_ops(restored);
 }
 
-void WeaveMemberAccess::merge_reply_ops(std::vector<OSDOp>& restored,
+void WeaveMemberTranslator::merge_reply_ops(std::vector<OSDOp>& restored,
                                         std::vector<OSDOp>& physical) const {
   const auto count = std::min(restored.size(), physical.size());
   // Results line up positionally, so only the shared prefix is merged.
@@ -340,11 +334,11 @@ void WeaveMemberAccess::merge_reply_ops(std::vector<OSDOp>& restored,
   }
 }
 
-bool WeaveMemberAccess::handles_logical_stat(const OpRequestRef& op) const {
-  return op && op->is_aggregate_member_op();
+bool WeaveMemberTranslator::handles_logical_stat(const OpRequestRef& op) const {
+  return op && op->is_weave_member_op();
 }
 
-bool WeaveMemberAccess::encode_logical_stat(const OpRequestRef& op,
+bool WeaveMemberTranslator::encode_logical_stat(const OpRequestRef& op,
                                             bufferlist& out) const {
   using ceph::encode;
   if (!handles_logical_stat(op)) return false;
@@ -359,20 +353,19 @@ bool WeaveMemberAccess::encode_logical_stat(const OpRequestRef& op,
   return true;
 }
 
-uint64_t WeaveMemberAccess::logical_user_version(const OpRequestRef& op,
+uint64_t WeaveMemberTranslator::logical_user_version(const OpRequestRef& op,
                                                  uint64_t fallback) const {
   if (!handles_logical_stat(op)) return fallback;
   const auto* ctx = op->get_weave_context();
   if (!ctx || !ctx->original_oid()) return fallback;
 
-  // Missing membership or version means the caller's value stands.
+  // A member the mapping does not describe keeps the caller's value.
   const auto& metadata = ctx->volume_metadata();
   auto it = metadata->members.find(*ctx->original_oid());
-  return it == metadata->members.end() || !it->second.user_version
-    ? fallback : it->second.user_version;
+  return it == metadata->members.end() ? fallback : it->second.user_version;
 }
 
-void WeaveMemberAccess::encode_getxattrs_result(const OpRequestRef& request,
+void WeaveMemberTranslator::encode_getxattrs_result(const OpRequestRef& request,
                                                 const OSDOp& op, XAttrs& attrs,
                                                 bufferlist& encoded) const {
   using ceph::encode;
@@ -389,7 +382,7 @@ void WeaveMemberAccess::encode_getxattrs_result(const OpRequestRef& request,
 }
 
 // Values are moved out: the caller no longer needs the physical attributes.
-WeaveMemberAccess::XAttrs WeaveMemberAccess::filter_logical_attrs(
+WeaveMemberTranslator::XAttrs WeaveMemberTranslator::filter_logical_attrs(
   XAttrs& attrs, const std::string& prefix) {
   XAttrs logical;
   for (auto& [key, value] : attrs) {
@@ -400,11 +393,11 @@ WeaveMemberAccess::XAttrs WeaveMemberAccess::filter_logical_attrs(
   return logical;
 }
 
-int WeaveMemberAccess::translate_native_class_ops(OpRequestRef& request,
+int WeaveMemberTranslator::translate_native_class_ops(OpRequestRef& request,
                                                   std::vector<OSDOp>& ops,
                                                   uint64_t size) {
-  if (!request || request->is_background_aggregate_io() ||
-      request->is_aggregate_member_op()) return 0;
+  if (!request || request->is_background_weave_io() ||
+      request->is_weave_member_op()) return 0;
 
   for (std::size_t i = 0; i < ops.size(); ++i) {
     auto& op = ops[i];

@@ -1692,7 +1692,7 @@ bool PrimaryLogPG::get_rw_locks(bool write_ordered, OpContext *ctx)
   // A member DELETE reads and replaces shared Volume metadata. EC attribute
   // projection may wait behind RMW reads, so serialize it through commit.
   if (write_ordered &&
-      (ctx->op->may_read() || ctx->op->is_aggregate_member_op())) {
+      (ctx->op->may_read() || ctx->op->is_weave_member_op())) {
     ctx->lock_type = RWState::RWEXCL;
   } else if (write_ordered) {
     ctx->lock_type = RWState::RWWRITE;
@@ -1791,16 +1791,16 @@ PrimaryLogPG::PrimaryLogPG(OSDService *o, OSDMapRef curmap,
     pgbackend->get_is_recoverable_predicate());
   snap_trimmer_machine.initiate();
 
-  const bool aggregate_enabled =
-    o->cct->_conf->osd_aggregate_ec_enabled &&
+  const bool weave_enabled =
+    o->cct->_conf->osd_weave_enabled &&
     _pool.info.type == pg_pool_t::TYPE_ERASURE &&
     o->store->get_type() == "bluestore";
   m_weave =
     std::make_unique<ceph::weave::WeavePGController>(
-      o->cct, make_weave_host(), aggregate_enabled);
+      o->cct, make_weave_host(), weave_enabled);
   m_scrubber = make_unique<PrimaryLogScrub>(this);
-  dout(5) << "init primaryLogPG aggregate_enabled = " << aggregate_enabled
-          << " conf->osd_aggregate_ec_enabled = " << o->cct->_conf->osd_aggregate_ec_enabled
+  dout(5) << "init primaryLogPG weave_enabled = " << weave_enabled
+          << " conf->osd_weave_enabled = " << o->cct->_conf->osd_weave_enabled
           << " _pool.info.type == pg_pool_t::TYPE_ERASURE =" << (_pool.info.type == pg_pool_t::TYPE_ERASURE) << dendl;
 }
 
@@ -1820,7 +1820,7 @@ void PrimaryLogPG::request_weave_reclaim(
   }
 }
 
-void PrimaryLogPG::schedule_aggregate_work()
+void PrimaryLogPG::schedule_weave_work()
 {
   if (m_weave) m_weave->schedule_work();
 }
@@ -1828,7 +1828,7 @@ void PrimaryLogPG::schedule_aggregate_work()
 Context* PrimaryLogPG::on_clean()
 {
   auto* completion = PG::on_clean();
-  schedule_aggregate_work();
+  schedule_weave_work();
   return completion;
 }
 
@@ -7159,7 +7159,7 @@ int PrimaryLogPG::do_osd_ops(OpContext *ctx, vector<OSDOp>& ops)
       result = 0;
       tracepoint(osd, do_osd_op_pre_delete, soid.oid.name.c_str(), soid.snap.val);
       {
-        if (m_weave && ctx->op && ctx->op->is_aggregate_member_op()) {
+        if (m_weave && ctx->op && ctx->op->is_weave_member_op()) {
           ceph::weave::WeaveTransaction txn{
             [this, ctx](const char* name, bufferlist& encoded) {
               return getattr_maybe_cache(ctx->obc, name, &encoded);
@@ -7168,7 +7168,7 @@ int PrimaryLogPG::do_osd_ops(OpContext *ctx, vector<OSDOp>& ops)
               auto value = updated;
               t->setattr(soid, name, value);
             }};
-          result = m_weave->prepare_member_delete(ctx->op, oi.user_version, txn);
+          result = m_weave->prepare_member_delete(ctx->op, txn);
           if (result == 0) ctx->delta_stats.num_wr++;
 
         } else {
@@ -7713,7 +7713,7 @@ int PrimaryLogPG::do_osd_ops(OpContext *ctx, vector<OSDOp>& ops)
       result = 0;
       {
 	const bool background_io =
-	  ctx->op && ctx->op->is_background_aggregate_io();
+	  ctx->op && ctx->op->is_background_weave_io();
 	// These limits govern client-visible xattrs, not authenticated internal
 	// member prefixes and Volume metadata. The store still enforces its format.
 	if (!background_io && cct->_conf->osd_max_attr_size > 0 &&

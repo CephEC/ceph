@@ -1,6 +1,7 @@
 set(libos_srcs
   ObjectStore.cc
   Transaction.cc
+  AttrMirror.cc
   filestore/chain_xattr.cc
   filestore/BtrfsFileStoreBackend.cc
   filestore/DBObjectMap.cc

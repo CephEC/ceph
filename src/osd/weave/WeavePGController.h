@@ -35,7 +35,6 @@ public:
   WeavePGController(CephContext*, std::unique_ptr<WeavePGHost>, bool);
   ~WeavePGController();
 
-  bool enabled() const;
   void initialize();
   void reload_metadata();
   void on_recovery_progress();
@@ -45,7 +44,7 @@ public:
   RequestDisposition preprocess_client_op(OpRequestRef&);
   void on_commit(const object_info_t&, bool exists, const OpRequestRef&);
   void request_cleanup(unsigned live_percent, std::function<void()> on_finish);
-  int prepare_member_delete(const OpRequestRef&, version_t, WeaveTransaction&);
+  int prepare_member_delete(const OpRequestRef&, WeaveTransaction&);
   void finish_reply(const OpRequestRef&, MOSDOpReply*);
   void finish_request(const OpRequestRef&);
   ClsParmContext* get_cls_ctx(const OpRequestRef&, std::size_t) const;

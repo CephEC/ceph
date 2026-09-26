@@ -55,7 +55,7 @@ OpRequest::~OpRequest() {
   request->put();
 }
 
-bool OpRequest::is_aggregate_member_op() const {
+bool OpRequest::is_weave_member_op() const {
   return weave_context && weave_context->volume_metadata();
 }
 

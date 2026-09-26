@@ -10,9 +10,8 @@
 #include "common/Thread.h"
 #include "common/ceph_mutex.h"
 #include "common/ceph_time.h"
+#include "include/common_fwd.h"
 #include "osd/osd_types.h"
-
-class CephContext;
 
 namespace ceph::weave {
 

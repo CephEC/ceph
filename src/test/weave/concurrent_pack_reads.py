@@ -90,9 +90,9 @@ class PackingReadCase:
 
     def run(self):
         c = self.cluster
-        c.configure('osd_aggregate_background_enabled', 'false')
-        c.configure('osd_aggregate_redirect_reads', str(self.direct).lower())
-        c.configure('osd_aggregate_debug_source_remove_error', 'true')
+        c.configure('osd_weave_background_enabled', 'false')
+        c.configure('osd_weave_redirect_reads', str(self.direct).lower())
+        c.configure('osd_weave_debug_source_remove_error', 'true')
         c.create_pool(self.pool)
         io = c.client.open_ioctx(self.pool)
         load = None
@@ -120,7 +120,7 @@ class PackingReadCase:
             # ordinary EC reads can still use all four data shards.
             paused = c.processes[f'osd.{parity}']
             os.kill(paused.pid, signal.SIGSTOP)
-            c.admin(primary, 'config', 'set', 'osd_aggregate_background_enabled', 'true')
+            c.admin(primary, 'config', 'set', 'osd_weave_background_enabled', 'true')
 
             def volume_write_pending():
                 ops = json.loads(c.admin(primary, 'dump_ops_in_flight'))['ops']
@@ -151,7 +151,7 @@ class PackingReadCase:
             assert errors >= 2, 'did not observe repeated retirement failures'
             assert not writer.done(), 'mutation escaped reservation during source cleanup'
             print('VERIFIED: Volume reads while source deletion fails', packed_samples, flush=True)
-            c.configure('osd_aggregate_background_enabled', 'false')
+            c.configure('osd_weave_background_enabled', 'false')
             load.close()
             counts, longest = load.sample(), list(load.longest)
             load = None
@@ -164,7 +164,7 @@ class PackingReadCase:
                 assert redirected, 'no successful data-shard redirect observed'
             else:
                 assert not redirected, 'unexpected redirect with direct reads disabled'
-            c.configure('osd_aggregate_debug_source_remove_error', 'false')
+            c.configure('osd_weave_debug_source_remove_error', 'false')
             writer.result(timeout=120)
             assert io.read('member-0', 100) == b'acknowledged new version'
             assert io.get_last_version() > self.saved['member-0'][2]
@@ -196,8 +196,8 @@ class PackingReadCase:
             if paused:
                 os.kill(paused.pid, signal.SIGCONT)
             try:
-                c.configure('osd_aggregate_debug_source_remove_error', 'false')
-                c.configure('osd_aggregate_background_enabled', 'false')
+                c.configure('osd_weave_debug_source_remove_error', 'false')
+                c.configure('osd_weave_background_enabled', 'false')
                 if load:
                     load.close()
             finally:
@@ -213,9 +213,9 @@ class ReadFailoverCase(PackingReadCase):
 
     def run(self):
         c = self.cluster
-        c.configure('osd_aggregate_background_enabled', 'false')
-        c.configure('osd_aggregate_redirect_reads', 'true')
-        c.configure('osd_aggregate_debug_source_remove_error', 'true')
+        c.configure('osd_weave_background_enabled', 'false')
+        c.configure('osd_weave_redirect_reads', 'true')
+        c.configure('osd_weave_debug_source_remove_error', 'true')
         c.create_pool(self.pool)
         io = c.client.open_ioctx(self.pool)
         load = None
@@ -229,11 +229,11 @@ class ReadFailoverCase(PackingReadCase):
             offset = log.stat().st_size
             load = ReaderLoad(self).start()
             load.progress('native readers before failover packing')
-            c.configure('osd_aggregate_background_enabled', 'true')
+            c.configure('osd_weave_background_enabled', 'true')
             wait_for('published before failover', lambda:
                      'Weave source retirement injected EIO for ' in log.read_text(errors='replace')[offset:])
             load.progress('packed readers before primary failure')
-            c.configure('osd_aggregate_background_enabled', 'false')
+            c.configure('osd_weave_background_enabled', 'false')
             before = load.sample()
             failed = c.processes[f'osd.{primary}']
             failed.kill()
@@ -248,7 +248,7 @@ class ReadFailoverCase(PackingReadCase):
             counts = load.sample()
             longest = list(load.longest)
             load = None
-            c.configure('osd_aggregate_debug_source_remove_error', 'false')
+            c.configure('osd_weave_debug_source_remove_error', 'false')
             io.write_full('member-0', b'new version after failover')
             changed = self.stat(io, 'member-0')
             c.restart_osds()
@@ -264,8 +264,8 @@ class ReadFailoverCase(PackingReadCase):
                     'max_sample_seconds': longest, 'acknowledged_version': changed}
         finally:
             try:
-                c.configure('osd_aggregate_debug_source_remove_error', 'false')
-                c.configure('osd_aggregate_background_enabled', 'false')
+                c.configure('osd_weave_debug_source_remove_error', 'false')
+                c.configure('osd_weave_background_enabled', 'false')
                 if load:
                     load.close()
             finally:

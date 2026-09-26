@@ -67,12 +67,12 @@ def main():
         expected = hashlib.md5(data).hexdigest().encode() + b'\0'
         assert digest == expected, (key, digest, expected)
 
-    config('osd_aggregate_background_enabled', 'false')
-    config('osd_aggregate_min_object_size', 1)
-    config('osd_aggregate_quiet_period', 1)
-    config('osd_aggregate_scan_interval', 1)
-    config('osd_aggregate_max_padding_percent', 100)
-    config('osd_aggregate_redirect_reads', 'true')
+    config('osd_weave_background_enabled', 'false')
+    config('osd_weave_min_object_size', 1)
+    config('osd_weave_quiet_period', 1)
+    config('osd_weave_scan_interval', 1)
+    config('osd_weave_max_padding_percent', 100)
+    config('osd_weave_redirect_reads', 'true')
     config('debug_osd', '10/10')
     ceph('osd', 'erasure-code-profile', 'set', 'weave-direct', 'k=2', 'm=1',
          'plugin=jerasure', 'technique=reed_sol_van', 'crush-failure-domain=osd')
@@ -95,7 +95,7 @@ def main():
             io.set_xattr(key, 'weave-test', ('value-' + key).encode())
             io.stat(key)
             versions[key] = io.get_last_version()
-        config('osd_aggregate_background_enabled', 'true')
+        config('osd_weave_background_enabled', 'true')
 
         def observe_redirect():
             for key, data in content.items():
@@ -104,7 +104,7 @@ def main():
 
         wait_for('background packing and client redirection', observe_redirect, 120)
         # Stop candidate selection while exercising deterministic read behavior.
-        config('osd_aggregate_background_enabled', 'false')
+        config('osd_weave_background_enabled', 'false')
         for key, data in content.items():
             assert io.read(key, len(data), 0) == data
             for offset, length in [(3, 701), (4091, 5000), (len(data) - 9, 100),
@@ -126,13 +126,13 @@ def main():
         passed('data and class results returned through the direct replica path')
 
         asok = str(cluster_dir / f'out/osd.{target}.asok')
-        ceph('daemon', asok, 'config', 'set', 'osd_aggregate_redirect_reads', 'false')
+        ceph('daemon', asok, 'config', 'set', 'osd_weave_redirect_reads', 'false')
         before = len(logs())
         assert io.read(key, len(content[key]), 0) == content[key]
         check_md5(key, content[key])
         wait_for('rejected direct read returned to primary', lambda:
                  'Weave direct read fallback' in logs()[before:])
-        ceph('daemon', asok, 'config', 'set', 'osd_aggregate_redirect_reads', 'true')
+        ceph('daemon', asok, 'config', 'set', 'osd_weave_redirect_reads', 'true')
         passed('receiver rejection falls back once for reads and data-class calls')
 
         if args.stop_target:

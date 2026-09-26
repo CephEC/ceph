@@ -154,19 +154,19 @@ class Benchmark:
         self.results['calibrations'].append(self.network.apply(PROFILES['rtt2']))
         before_net, before_cpu = self.network.counters(), self.meter.snapshot()
         begin = time.perf_counter()
-        c.configure('osd_aggregate_background_enabled', 'true')
+        c.configure('osd_weave_background_enabled', 'true')
         wait_for('physical sources retired', lambda: sum(
             v['num_objects'] for v in c.physical_stats(self.packed).values()) == expected_objects, 180)
         self.results['packing'] = {'seconds': time.perf_counter() - begin,
             'profile': 'rtt2', 'process': difference(self.meter.snapshot(), before_cpu),
             'network': difference(self.network.counters(), before_net)}
-        c.configure('osd_aggregate_background_enabled', 'false')
+        c.configure('osd_weave_background_enabled', 'false')
         self.results['after_pack'] = c.physical_stats(self.packed)
         self.network.apply(PROFILES['local'])
         # Populate the control pool only after optional packing is stopped.
         self.seed(self.native)
         self.results['native_physical'] = c.physical_stats(self.native)
-        c.configure('osd_aggregate_redirect_reads', 'true')
+        c.configure('osd_weave_redirect_reads', 'true')
         trace = c.connect(trace=True)
         log = c.directory / 'routes.log'
         try:
@@ -194,7 +194,7 @@ class Benchmark:
     def run_case(self, profile, workload, mode, concurrency, repeat):
         c, dataset = self.cluster, self.dataset
         pool = self.native if mode.startswith('native') else self.packed
-        c.configure('osd_aggregate_redirect_reads', str(mode == 'weave-direct').lower())
+        c.configure('osd_weave_redirect_reads', str(mode == 'weave-direct').lower())
         op = Operation(dataset, workload, mode == 'native-client')
         client = c.connect()
         barrier = threading.Barrier(concurrency + 1)

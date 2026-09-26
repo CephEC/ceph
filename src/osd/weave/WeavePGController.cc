@@ -11,8 +11,6 @@ WeavePGController::WeavePGController(
 
 WeavePGController::~WeavePGController() = default;
 
-bool WeavePGController::enabled() const { return impl_->enabled(); }
-
 void WeavePGController::initialize() { impl_->initialize(); }
 
 void WeavePGController::reload_metadata() { impl_->reload_metadata(); }
@@ -46,11 +44,10 @@ void WeavePGController::request_cleanup(unsigned percent,
 }
 
 int WeavePGController::prepare_member_delete(const OpRequestRef& op,
-                                             version_t version,
                                              WeaveTransaction& txn) {
   // on_commit applies only this member's deletion, after the native
   // transaction.
-  return impl_->prepare_member_delete(op, version, txn);
+  return impl_->prepare_member_delete(op, txn);
 }
 
 void WeavePGController::finish_reply(const OpRequestRef& op,

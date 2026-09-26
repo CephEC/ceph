@@ -136,12 +136,12 @@ bdev aio max queue depth = 128
 osd memory target = 536870912
 osd op num shards = 1
 osd op num threads per shard = 2
-osd aggregate background enabled = false
-osd aggregate min object size = 1
-osd aggregate quiet period = 0.5
-osd aggregate scan interval = 0.2
-osd aggregate max padding percent = 100
-osd aggregate cleanup live percent = 100
+osd weave background enabled = false
+osd weave min object size = 1
+osd weave quiet period = 0.5
+osd weave scan interval = 0.2
+osd weave max padding percent = 100
+osd weave cleanup live percent = 100
 debug osd = 10/10
 ''')
         (self.directory / 'mon.a').mkdir()
@@ -255,7 +255,7 @@ class CrashCase:
             log = c.directory / 'client.log'
             start = log.stat().st_size if log.exists() else 0
             if unpack:
-                c.configure('osd_aggregate_background_enabled', 'true')
+                c.configure('osd_weave_background_enabled', 'true')
 
                 def packed():
                     for key, data in self.original.items():
@@ -263,10 +263,10 @@ class CrashCase:
                     return 'accepted=1' in log.read_text(errors='replace')[start:]
 
                 wait_for('packed before ' + self.point, packed)
-                c.configure('osd_aggregate_background_enabled', 'false')
+                c.configure('osd_weave_background_enabled', 'false')
             crash_log = c.directory / f'osd.{primary}.stderr'
             crash_start = crash_log.stat().st_size
-            c.admin(primary, 'config', 'set', 'osd_aggregate_debug_crash_point', self.point)
+            c.admin(primary, 'config', 'set', 'osd_weave_debug_crash_point', self.point)
             with ThreadPoolExecutor(max_workers=1) as executor:
                 pending = None
                 if unpack:
@@ -280,12 +280,12 @@ class CrashCase:
                             writer.close()
                     pending = executor.submit(trigger)
                 else:
-                    c.configure('osd_aggregate_background_enabled', 'true')
+                    c.configure('osd_weave_background_enabled', 'true')
                 wait_for('crash at ' + self.point,
                          lambda: c.processes[f'osd.{primary}'].poll() is not None)
                 stderr = crash_log.read_text(errors='replace')[crash_start:]
                 assert 'Weave conversion crash at ' + self.point in stderr, self.point
-                c.configure('osd_aggregate_background_enabled', 'false')
+                c.configure('osd_weave_background_enabled', 'false')
                 # Force a different primary as well as reconstructing the dead OSD.
                 c.ceph('osd', 'primary-affinity', primary, '0')
                 c.start_daemon(f'osd.{primary}')
@@ -318,7 +318,7 @@ class CrashCase:
                 raise AssertionError((self.point, 'deleted object resurrected'))
             self.snapshots()
             for osd in range(6):
-                c.admin(osd, 'aggregate_ec', 'cleanup')
+                c.admin(osd, 'weave', 'cleanup')
             self.check('member-2', b'confirmed new generation', after['member-2'])
             c.ceph('osd', 'primary-affinity', primary, '1')
             return {'checkpoint': self.point, 'old_primary': primary, 'new_primary': successor,

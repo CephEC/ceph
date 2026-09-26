@@ -118,8 +118,8 @@ class BenchmarkCluster(IsolatedCluster):
         self.client = self.connect()
         self.ceph('osd', 'set', 'noscrub')
         self.ceph('osd', 'set', 'nodeep-scrub')
-        self.configure('osd_aggregate_quiet_period', '0')
-        self.configure('osd_aggregate_scan_interval', '0.05')
+        self.configure('osd_weave_quiet_period', '0')
+        self.configure('osd_weave_scan_interval', '0.05')
 
     def connect(self, trace=False):
         client = rados.Rados(conffile=str(self.conf), conf={

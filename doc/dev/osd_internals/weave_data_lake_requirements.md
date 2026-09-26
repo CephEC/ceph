@@ -149,7 +149,7 @@ PG reset 会清空尚未处理的候选，重启或角色变化后的初始化�
 
 上述元数据删除捷径仅适用于没有快照历史、且请求没有快照上下文的池。存在快照历史时，删除和其他修改先恢复原生对象，再执行原生 copy-on-write。快照 READ／STAT／属性访问同样先恢复包含该 head 的 Volume，由原生 snapset／clone 路径解析具体快照；快照身份不会被当成一个不存在的 Catalog head。
 
-新 Volume 使用元数据 v4，保存每个源对象的原生 `snapset.seq`。恢复对象时沿用该序号，不能套用恢复时的最新池快照上下文，否则会把对象误判成在快照之后才创建。物理 Volume 自身的写入／回收不产生新的池快照克隆。仍支持读取后台 v2/v3，但它们没有记录完整源快照历史，不能据此恢复旧实现已经丢失的历史：旧卷恢复以物理 Volume 的快照序号为兼容边界；需要完整快照保证的数据应在建立所需快照前恢复为原生对象，再以 v4 聚合。v4 不支持回退到仅认识 v2/v3 的 OSD。
+新 Volume 使用当前元数据布局（v1，`ENCODE_START(1,1)`），保存每个源对象的原生 `snapset.seq`。恢复对象时沿用该序号，不能套用恢复时的最新池快照上下文，否则会把对象误判成在快照之后才创建。物理 Volume 自身的写入／回收不产生新的池快照克隆。元数据只接受这一种布局：其他 `struct_v` 的属性按损坏拒绝，没有兼容分支，不再有“以物理 Volume 的快照序号兜底”的降级行为。现有数据不支持回退到不认这一布局的 OSD。
 
 转换期间需要协调受影响逻辑对象的请求；不能把“由后台执行”误解为发起修改的请求完全不需要等待。
 
@@ -195,20 +195,20 @@ Weave 只在 BlueStore EC PG 上启用；MemStore 等不支持 Volume 索引的�
 
 | 配置 | 默认值 | 语义 |
 | --- | --- | --- |
-| `osd_aggregate_cleanup_time` | 空字符串 | 严格的 `HH:MM`，按 UTC 每日触发；空值关闭自动清理，不禁用手动命令 |
-| `osd_aggregate_cleanup_live_percent` | `50` | 有效成员占原始数据槽位的百分比，范围 `0–100`，边界包含；不是有效字节百分比 |
-| `osd_aggregate_max_concurrent` | `1` | 清理与普通后台聚合共用的 OSD 并发上限；`0` 暂停任务准入 |
+| `osd_weave_cleanup_time` | 空字符串 | 严格的 `HH:MM`，按 UTC 每日触发；空值关闭自动清理，不禁用手动命令 |
+| `osd_weave_cleanup_live_percent` | `50` | 有效成员占原始数据槽位的百分比，范围 `0–100`，边界包含；不是有效字节百分比 |
+| `osd_weave_max_concurrent` | `1` | 清理与普通后台聚合共用的 OSD 并发上限；`0` 暂停任务准入 |
 
 ```sh
-ceph config set osd osd_aggregate_cleanup_time 02:00
-ceph config set osd osd_aggregate_cleanup_live_percent 50
+ceph config set osd osd_weave_cleanup_time 02:00
+ceph config set osd osd_weave_cleanup_live_percent 50
 
 # 异步执行一次，使用目标 OSD 当前的阈值。
-ceph tell osd.0 aggregate_ec cleanup
-ceph tell 'osd.*' aggregate_ec cleanup
+ceph tell osd.0 weave cleanup
+ceph tell 'osd.*' weave cleanup
 
 # 关闭每日触发，仍可手动执行。
-ceph config set osd osd_aggregate_cleanup_time ""
+ceph config set osd osd_weave_cleanup_time ""
 ```
 
 `02:00` 是 UTC 时间，例如北京时间 10:00。启动或修改配置后只安排下一个未来时点，不补跑已经错过的时间；运行期间时钟跳变也不会逐日补跑。
@@ -220,7 +220,7 @@ ceph config set osd osd_aggregate_cleanup_time ""
 ### 6.3 资源与语义边界
 
 - 沿用每 OSD 一个后台 worker、每 PG 一个转换任务和现有并发限制，不新增 cron 或专用清理线程。
-- `osd_aggregate_background_enabled=false` 只关闭普通候选扫描，清理仍可运行。重新启用会唤醒已有候选，不要求再发生一次前台写入。
+- `osd_weave_background_enabled=false` 只关闭普通候选扫描，清理仍可运行。重新启用会唤醒已有候选，不要求再发生一次前台写入。
 - 非空卷要先写出存活对象，再删除旧卷，因此必须预留空间；这不是满盘时保证能够完成的原地压实。
 - 在途访问、成员删除和转换通过 PG 锁、对象锁及逻辑对象预留协调；延迟或取消后的请求恢复原始对象身份和输入后重新解析映射。
 - 打包期间普通 head 只读请求在发布前访问原生对象、发布后访问 Volume；共享读取可与打包并行，来源删除重试不阻塞新读。写、删、快照及需要物化的操作仍遵守转换屏障；物化不适用这项读放行。

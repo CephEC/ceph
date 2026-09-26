@@ -2,6 +2,7 @@
 #include "WeaveReadRouter.h"
 
 #include "WeaveRequestContext.h"
+#include "WeaveXAttr.h"
 
 namespace ceph::weave {
 
@@ -35,23 +36,20 @@ bool WeaveReadRouter::redirect(const OpRequestRef& op) {
 
   const auto& metadata = *op->get_weave_context()->volume_metadata();
   const auto* member = member_for(op);
-  // Legacy metadata cannot yet supply an authoritative logical version.
-  if (!member->user_version) return false;
-
   auto route = host_.locate_read(metadata.volume_oid, member->shard);
   if (!route) return false;
 
   // Undo the local translation before handing the client to the member owner.
-  members_.finish_request(op);
+  translator_.finish_request(op);
   host_.reply_read_redirect(op, *route);
   return true;
 }
 
 bool WeaveReadRouter::route_is_local(const MOSDOp& message,
                                      const WeaveReadRoute& route) const {
-  return members_.supports_member_ops(message.ops) &&
+  return translator_.supports_member_ops(message.ops) &&
     route.volume.pool == message.get_hobj().pool &&
-    route.volume.nspace == ".ceph-internal-aggregate";
+    route.volume.nspace == kVolumeNamespace;
 }
 
 std::shared_ptr<const WeaveVolumeMeta> WeaveReadRouter::load_route_metadata(
@@ -94,7 +92,7 @@ int WeaveReadRouter::accept(OpRequestRef& op) {
   if (!metadata) return -EAGAIN;
 
   const auto member = metadata->members.find(message->get_hobj());
-  if (member == metadata->members.end() || !member->second.user_version) {
+  if (member == metadata->members.end()) {
     return -EAGAIN;
   }
 
@@ -104,9 +102,9 @@ int WeaveReadRouter::accept(OpRequestRef& op) {
   // Only now is the request adopted: every failure above leaves it untouched
   // for a native retry.
   auto geometry = host_.geometry();
-  members_.activate(geometry.data_shards, geometry.unit);
+  translator_.activate(geometry.data_shards, geometry.unit);
   op->ensure_weave_context().set_volume_metadata(std::move(metadata));
-  return members_.translate(op, message->ops);
+  return translator_.translate(op, message->ops);
 }
 
 }  // namespace ceph::weave

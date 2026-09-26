@@ -143,7 +143,7 @@ WRITE_CLASS_ENCODER(MetricReportMessage);
 
 // variant for sending configure message to mgr clients
 
-enum MetricConfigType {
+enum MetricConfigType : int {
   METRIC_CONFIG_TYPE_OSD = 0,
   METRIC_CONFIG_TYPE_MDS = 1,
 };

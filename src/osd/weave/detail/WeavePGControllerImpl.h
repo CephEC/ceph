@@ -15,7 +15,7 @@
 #include "WeaveCandidateIndex.h"
 #include "WeaveCatalog.h"
 #include "WeaveConversionJob.h"
-#include "WeaveMemberAccess.h"
+#include "WeaveMemberTranslator.h"
 #include "WeaveReadRouter.h"
 
 namespace ceph::weave {
@@ -33,7 +33,6 @@ public:
 
   // Lifecycle and role changes. initialize() is the only place that loads the
   // catalog from disk; everything else assumes it has already run.
-  bool enabled() const { return enabled_; }
   void initialize();
   bool reload_metadata();
   void on_recovery_progress();
@@ -47,7 +46,7 @@ public:
   // Native callbacks.
   void on_commit(const object_info_t&, bool exists, const OpRequestRef&);
   void request_cleanup(unsigned live_percent, std::function<void()> on_finish);
-  int prepare_member_delete(const OpRequestRef&, version_t, WeaveTransaction&);
+  int prepare_member_delete(const OpRequestRef&, WeaveTransaction&);
   void finish_reply(const OpRequestRef&, MOSDOpReply*);
   void finish_request(const OpRequestRef&);
 
@@ -83,14 +82,13 @@ private:
   };
 
   // Outcome of decoding one stored Volume attribute.
-  enum class StoredVolume { kLoaded, kIgnored, kInvalid };
+  enum class StoredVolume { kLoaded, kInvalid };
 
   // Lifecycle.
   bool can_work() const;
   bool can_scan() const;
   StoredVolume decode_stored_volume(const hobject_t& source,
                                     ceph::buffer::list& encoded);
-  bool freeze_legacy_versions(WeaveVolumeMeta&) const;
   void fail_recovery_waiters();
 
   // Background work.
@@ -110,9 +108,6 @@ private:
   bool start_deaggregation(const std::shared_ptr<const WeaveVolumeMeta>&);
   bool geometry_matches(const std::shared_ptr<const WeaveVolumeMeta>&) const;
   std::vector<WeaveCandidate> unpack_candidates(
-    const std::shared_ptr<const WeaveVolumeMeta>&,
-    const WeaveObjectState&) const;
-  WeaveVolumeMeta restored_volume(
     const std::shared_ptr<const WeaveVolumeMeta>&,
     const WeaveObjectState&) const;
   void start_job(std::vector<WeaveCandidate>, WeaveVolumeMeta,
@@ -141,8 +136,6 @@ private:
     const OpRequestRef&, const MOSDOp&);
   RequestDisposition accept_routed_read(OpRequestRef&);
   bool defer_while_reserved(const hobject_t& head, OpRequestRef&);
-  std::shared_ptr<const WeaveVolumeMeta> lookup_member_metadata(
-    const hobject_t& head);
   bool is_logical_delete(const MOSDOp&, bool snapshot,
                          const std::shared_ptr<const WeaveVolumeMeta>&) const;
   bool needs_native_transition(const OpRequestRef&, const MOSDOp&,
@@ -171,7 +164,7 @@ private:
   // Identity of the job that owns the current reservations.
   uint64_t sequence_ = 0;
   WeaveCatalog catalog_;
-  WeaveMemberAccess members_;
+  WeaveMemberTranslator translator_;
   WeaveReadRouter reads_;
   WeaveCandidateIndex candidates_;
   std::map<hobject_t, uint64_t> reserved_;

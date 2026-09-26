@@ -69,7 +69,7 @@ public:
     out = read_metadata; return read_route_result;
   }
   void reply_read_redirect(const OpRequestRef& op, const WeaveReadRoute&) override {
-    EXPECT_FALSE(op->is_aggregate_member_op());
+    EXPECT_FALSE(op->is_weave_member_op());
     ++redirects;
   }
   WeaveObjectState inspect(const hobject_t& id) override { return objects[id].state; }
@@ -85,7 +85,7 @@ public:
   }
   hobject_t new_volume(const hobject_t&) override {
     auto id = oid("volume");
-    id.nspace = ".ceph-internal-aggregate";
+    id.nspace = ".ceph-internal-weave";
     return id;
   }
   void requeue(std::list<OpRequestRef>& requests) override { requests.clear(); }
@@ -349,7 +349,7 @@ protected:
     host->settings.background = false;
     host->restore_copy_state = [this](auto& object) {
       auto op = request(object.state.info.soid, CEPH_OSD_OP_WRITEFULL);
-      op->set_background_aggregate_io();
+      op->set_background_weave_io();
       const auto version = controller->internal_copy_version(op);
       const auto sequence = controller->internal_copy_snap_sequence(op);
       ASSERT_TRUE(version);
@@ -935,8 +935,8 @@ TEST(WeavePGController, ConcurrentDeletesReadProjectedMetadataAndPublishOnCommit
   WeaveTransaction txn{
     [&](const char* key, bufferlist& out) { EXPECT_STREQ(key, "_volume_meta"); out = projected; return 0; },
     [&](const char* key, const bufferlist& value) { EXPECT_STREQ(key, "_volume_meta"); projected = value; }};
-  ASSERT_EQ(controller.prepare_member_delete(first, 1, txn), 0);
-  ASSERT_EQ(controller.prepare_member_delete(second, 1, txn), 0);
+  ASSERT_EQ(controller.prepare_member_delete(first, txn), 0);
+  ASSERT_EQ(controller.prepare_member_delete(second, txn), 0);
   WeaveVolumeMeta after;
   auto p = projected.cbegin(); decode(after, p);
   EXPECT_TRUE(after.members.empty());
@@ -1005,17 +1005,17 @@ class WeaveReadRouterTest : public ::testing::Test {
 protected:
   FakeHost host;
   WeaveCatalog catalog;
-  WeaveMemberAccess members{g_ceph_context, catalog};
-  WeaveReadRouter router{host, members};
+  WeaveMemberTranslator translator{g_ceph_context, catalog};
+  WeaveReadRouter router{host, translator};
   OpTracker tracker{g_ceph_context, false, 1};
   hobject_t a = oid("a"), b = oid("b"), v = oid("volume");
   WeaveVolumeMeta metadata;
   OpRequestRef op;
   void SetUp() override {
-    v.nspace = ".ceph-internal-aggregate";
+    v.nspace = ".ceph-internal-weave";
     metadata = {v, 2, 4, {{a, {0, 3, {}, 11}}, {b, {1, 4, {}, 12}}}};
     catalog.upsert(metadata);
-    members.activate(2, 4);
+    translator.activate(2, 4);
     host.read_route = WeaveReadRoute{v, pg_shard_t(1, shard_id_t(0)), 7, eversion_t(7, 9)};
     encode(metadata, host.read_metadata);
     auto* m = new MOSDOp(0, 17, a, spg_t(), 7, CEPH_OSD_FLAG_READ, CEPH_FEATURES_SUPPORTED_DEFAULT);
@@ -1026,13 +1026,13 @@ protected:
   }
   MOSDOp* message() { return static_cast<MOSDOp*>(op->get_nonconst_req()); }
   void TearDown() override {
-    members.finish_request(op);
+    translator.finish_request(op);
     op.reset(); tracker.on_shutdown();
   }
 };
 
 TEST_F(WeaveReadRouterTest, RedirectRestoresOriginalRequestAndReplicaRetranslates) {
-  ASSERT_EQ(members.preprocess(op), 0);
+  ASSERT_EQ(translator.preprocess(op), 0);
   ASSERT_TRUE(router.redirect(op));
   EXPECT_EQ(message()->get_hobj(), a);
   EXPECT_EQ(message()->ops.front().op.extent.length, 8u);
@@ -1043,7 +1043,7 @@ TEST_F(WeaveReadRouterTest, RedirectRestoresOriginalRequestAndReplicaRetranslate
   EXPECT_EQ(message()->get_hobj(), v);
   EXPECT_EQ(message()->ops.front().op.extent.offset, 1u);
   EXPECT_EQ(message()->ops.front().op.extent.length, 2u);
-  EXPECT_EQ(members.logical_user_version(op, 99), 11u);
+  EXPECT_EQ(translator.logical_user_version(op, 99), 11u);
 }
 
 TEST_F(WeaveReadRouterTest, RejectsStaleRouteRemovedMemberAndWrongTarget) {
@@ -1058,7 +1058,7 @@ TEST_F(WeaveReadRouterTest, RejectsStaleRouteRemovedMemberAndWrongTarget) {
   host.read_metadata.clear(); encode(metadata, host.read_metadata);
   EXPECT_EQ(router.accept(op), -EAGAIN);
   EXPECT_EQ(message()->get_hobj(), a);
-  EXPECT_FALSE(op->is_aggregate_member_op());
+  EXPECT_FALSE(op->is_weave_member_op());
 }
 
 TEST_F(WeaveReadRouterTest, RejectsMalformedMetadataAndUnrelatedPhysicalObject) {
@@ -1073,7 +1073,7 @@ TEST_F(WeaveReadRouterTest, RejectsMalformedMetadataAndUnrelatedPhysicalObject) 
 
 TEST_F(WeaveReadRouterTest, FallbackDoesNotRedirectAgain) {
   message()->allow_weave_redirect(false);
-  ASSERT_EQ(members.preprocess(op), 0);
+  ASSERT_EQ(translator.preprocess(op), 0);
   EXPECT_FALSE(router.redirect(op));
   EXPECT_EQ(host.redirects, 0u);
 }
@@ -1084,7 +1084,7 @@ TEST(WeavePGController, ReplicaPromotionReloadsCatalogAfterServingDirectReads) {
   auto& host = *owner;
   host.primary_role = false;
   auto a = oid("a"), v = oid("volume");
-  v.nspace = ".ceph-internal-aggregate";
+  v.nspace = ".ceph-internal-weave";
   WeaveVolumeMeta metadata{v, 2, 4, {{a, {0, 3, {}, 11}}}};
   host.put(v, "AAAABBBB");
   encode(metadata, host.objects[v].attrs["volume_meta"]);
@@ -1119,7 +1119,7 @@ TEST(WeavePGController, RequeuedMembersRetainLogicalCapabilities) {
   auto& host = *owner;
   auto a = oid("allowed-member"), v = oid("volume");
   a.nspace = "user";
-  v.nspace = ".ceph-internal-aggregate";
+  v.nspace = ".ceph-internal-weave";
   WeaveVolumeMeta metadata{v, 2, 4, {{a, {0, 3, {}, 11}}}};
   host.put(v, "AAAABBBB");
   encode(metadata, host.objects[v].attrs["volume_meta"]);
@@ -1155,7 +1155,7 @@ TEST(WeavePGController, FailedCatalogLoadRejectsRequestsUntilReloadSucceeds) {
   auto owner = std::make_unique<FakeHost>();
   auto& host = *owner;
   auto a = oid("a"), v = oid("volume");
-  v.nspace = ".ceph-internal-aggregate";
+  v.nspace = ".ceph-internal-weave";
   WeaveVolumeMeta metadata{v, 2, 4, {{a, {0, 3, {}, 11}}}};
   host.put(v, "AAAABBBB");
   encode(metadata, host.objects[v].attrs["volume_meta"]);
@@ -1186,7 +1186,7 @@ TEST(WeavePGController, MissingCatalogDefersReadsWritesAndListingUntilRecovery) 
   auto& host = *owner;
   host.missing = true;
   auto a = oid("a"), v = oid("volume");
-  v.nspace = ".ceph-internal-aggregate";
+  v.nspace = ".ceph-internal-weave";
   WeavePGController controller(g_ceph_context, std::move(owner), true);
   controller.initialize();
   OpTracker tracker(g_ceph_context, false, 1);
@@ -1263,7 +1263,7 @@ TEST(WeavePGController, UserVolumeAttributeCannotPublishMemberMapping) {
   auto owner = std::make_unique<FakeHost>();
   auto& host = *owner;
   auto forged = oid("ordinary"), logical = oid("claimed-member"), volume = oid("victim");
-  volume.nspace = ".ceph-internal-aggregate";
+  volume.nspace = ".ceph-internal-weave";
   host.put(forged, "user-data");
   host.put(volume, "PRIVATE!");
   WeaveVolumeMeta metadata{volume, 2, 4, {{logical, {0, 4, {}, 11}}}};

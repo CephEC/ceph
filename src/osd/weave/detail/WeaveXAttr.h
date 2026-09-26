@@ -14,10 +14,14 @@ namespace ceph::weave {
 constexpr const char* kVolumeMetaAttr = "volume_meta";
 constexpr const char* kVolumeMetaXattr = "_volume_meta";
 
+// Namespace of every physical Volume object. It is durable state: Volume oids
+// are stored in Volume metadata and in read routes, so the value is fixed.
+constexpr const char* kVolumeNamespace = ".ceph-internal-weave";
+
 inline std::string xattr_prefix(const hobject_t &oid) {
   // hobject_t::to_str() includes pool/hash/snap/oid/key/namespace and escapes
   // separators, giving each logical object an exact prefix inside the Volume.
-  return "aggregate_ec." + oid.to_str() + ".";
+  return "weave." + oid.to_str() + ".";
 }
 
 inline std::string xattr_name(const hobject_t &oid, const std::string &name) {

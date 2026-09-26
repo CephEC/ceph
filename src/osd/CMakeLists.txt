@@ -13,7 +13,7 @@ set(osd_srcs
   OSD.cc
   Watch.cc
   ClassHandler.cc
-  weave/detail/WeaveMemberAccess.cc
+  weave/detail/WeaveMemberTranslator.cc
   weave/detail/WeaveReadRouter.cc
   weave/detail/WeaveScheduler.cc
   weave/detail/WeaveCandidateIndex.cc

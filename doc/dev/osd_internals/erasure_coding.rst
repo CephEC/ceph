@@ -98,9 +98,11 @@ Code boundaries
 ~~~~~~~~~~~~~~~
 
 Feature-specific code lives in ``src/osd/weave`` in the ``ceph::weave``
-namespace. Types use the ``Weave`` prefix. Existing ``osd_aggregate_*``
-configuration keys, the ``aggregate_ec cleanup`` command and on-disk identifiers
-retain their names.
+namespace. Types use the ``Weave`` prefix. Configuration uses ``osd_weave_*``
+and the admin command is ``weave cleanup``. Physical Volumes use the
+``.ceph-internal-weave`` namespace and member xattrs use the ``weave.`` prefix.
+The former aggregate implementation, option names, command and disk identifiers
+are not supported; there are no aliases, fallback readers or migration paths.
 
 Native integration has three entry points:
 
@@ -127,7 +129,7 @@ Implementation classes live in ``src/osd/weave/detail``:
 * ``WeaveCandidateIndex`` and ``WeaveLayout`` own selection and layout arithmetic.
 * ``WeaveCatalog`` owns authoritative member mappings and immutable metadata
   views. Readers retain their published view when a newer one replaces it.
-* ``WeaveMemberAccess`` borrows a const catalog. It owns request translation,
+* ``WeaveMemberTranslator`` borrows a const catalog. It owns request translation,
   logical STAT/xattr/version handling, delete preparation and reply restoration;
   it cannot publish or remove mappings. ``WeaveRequestContext`` retains the
   logical request and its pinned metadata for retry/reply handling.
@@ -151,7 +153,7 @@ and destroying the private request context. Deterministic fake-host tests cover
 conversion failure, cancellation, stale completions, publication ordering and
 projected member deletion without creating a live PG or Objecter.
 
-Configured data classes (``osd_aggregate_data_classes``) consume object bytes
+Configured data classes (``osd_weave_data_classes``) consume object bytes
 with ``ClsParmContext`` rather than the native PG context used by
 ``cls_cxx_*``. The gathered and shard-local paths share one data-class executor.
 Unsupported native operations on an aggregated member first return the group
@@ -182,35 +184,35 @@ Native shadows from canceled transitions are drained before logical deletion.
 The defaults are a 1 MiB minimum object size, 30 seconds of quiet time,
 5 seconds between scans, a 64 MiB padded Volume limit, one concurrent conversion
 per OSD and at most 10 percent padding. These are controlled respectively by
-``osd_aggregate_min_object_size``, ``osd_aggregate_quiet_period``,
-``osd_aggregate_scan_interval``, ``osd_aggregate_max_volume_size``,
-``osd_aggregate_max_concurrent`` and ``osd_aggregate_max_padding_percent``.
-``osd_aggregate_ec_enabled`` enables this experimental path;
-``osd_aggregate_background_enabled`` enables candidate scans. Setting the
+``osd_weave_min_object_size``, ``osd_weave_quiet_period``,
+``osd_weave_scan_interval``, ``osd_weave_max_volume_size``,
+``osd_weave_max_concurrent`` and ``osd_weave_max_padding_percent``.
+``osd_weave_enabled`` enables this experimental path;
+``osd_weave_background_enabled`` enables candidate scans. Setting the
 concurrency limit to zero also blocks materialization admission, so disable
 candidate scans instead when only background aggregation should stop.
 
 Sparse cleanup
 ~~~~~~~~~~~~~~
 
-``osd_aggregate_cleanup_time`` accepts strict ``HH:MM`` in UTC. Its default is
+``osd_weave_cleanup_time`` accepts strict ``HH:MM`` in UTC. Its default is
 empty, disabling automatic cleanup. Enabling or changing the time schedules
 the next future occurrence, without startup catch-up. Clock jumps do not queue
 one pass for each missed day. The manual command works even with an empty time::
 
-  ceph config set osd osd_aggregate_cleanup_time 02:00
-  ceph config set osd osd_aggregate_cleanup_live_percent 50
-  ceph tell osd.0 aggregate_ec cleanup
-  ceph tell 'osd.*' aggregate_ec cleanup
+  ceph config set osd osd_weave_cleanup_time 02:00
+  ceph config set osd osd_weave_cleanup_live_percent 50
+  ceph tell osd.0 weave cleanup
+  ceph tell 'osd.*' weave cleanup
 
 Commands return ``{"status": "accepted"}`` or ``{"status": "already_running"}``,
 not physical completion. Manual and scheduled requests share one pass per OSD,
-the pass's initial threshold, and ``osd_aggregate_max_concurrent``. They operate
+the pass's initial threshold, and ``osd_weave_max_concurrent``. They operate
 on primary, active, clean EC PGs. No additional worker or external cron is used.
 
 Each pass enumerates Volume metadata, prioritizes empty Volumes, and selects
 nonempty Volumes when ``100 * live_members <= k * live_percent``. The percentage
-is occupied original data slots, not bytes. ``osd_aggregate_cleanup_live_percent``
+is occupied original data slots, not bytes. ``osd_weave_cleanup_live_percent``
 defaults to 50 and accepts 0 through 100 inclusively: zero reclaims only empty
 Volumes, while 100 also dismantles full Volumes.
 
@@ -221,14 +223,14 @@ contents, size, mtime, xattrs and logical user versions, and reenter ordinary
 candidate selection with a new quiet period. There is no direct Volume merger.
 
 Cleanup remains available with ordinary candidate scanning disabled. Re-enabling
-``osd_aggregate_background_enabled`` wakes existing candidates without requiring
+``osd_weave_background_enabled`` wakes existing candidates without requiring
 another foreground commit. Nonempty cleanup requires headroom for native copies
 before the old Volume can be deleted; it is not in-place full-device compaction.
 
-The metadata writer uses version 3, supporting sparse/empty Volumes and persistent
-member user versions. It also reads complete background version-2 groups; these
-did not retain original member versions, so their former Volume-version fallback
-is frozen before mutation. Foreground version-1 metadata remains incompatible.
+The metadata writer and reader use only Weave version 1, supporting sparse/empty
+Volumes and persisting each member's user version and original snapshot sequence.
+Other structure versions are rejected, even when they claim compatibility.
+Data written by the former aggregate implementation is not a supported input.
 ``MOSDOp`` and ``MOSDOpReply`` negotiate ``WEAVE_READ_REDIRECT``. Capable peers
 use a version-10 tail carrying routing information; other peers retain the
 native version-8 encoding. The old experimental version-9 translated-operation
@@ -237,7 +239,7 @@ payload is not used.
 Redirected member reads
 ~~~~~~~~~~~~~~~~~~~~~~~
 
-With ``osd_aggregate_redirect_reads`` enabled (the default), a primary in an
+With ``osd_weave_redirect_reads`` enabled (the default), a primary in an
 active, clean PG can return a ``WeaveReadRoute`` identifying the Volume, target
 OSD/shard, OSDMap epoch and physical object version. The target must advertise
 the protocol feature. The client resends the original logical object and
@@ -254,7 +256,7 @@ and reconstruction paths remain the fallback.
 The receiving OSD checks permissions on the original logical request, validates
 local placement, the map epoch, object version and replica-read stability,
 then reloads that Volume's durable metadata. It verifies logical membership
-and the EC plugin's member-to-shard mapping before using ``WeaveMemberAccess``
+and the EC plugin's member-to-shard mapping before using ``WeaveMemberTranslator``
 to translate the operations. It neither trusts client-supplied member extents
 nor needs a replica-wide copy of the primary's catalog.
 

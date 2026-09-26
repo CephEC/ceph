@@ -3,7 +3,7 @@
 
 #include <memory>
 
-#include "WeaveMemberAccess.h"
+#include "WeaveMemberTranslator.h"
 #include "osd/weave/WeavePGHost.h"
 
 namespace ceph::weave {
@@ -14,8 +14,8 @@ namespace ceph::weave {
  */
 class WeaveReadRouter {
 public:
-  WeaveReadRouter(WeavePGHost& host, WeaveMemberAccess& members)
-    : host_(host), members_(members) {}
+  WeaveReadRouter(WeavePGHost& host, WeaveMemberTranslator& translator)
+    : host_(host), translator_(translator) {}
   bool redirect(const OpRequestRef&);
   int accept(OpRequestRef&);
 
@@ -29,7 +29,7 @@ private:
   bool assignment_matches(const WeaveReadRoute&, const WeaveMemberMeta&) const;
 
   WeavePGHost& host_;
-  WeaveMemberAccess& members_;
+  WeaveMemberTranslator& translator_;
 };
 
 }  // namespace ceph::weave

@@ -4,6 +4,7 @@
 #include "WeavePGHost.h"
 #include "WeaveService.h"
 #include "common/Finisher.h"
+#include "detail/WeaveLayout.h"
 #include "detail/WeaveXAttr.h"
 #include "osd/OSD.h"
 #include "osd/PrimaryLogPG.h"
@@ -11,13 +12,11 @@
 
 namespace {
 
-constexpr uint32_t kInternalIo = 1u << 29;
-
 void mark_internal(ObjectOperation& op) {
   // Every sub-op of a Weave request carries the flag; the receiving OSD uses
   // it to tell server-side I/O from a client request.
   for (auto& entry : op.ops) {
-    entry.op.flags = entry.op.flags | kInternalIo;
+    entry.op.flags = entry.op.flags | ceph::weave::kInternalIo;
   }
 }
 
@@ -42,12 +41,12 @@ public:
 
   ceph::weave::WeavePolicy policy() const override {
     const auto& conf = pg_.cct->_conf;
-    return {conf->osd_aggregate_background_enabled,
-      conf->osd_aggregate_min_object_size,
-      conf->osd_aggregate_quiet_period,
-      conf->osd_aggregate_scan_interval,
-      conf->osd_aggregate_max_volume_size,
-      static_cast<unsigned>(conf->osd_aggregate_max_padding_percent)};
+    return {conf->osd_weave_background_enabled,
+      conf->osd_weave_min_object_size,
+      conf->osd_weave_quiet_period,
+      conf->osd_weave_scan_interval,
+      conf->osd_weave_max_volume_size,
+      static_cast<unsigned>(conf->osd_weave_max_padding_percent)};
   }
 
   ceph::weave::WeaveGeometry geometry() const override {
@@ -123,7 +122,8 @@ public:
   }
 
   int load_metadata(ceph::weave::WeaveVolumeAttrs& out) override {
-    return pg_.get_pgbackend()->load_volume_attrs(out);
+    return pg_.get_pgbackend()->load_attr_mirror(
+      ceph::weave::kVolumeMetaXattr, out);
   }
 
   hobject_t new_volume(const hobject_t& seed) override {
@@ -136,7 +136,7 @@ public:
 
     return hobject_t(object_t(name.str()), std::string(), CEPH_NOSNAP,
                      seed.get_hash(), seed.pool,
-                     ".ceph-internal-aggregate");
+                     ceph::weave::kVolumeNamespace);
   }
 
   void requeue(std::list<OpRequestRef>& requests) override {
@@ -153,7 +153,7 @@ public:
     // reads, and the member must be inside the pool's data-chunk range.
     // The member bound is checked before the unreadable check below, so an
     // out-of-range member is rejected without consulting recovery state.
-    if (!pg_.cct->_conf.get_val<bool>("osd_aggregate_redirect_reads") ||
+    if (!pg_.cct->_conf.get_val<bool>("osd_weave_redirect_reads") ||
         !pg_.is_active() || (pg_.is_primary() && !pg_.is_clean()) ||
         member >= static_cast<unsigned>(
           pg_.get_pgbackend()->get_ec_data_chunk_count()) ||
@@ -233,7 +233,7 @@ public:
 
   void conversion_checkpoint(const char* point, size_t member) override {
     const auto target =
-      pg_.cct->_conf.get_val<std::string>("osd_aggregate_debug_crash_point");
+      pg_.cct->_conf.get_val<std::string>("osd_weave_debug_crash_point");
 
     // Match "point:member" exactly; any other point is a no-op.
     if (target == std::string(point) + ":" + std::to_string(member)) {
@@ -284,7 +284,7 @@ public:
   ceph_tid_t remove(const hobject_t& oid, std::optional<version_t> version,
                     ceph::weave::WeaveCompletion callback) override {
     if (version && pg_.cct->_conf.get_val<bool>(
-          "osd_aggregate_debug_source_remove_error")) {
+          "osd_weave_debug_source_remove_error")) {
       // Keep fault delivery asynchronous, just like an Objecter completion.
       lsubdout(pg_.cct, osd, 10)
         << "Weave source retirement injected EIO for " << oid << dendl;
@@ -371,7 +371,7 @@ private:
                     ceph::weave::WeaveCompletion callback) {
     return osd_.objecter->mutate(oid.oid, locator(oid), op, SnapContext(),
       mtime, CEPH_OSD_FLAG_IGNORE_OVERLAY |
-        (oid.nspace == ".ceph-internal-aggregate"
+        (oid.nspace == ceph::weave::kVolumeNamespace
            ? CEPH_OSD_FLAG_ENFORCE_SNAPC : 0),
       complete(std::move(callback)));
   }

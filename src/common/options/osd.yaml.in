@@ -1284,13 +1284,13 @@ options:
   level: dev
   default: true
   with_legacy: true
-- name: osd_aggregate_ec_enabled
+- name: osd_weave_enabled
   desc: Enable ordinary foreground EC with background same-PG object aggregation
   type: bool
   level: advanced
   default: true
   with_legacy: true
-- name: osd_aggregate_background_enabled
+- name: osd_weave_background_enabled
   desc: Enable background aggregation of stable ordinary EC objects within each PG
   type: bool
   level: advanced
@@ -1298,7 +1298,7 @@ options:
   with_legacy: true
   flags:
   - runtime
-- name: osd_aggregate_debug_crash_point
+- name: osd_weave_debug_crash_point
   desc: Abort at a Weave conversion checkpoint for crash recovery testing
   long_desc: Disabled when empty. Use checkpoint:index, where checkpoint is
     pack_before_write, pack_committed, pack_published, source_before_remove,
@@ -1310,14 +1310,14 @@ options:
   default: '""'
   flags:
   - runtime
-- name: osd_aggregate_debug_source_remove_error
+- name: osd_weave_debug_source_remove_error
   desc: Return EIO for Weave source retirement in isolated test clusters
   type: bool
   level: dev
   default: false
   flags:
   - runtime
-- name: osd_aggregate_min_object_size
+- name: osd_weave_min_object_size
   desc: Minimum committed logical object size eligible for background EC aggregation
   type: size
   level: advanced
@@ -1325,7 +1325,7 @@ options:
   with_legacy: true
   flags:
   - runtime
-- name: osd_aggregate_quiet_period
+- name: osd_weave_quiet_period
   desc: Seconds without a committed object change before background EC aggregation
   type: float
   level: advanced
@@ -1334,7 +1334,7 @@ options:
   with_legacy: true
   flags:
   - runtime
-- name: osd_aggregate_scan_interval
+- name: osd_weave_scan_interval
   desc: Seconds between background EC candidate scans for a PG
   type: float
   level: advanced
@@ -1343,23 +1343,23 @@ options:
   with_legacy: true
   flags:
   - runtime
-- name: osd_aggregate_max_volume_size
-  desc: Maximum padded logical size of a background EC aggregate Volume
+- name: osd_weave_max_volume_size
+  desc: Maximum padded logical size of a Weave Volume
   type: size
   level: advanced
   default: 64_M
   with_legacy: true
   flags:
   - runtime
-- name: osd_aggregate_max_concurrent
-  desc: Maximum simultaneous background EC aggregate conversions per OSD
+- name: osd_weave_max_concurrent
+  desc: Maximum simultaneous Weave conversions per OSD
   type: uint
   level: advanced
   default: 1
   with_legacy: true
   flags:
   - runtime
-- name: osd_aggregate_max_padding_percent
+- name: osd_weave_max_padding_percent
   desc: Maximum padding as a percentage of summed logical member sizes
   type: uint
   level: advanced
@@ -1367,10 +1367,10 @@ options:
   with_legacy: true
   flags:
   - runtime
-- name: osd_aggregate_cleanup_time
-  desc: Daily UTC time for background sparse aggregate Volume cleanup
+- name: osd_weave_cleanup_time
+  desc: Daily UTC time for background sparse Weave Volume cleanup
   long_desc: Strict HH:MM UTC. Empty disables automatic cleanup but not the
-    aggregate_ec cleanup admin command. Enabling or changing this time schedules
+    weave cleanup admin command. Enabling or changing this time schedules
     the next future occurrence, without catching up a missed time.
   type: str
   level: advanced
@@ -1393,11 +1393,11 @@ options:
       }
       return 0;
     }
-- name: osd_aggregate_cleanup_live_percent
-  desc: Maximum live-slot percentage eligible for sparse aggregate Volume cleanup
+- name: osd_weave_cleanup_live_percent
+  desc: Maximum live-slot percentage eligible for sparse Weave Volume cleanup
   long_desc: Inclusive percentage of occupied data slots. Empty Volumes are
     deleted. Manual and automatic cleanup use this threshold and share the
-    osd_aggregate_max_concurrent background aggregation limit.
+    osd_weave_max_concurrent background aggregation limit.
   type: uint
   level: advanced
   default: 50
@@ -1405,12 +1405,12 @@ options:
   max: 100
   flags:
   - runtime
-- name: osd_aggregate_data_classes
+- name: osd_weave_data_classes
   type: str
   level: advanced
   default: opencv_thumbnail openssl_md5 parquet_scan
   with_legacy: true
-- name: osd_aggregate_redirect_reads
+- name: osd_weave_redirect_reads
   desc: Redirect Weave member reads and data-class calls to their data shard
   long_desc: Requires a capable client and target OSD. A stale or failed direct
     request returns to the primary without another redirection.

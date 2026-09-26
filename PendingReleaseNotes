@@ -7,19 +7,21 @@
   deletion now persists sparse membership without rewriting the Volume;
   other mutations restore active members to native EC. The foreground
   aggregator, its buffer metadata and client-forwarding message extensions
-  have been removed. Configuration now uses ``osd_aggregate_ec_enabled``,
-  ``osd_aggregate_background_enabled`` and ``osd_aggregate_data_classes``;
+  have been removed. Configuration now uses ``osd_weave_enabled``,
+  ``osd_weave_background_enabled`` and ``osd_weave_data_classes``;
   old option names are not retained as aliases. Optional daily UTC cleanup
-  (``osd_aggregate_cleanup_time``) and the asynchronous ``ceph tell osd.N
-  aggregate_ec cleanup`` command share a live-slot percentage threshold
-  (``osd_aggregate_cleanup_live_percent``, default 50) and the existing
+  (``osd_weave_cleanup_time``) and the asynchronous ``ceph tell osd.N
+  weave cleanup`` command share a live-slot percentage threshold
+  (``osd_weave_cleanup_live_percent``, default 50) and the existing
   background worker/concurrency limit. Empty Volumes are removed; eligible
   sparse Volumes restore surviving members for ordinary reaggregation.
-  Metadata version 4 also persists each member's original snapshot sequence.
-  Snapshot access and mutations in pools with snapshot history materialize
-  native heads before native clone lookup or copy-on-write. Background
-  versions 2 and 3 remain readable, but cannot reconstruct snapshot history
-  already lost by those formats; foreground version 1 is not supported.
+  Only the Weave version-1 metadata layout is accepted, including each
+  member's original snapshot sequence. Physical Volumes now use the
+  ``.ceph-internal-weave`` namespace and member xattrs the ``weave.`` prefix.
+  Previous aggregate formats, disk identifiers and commands are unsupported;
+  no compatibility readers or migration paths are provided. Snapshot access
+  and mutations in pools with snapshot history materialize native heads
+  before native clone lookup or copy-on-write.
   Feature code is isolated under ``osd/weave``. Service, PG and EC facades
   isolate native integration; conversion jobs own cancellation and resource
   release through an explicit host interface. Published-member deletion is

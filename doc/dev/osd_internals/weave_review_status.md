@@ -1,5 +1,7 @@
 # Weave 联合验收与审查修复状态
 
+配置和命令名称已统一为当前 weave 接口；历史验收结果仍对应各节注明的版本与日期，不代表本次重跑。
+
 上一轮修复完成日期：2026-09-14。仓库：`/root/ceph`。
 
 后续 D1 专项修复：转换改为“有效元数据落盘即接管、删卷落盘才交还原生对象”，并补充取消、超时和冲突裁决。该轮实现及独立故障验收见 [weave_d1_recovery.md](weave_d1_recovery.md)；下文保留的是此前 R1–R3／F1–F7 的历史验收，不将其测试数量混入 D1 结果。
@@ -16,7 +18,7 @@
 
 ### R1 — 非 BlueStore 后端保持原生 EC 可用：已完成
 
-`PrimaryLogPG` 仅对 BlueStore EC PG 启用 Weave。其他 ObjectStore 的默认 `load_volume_attrs` 仍返回 `-EOPNOTSUPP`，不以空 Catalog 掩盖不支持的后端。
+`PrimaryLogPG` 仅对 BlueStore EC PG 启用 Weave。其他 ObjectStore 的默认 `load_attr_mirror` 仍返回 `-EOPNOTSUPP`，不以空 Catalog 掩盖不支持的后端。
 
 最新二进制上，三个 MemStore OSD 的 2+1 EC 池通过原生 put／get／精确 list 和 `hello.say_hello`；后台聚合设置为 true 后，私有 Volume namespace 仍为空。BlueStore 4+2 聚合和直读回归同时通过。
 
@@ -60,7 +62,7 @@
 
 原二进制已复现“聚合前快照可读、聚合后新建快照返回 ENOENT”。修复包括：
 
-- Volume 元数据升级为 **v4／compat v4**，保存每个源对象原生 `snapset.seq`。
+- Volume 元数据使用当前布局（v1／`ENCODE_START(1,1)`，最初编号 v4），保存每个源对象原生 `snapset.seq`。
 - 快照请求按 head 查 Catalog；遇到转换中的对象先等待，已有聚合成员先物化，再由原生 snapset／clone 路径解释快照。
 - 内部物化恢复源对象原来的快照序号，不套用物化时的最新池快照上下文。
 - 有池快照历史或请求快照上下文时，删除先物化，再走原生 copy-on-write；无快照历史的逻辑删除仍可更新稀疏成员元数据。
@@ -68,7 +70,7 @@
 
 池快照和 self-managed snapshot 两套真实 4+2 测试均通过：对象创建前快照返回 ENOENT；聚合前、聚合后快照保持原字节、size／mtime／user_version 和 xattr；全量覆盖、局部覆盖、删除、删除后同名重建只改变当前 head；全部十个 OSD 重启后再次校验通过。测试确认源对象已物理打包，不能仅凭逻辑读成功判定覆盖了聚合路径。
 
-**兼容范围：**仍解码后台 v2／v3，但旧格式没有记录完整源快照历史。旧卷物化以物理 Volume 的快照序号为兼容边界，无法重建旧实现已经丢失的历史。本次原 v3 复现场景的聚合后快照已恢复可读；不能据此声称任意旧历史均可恢复。需要完整快照保证的数据应在建立所需快照前物化为原生对象，再以 v4 聚合。v4 数据不能回退到仅认识 v2／v3 的 OSD。
+**兼容范围：**只解码当前布局（v1，`struct_v` 必须为 1）；v2／v3 的 legacy 解码路径（`WeaveCatalog.cc` 的 `decode_legacy_member`）已移除，解析失败即按损坏处理（本版本不考虑与旧格式共存）。当时复现所用的 v3 场景已不再受支持。现有数据也不能回退到不认这一布局的 OSD。
 
 永久测试：Catalog 编解码及物化单元测试；`src/test/weave/review_regressions.py` 的 `seed`／`mutate`／`verify` 阶段。
 
@@ -163,13 +165,13 @@ ninja -C build -j3 ceph-osd ceph-mon ceph-mgr rados ceph-kvstore-tool \
 
 其中 `r2-read-error.log` 是发现逻辑 STAT 提前输出时的失败证据，最终修复后的两条 PASS 位于 `final-checks.log`；`f4-before.txt` 是原实现的失败证据。不要把这些保留的复现结果当作最终测试失败。
 
-需求说明见 [aggregate_ec_data_lake_requirements.md](aggregate_ec_data_lake_requirements.md)，发布说明见仓库根目录 `PendingReleaseNotes`。
+需求说明见 [weave_data_lake_requirements.md](weave_data_lake_requirements.md)，发布说明见仓库根目录 `PendingReleaseNotes`。
 
 ## 5. 保留边界与清理状态
 
 - 此前验收只包含稳定态全重启。后续 D1 已补充提交协议及关键崩溃边界测试，见专项记录；其结论仍限定在所验证的 profile、版本和故障模型内。
 - ObjectStore 索引 split／merge 范围通过，不等于 Weave 整体 PG split／resharding 已解决。
-- 未穷举所有 EC profile、跨版本全集群组合或生产规模性能；v4 快照元数据的旧格式和降级限制见 F1。
+- 未穷举所有 EC profile、跨版本全集群组合或生产规模性能；快照元数据的旧格式和降级限制见 F1。
 - 隔离集群共 1 个 Monitor、10 个 OSD（7 个 BlueStore、3 个 MemStore），已全部停止；额外恢复 OSD 9 单独停止，随后 supervisor 完成其余进程清理并以 0 退出。
 - 原临时目录 `/tmp/ceph-weave-verify.tnrn3890` 已删除，包含临时脚本、输入数据、故障插件及 OSD 数据目录；仅保留上述精简证据。未删除其他会话资源。
 - R1–R3、F1–F7 及本次交接列出的构建、回归、文档、资源清理工作均已完成。工作区改动保留供审阅，未执行 Git 提交。

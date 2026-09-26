@@ -75,11 +75,9 @@ void WeaveConversionJob::finish(Result result) {
 }
 
 void WeaveConversionJob::cancel() {
-  if (terminal()) return;
-
-  // Mark terminal before cancellation can deliver any old completion.
+  // finish() is idempotent and clears tid_, so a terminal job has nothing left
+  // to cancel. The caller keeps the job alive across this call.
   const auto tid = tid_;
-  auto self = shared_from_this();
   finish({false, 0, true});
 
   // finish() cleared tid_, so cancel with the value captured above.

@@ -9,7 +9,7 @@
 #include "osd/ECBackend.h"
 #include "osd/OpRequest.h"
 #include "osd/ClassHandler.h"
-#include "osd/weave/detail/WeaveMemberAccess.h"
+#include "osd/weave/detail/WeaveMemberTranslator.h"
 #include "osd/weave/detail/WeaveScheduler.h"
 #include "osd/weave/detail/WeaveCandidateIndex.h"
 #include "osd/weave/WeaveECAdapter.h"
@@ -247,26 +247,6 @@ TEST(WeaveCatalog, SnapshotSequenceSurvivesReload) {
   EXPECT_EQ(catalog.lookup(second)->members.at(second).snap_sequence, 29u);
 }
 
-TEST(WeaveCatalog, BackgroundV3RetainsVersionsAndMarksSnapshotHistoryUnknown) {
-  const auto first = object("first"), second = object("second");
-  const auto layout = metadata(object("volume"), first, second);
-  bufferlist encoded;
-  ENCODE_START(3, 3, encoded);
-  encode(layout.volume_oid, encoded);
-  encode(layout.data_shards, encoded);
-  encode(layout.slot_size, encoded);
-  encode(uint32_t(layout.members.size()), encoded);
-  for (const auto& [oid, member] : layout.members) {
-    encode(oid, encoded); encode(member.shard, encoded); encode(member.size, encoded);
-    encode(member.mtime, encoded); encode(member.user_version, encoded);
-  }
-  ENCODE_FINISH(encoded);
-  WeaveCatalog catalog;
-  ASSERT_EQ(catalog.load_from_disk(encoded), 0);
-  EXPECT_EQ(catalog.lookup(first)->members.at(first).user_version, 11u);
-  EXPECT_EQ(catalog.lookup(first)->members.at(first).snap_sequence, CEPH_NOSNAP);
-}
-
 TEST(WeaveECAdapter, RejectedClassReturnsExecutionNodeError) {
   const auto previous = g_conf().get_val<std::string>("osd_class_load_list");
   g_conf().set_val("osd_class_load_list", "hello");
@@ -320,15 +300,15 @@ TEST_F(EncodedLayout, ReadCompletionCanStartAnotherReadExactlyOnce) {
   EXPECT_EQ(second, 1u);
 }
 
-TEST(WeaveMemberAccess, OrdinaryWritesLargerThanOneUnitDoNotWaitForAggregation) {
+TEST(WeaveMemberTranslator, OrdinaryWritesLargerThanOneUnitDoNotWaitForAggregation) {
   TestTracker tracking;
-  WeaveCatalog access_catalog;
-  WeaveMemberAccess aggregator(g_ceph_context, access_catalog);
-  aggregator.activate(4, UNIT);
+  WeaveCatalog catalog;
+  WeaveMemberTranslator translator(g_ceph_context, catalog);
+  translator.activate(4, UNIT);
   auto* message = write_request(object("ordinary"), std::string(8 * UNIT, 'a'));
   auto request = tracking.tracker.create_request<OpRequest, Message*>(message);
-  EXPECT_EQ(aggregator.preprocess(request), WeaveMemberAccess::kPreprocessContinue);
-  EXPECT_FALSE(request->is_aggregate_member_op());
+  EXPECT_EQ(translator.preprocess(request), WeaveMemberTranslator::kPreprocessContinue);
+  EXPECT_FALSE(request->is_weave_member_op());
 }
 
 TEST(WeaveCatalog, ReplacingCompleteGroupRemovesPreviousMember) {
@@ -404,6 +384,15 @@ TEST(WeaveCatalog, SparseAndEmptyVolumesReloadWithoutChangingPinnedReaders) {
 
   bufferlist encoded;
   sparse->encode(encoded);
+  // The format version is part of the durable contract: bumping it silently
+  // would strand every Volume already on disk, so pin what this codec writes.
+  ASSERT_GE(encoded.length(), 2u);
+  auto header = encoded.cbegin();
+  char struct_v = 0, struct_compat = 0;
+  header.copy(1, &struct_v);
+  header.copy(1, &struct_compat);
+  EXPECT_EQ(struct_v, 1);
+  EXPECT_EQ(struct_compat, 1);
   WeaveCatalog restored;
   ASSERT_EQ(restored.load_from_disk(encoded), 0);
   EXPECT_EQ(restored.lookup(first), nullptr);
@@ -464,7 +453,7 @@ TEST(WeaveCatalog, PaginationDoesNotOmitOrRepeatMembers) {
   EXPECT_FALSE(final_next);
 }
 
-TEST(WeaveMemberAccess, ReloadedSparseMetadataClampsReadAndPreservesLogicalStat) {
+TEST(WeaveMemberTranslator, ReloadedSparseMetadataClampsReadAndPreservesLogicalStat) {
   const auto volume_oid = object("volume");
   const auto first = object("first");
   const auto second = object("second");
@@ -473,10 +462,10 @@ TEST(WeaveMemberAccess, ReloadedSparseMetadataClampsReadAndPreservesLogicalStat)
   layout.members.erase(first);
   layout.encode(encoded);
   std::vector<bufferlist> snapshot{encoded};
-  WeaveCatalog access_catalog;
-  WeaveMemberAccess access(g_ceph_context, access_catalog);
-  access.activate(2, UNIT);
-  access_catalog.replace_from_disk(snapshot);
+  WeaveCatalog catalog;
+  WeaveMemberTranslator translator(g_ceph_context, catalog);
+  translator.activate(2, UNIT);
+  catalog.replace_from_disk(snapshot);
 
   TestTracker tracking;
   auto* message = new MOSDOp(
@@ -490,9 +479,9 @@ TEST(WeaveMemberAccess, ReloadedSparseMetadataClampsReadAndPreservesLogicalStat)
   auto request = tracking.tracker.create_request<OpRequest, Message*>(message);
   // Native class requests also own a context, but have no published mapping.
   request->ensure_weave_context();
-  EXPECT_FALSE(request->is_aggregate_member_op());
-  ASSERT_EQ(access.preprocess(request), WeaveMemberAccess::kPreprocessContinue);
-  EXPECT_TRUE(request->is_aggregate_member_op());
+  EXPECT_FALSE(request->is_weave_member_op());
+  ASSERT_EQ(translator.preprocess(request), WeaveMemberTranslator::kPreprocessContinue);
+  EXPECT_TRUE(request->is_weave_member_op());
   EXPECT_EQ(message->get_hobj(), volume_oid);
   EXPECT_EQ(uint64_t(message->ops[0].op.extent.offset), 150u);
   EXPECT_EQ(uint64_t(message->ops[0].op.extent.length), 50u);
@@ -501,24 +490,24 @@ TEST(WeaveMemberAccess, ReloadedSparseMetadataClampsReadAndPreservesLogicalStat)
   uint64_t size;
   utime_t mtime;
   EXPECT_EQ(message->ops[1].outdata.length(), 0u);
-  ASSERT_TRUE(access.encode_logical_stat(request, message->ops[1].outdata));
+  ASSERT_TRUE(translator.encode_logical_stat(request, message->ops[1].outdata));
   auto p = message->ops[1].outdata.cbegin();
   decode(size, p);
   decode(mtime, p);
   EXPECT_EQ(size, 200u);
   EXPECT_EQ(mtime, utime_t(2, 0));
-  access.finish_request(request);
-  EXPECT_FALSE(request->is_aggregate_member_op());
+  translator.finish_request(request);
+  EXPECT_FALSE(request->is_weave_member_op());
 }
 
-TEST(WeaveMemberAccess, FinalDeleteTranslatesWithoutPublishingDeletion) {
+TEST(WeaveMemberTranslator, FinalDeleteTranslatesWithoutPublishingDeletion) {
   const auto volume_oid = object("volume");
   const auto first = object("first");
   const auto second = object("second");
-  WeaveCatalog access_catalog;
-  WeaveMemberAccess access(g_ceph_context, access_catalog);
-  access.activate(2, UNIT);
-  access_catalog.upsert(metadata(volume_oid, first, second));
+  WeaveCatalog catalog;
+  WeaveMemberTranslator translator(g_ceph_context, catalog);
+  translator.activate(2, UNIT);
+  catalog.upsert(metadata(volume_oid, first, second));
   TestTracker tracking;
   auto* message = new MOSDOp(
     0, 1, second, spg_t(), 1, CEPH_OSD_FLAG_ONDISK,
@@ -532,31 +521,31 @@ TEST(WeaveMemberAccess, FinalDeleteTranslatesWithoutPublishingDeletion) {
   message->ops[2].op.op = CEPH_OSD_OP_STAT;
   message->ops[3].op.op = CEPH_OSD_OP_DELETE;
   auto request = tracking.tracker.create_request<OpRequest, Message*>(message);
-  ASSERT_TRUE(access.supports_member_ops(message->ops));
-  ASSERT_EQ(access.preprocess(request), WeaveMemberAccess::kPreprocessContinue);
-  EXPECT_TRUE(request->is_aggregate_member_op());
+  ASSERT_TRUE(translator.supports_member_ops(message->ops));
+  ASSERT_EQ(translator.preprocess(request), WeaveMemberTranslator::kPreprocessContinue);
+  EXPECT_TRUE(request->is_weave_member_op());
   EXPECT_EQ(message->get_hobj(), volume_oid);
   EXPECT_EQ(uint16_t(message->ops[0].op.op), CEPH_OSD_OP_ASSERT_VER);
   EXPECT_EQ(uint64_t(message->ops[0].op.assert_ver.ver), 22u);
   EXPECT_EQ(uint64_t(message->ops[1].op.extent.length), 50u);
   EXPECT_EQ(member_id(message->ops[1].op.flags), 1u);
   EXPECT_EQ(uint16_t(message->ops[3].op.op), CEPH_OSD_OP_DELETE);
-  ASSERT_NE(access_catalog.lookup(second), nullptr);
-  EXPECT_EQ(access_catalog.lookup(second)->members.at(second).user_version, 22u);
-  access.finish_request(request);
-  EXPECT_FALSE(request->is_aggregate_member_op());
-  EXPECT_NE(access_catalog.lookup(second), nullptr);
+  ASSERT_NE(catalog.lookup(second), nullptr);
+  EXPECT_EQ(catalog.lookup(second)->members.at(second).user_version, 22u);
+  translator.finish_request(request);
+  EXPECT_FALSE(request->is_weave_member_op());
+  EXPECT_NE(catalog.lookup(second), nullptr);
 }
 
-TEST(WeaveMemberAccess, DeferredDeleteRestoresPayloadAndResolvesCurrentLocation) {
+TEST(WeaveMemberTranslator, DeferredDeleteRestoresPayloadAndResolvesCurrentLocation) {
   const auto member = object("member");
   const auto peer = object("peer");
   const auto old_volume = object("old-volume");
   const auto new_volume = object("new-volume");
-  WeaveCatalog access_catalog;
-  WeaveMemberAccess access(g_ceph_context, access_catalog);
-  access.activate(2, UNIT);
-  access_catalog.upsert(metadata(old_volume, member, peer));
+  WeaveCatalog catalog;
+  WeaveMemberTranslator translator(g_ceph_context, catalog);
+  translator.activate(2, UNIT);
+  catalog.upsert(metadata(old_volume, member, peer));
   TestTracker tracking;
   auto* message = new MOSDOp(
     0, 1, member, spg_t(), 1, CEPH_OSD_FLAG_ONDISK,
@@ -568,36 +557,36 @@ TEST(WeaveMemberAccess, DeferredDeleteRestoresPayloadAndResolvesCurrentLocation)
   message->ops[0].indata.append("keyvalue");
   message->ops[1].op.op = CEPH_OSD_OP_DELETE;
   auto request = tracking.tracker.create_request<OpRequest, Message*>(message);
-  ASSERT_EQ(access.preprocess(request), WeaveMemberAccess::kPreprocessContinue);
+  ASSERT_EQ(translator.preprocess(request), WeaveMemberTranslator::kPreprocessContinue);
   request->ensure_weave_context().mark_member_deleted();
-  access.finish_request(request);
+  translator.finish_request(request);
   EXPECT_EQ(message->get_hobj(), member);
   EXPECT_EQ(message->ops[0].indata.to_str(), "keyvalue");
   EXPECT_EQ(uint32_t(message->ops[0].op.xattr.name_len), 3u);
-  EXPECT_FALSE(request->is_aggregate_member_op());
-  access_catalog.remove_volume(old_volume);
-  access_catalog.upsert(metadata(new_volume, member, peer));
-  ASSERT_EQ(access.preprocess(request), WeaveMemberAccess::kPreprocessContinue);
+  EXPECT_FALSE(request->is_weave_member_op());
+  catalog.remove_volume(old_volume);
+  catalog.upsert(metadata(new_volume, member, peer));
+  ASSERT_EQ(translator.preprocess(request), WeaveMemberTranslator::kPreprocessContinue);
   EXPECT_EQ(message->get_hobj(), new_volume);
   EXPECT_FALSE(request->get_weave_context()->member_deleted());
-  access.finish_request(request);
-  access_catalog.remove_volume(new_volume);
-  ASSERT_EQ(access.preprocess(request), WeaveMemberAccess::kPreprocessContinue);
+  translator.finish_request(request);
+  catalog.remove_volume(new_volume);
+  ASSERT_EQ(translator.preprocess(request), WeaveMemberTranslator::kPreprocessContinue);
   EXPECT_EQ(message->get_hobj(), member);
   EXPECT_EQ(message->ops[0].indata.to_str(), "keyvalue");
-  EXPECT_FALSE(request->is_aggregate_member_op());
+  EXPECT_FALSE(request->is_weave_member_op());
 }
 
-TEST(WeaveMemberAccess, StandaloneDeleteKeepsVolumeUntilCommittedRemoval) {
+TEST(WeaveMemberTranslator, StandaloneDeleteKeepsVolumeUntilCommittedRemoval) {
   const auto volume_oid = object("volume");
   const auto member = object("member");
   auto layout = metadata(volume_oid, object("deleted"), member);
   layout.members.erase(object("deleted"));
-  WeaveCatalog access_catalog;
-  WeaveMemberAccess access(g_ceph_context, access_catalog);
-  access.activate(2, UNIT);
-  access_catalog.upsert(layout);
-  const auto pinned = access_catalog.lookup(member);
+  WeaveCatalog catalog;
+  WeaveMemberTranslator translator(g_ceph_context, catalog);
+  translator.activate(2, UNIT);
+  catalog.upsert(layout);
+  const auto pinned = catalog.lookup(member);
   TestTracker tracking;
   auto* message = new MOSDOp(
     0, 1, member, spg_t(), 1, CEPH_OSD_FLAG_ONDISK,
@@ -605,28 +594,28 @@ TEST(WeaveMemberAccess, StandaloneDeleteKeepsVolumeUntilCommittedRemoval) {
   message->ops.resize(1);
   message->ops[0].op.op = CEPH_OSD_OP_DELETE;
   auto request = tracking.tracker.create_request<OpRequest, Message*>(message);
-  ASSERT_EQ(access.preprocess(request), WeaveMemberAccess::kPreprocessContinue);
-  EXPECT_TRUE(request->is_aggregate_member_op());
+  ASSERT_EQ(translator.preprocess(request), WeaveMemberTranslator::kPreprocessContinue);
+  EXPECT_TRUE(request->is_weave_member_op());
   EXPECT_EQ(message->get_hobj(), volume_oid);
   EXPECT_EQ(uint16_t(message->ops[0].op.op), CEPH_OSD_OP_DELETE);
-  EXPECT_NE(access_catalog.lookup(member), nullptr);
-  access_catalog.remove_member(volume_oid, member);
-  EXPECT_EQ(access_catalog.lookup(member), nullptr);
-  ASSERT_NE(access_catalog.lookup_volume(volume_oid), nullptr);
-  EXPECT_TRUE(access_catalog.lookup_volume(volume_oid)->members.empty());
-  const auto volumes = access_catalog.list_volumes();
+  EXPECT_NE(catalog.lookup(member), nullptr);
+  catalog.remove_member(volume_oid, member);
+  EXPECT_EQ(catalog.lookup(member), nullptr);
+  ASSERT_NE(catalog.lookup_volume(volume_oid), nullptr);
+  EXPECT_TRUE(catalog.lookup_volume(volume_oid)->members.empty());
+  const auto volumes = catalog.list_volumes();
   ASSERT_EQ(volumes.size(), 1u);
   EXPECT_EQ(volumes.front()->volume_oid, volume_oid);
   EXPECT_TRUE(volumes.front()->members.empty());
   EXPECT_EQ(pinned->members.at(member).shard, 1u);
 }
 
-TEST(WeaveMemberAccess, NonfinalDeleteAndWriteCompoundsUseNativeFallback) {
+TEST(WeaveMemberTranslator, NonfinalDeleteAndWriteCompoundsUseNativeFallback) {
   const auto member = object("member");
-  WeaveCatalog access_catalog;
-  WeaveMemberAccess access(g_ceph_context, access_catalog);
-  access.activate(2, UNIT);
-  access_catalog.upsert(metadata(object("volume"), member, object("peer")));
+  WeaveCatalog catalog;
+  WeaveMemberTranslator translator(g_ceph_context, catalog);
+  translator.activate(2, UNIT);
+  catalog.upsert(metadata(object("volume"), member, object("peer")));
   TestTracker tracking;
   auto* message = new MOSDOp(
     0, 1, member, spg_t(), 1, CEPH_OSD_FLAG_ONDISK,
@@ -635,17 +624,17 @@ TEST(WeaveMemberAccess, NonfinalDeleteAndWriteCompoundsUseNativeFallback) {
   message->ops[0].op.op = CEPH_OSD_OP_DELETE;
   message->ops[1].op.op = CEPH_OSD_OP_STAT;
   auto request = tracking.tracker.create_request<OpRequest, Message*>(message);
-  EXPECT_FALSE(access.supports_member_ops(message->ops));
-  EXPECT_EQ(access.preprocess(request), -EOPNOTSUPP);
-  EXPECT_FALSE(request->is_aggregate_member_op());
+  EXPECT_FALSE(translator.supports_member_ops(message->ops));
+  EXPECT_EQ(translator.preprocess(request), -EOPNOTSUPP);
+  EXPECT_FALSE(request->is_weave_member_op());
   EXPECT_EQ(message->get_hobj(), member);
   message->ops[0].op.op = CEPH_OSD_OP_WRITEFULL;
   message->ops[1].op.op = CEPH_OSD_OP_DELETE;
-  EXPECT_FALSE(access.supports_member_ops(message->ops));
-  EXPECT_EQ(access.preprocess(request), -EOPNOTSUPP);
-  EXPECT_FALSE(request->is_aggregate_member_op());
+  EXPECT_FALSE(translator.supports_member_ops(message->ops));
+  EXPECT_EQ(translator.preprocess(request), -EOPNOTSUPP);
+  EXPECT_FALSE(request->is_weave_member_op());
   EXPECT_EQ(message->get_hobj(), member);
-  EXPECT_NE(access_catalog.lookup(member), nullptr);
+  EXPECT_NE(catalog.lookup(member), nullptr);
 }
 
 TEST(WeaveCatalog, RejectsOverlappingAndOutOfRangeShardAssignments) {
@@ -687,7 +676,7 @@ TEST(WeaveCatalog, RejectsDuplicateLogicalObjectsBeforePublishing) {
   const auto volume_oid = object("volume");
   const auto member = object("member");
   bufferlist encoded;
-  ENCODE_START(4, 4, encoded);
+  ENCODE_START(1, 1, encoded);
   encode(volume_oid, encoded);
   encode(uint32_t{2}, encoded);
   encode(UNIT, encoded);
@@ -702,78 +691,60 @@ TEST(WeaveCatalog, RejectsDuplicateLogicalObjectsBeforePublishing) {
   EXPECT_EQ(catalog.lookup(member), nullptr);
 }
 
-TEST(WeaveCatalog, RejectsForegroundCodecAndTrailingData) {
+TEST(WeaveCatalog, RejectsForeignCodecVersionAndTrailingData) {
   const auto volume_oid = object("volume");
   const auto first = object("first");
   const auto second = object("second");
   auto layout = metadata(volume_oid, first, second);
-  bufferlist previous_version;
-  ENCODE_START(1, 1, previous_version);
-  encode(layout.volume_oid, previous_version);
-  encode(layout.data_shards, previous_version);
-  encode(layout.slot_size, previous_version);
-  encode(layout.members, previous_version);
-  ENCODE_FINISH(previous_version);
-  WeaveCatalog catalog;
-  EXPECT_EQ(catalog.load_from_disk(previous_version), -EINVAL);
+
+  // The v1 field layout under any other struct version belongs to a different
+  // codec: {2,2} is caught by the compat floor, {3,1} only by the explicit
+  // version check. Neither may publish a mapping.
+  const std::vector<std::pair<uint8_t, uint8_t>> foreign_versions{
+    {2, 2}, {3, 1}, {4, 4}, {4, 1}};
+  for (const auto& [version, compat] : foreign_versions) {
+    bufferlist foreign;
+    ENCODE_START(version, compat, foreign);
+    encode(layout.volume_oid, foreign);
+    encode(layout.data_shards, foreign);
+    encode(layout.slot_size, foreign);
+    encode(layout.members, foreign);
+    ENCODE_FINISH(foreign);
+    WeaveCatalog catalog;
+    EXPECT_EQ(catalog.load_from_disk(foreign), -EINVAL);
+    EXPECT_EQ(catalog.lookup(first), nullptr);
+  }
+
   bufferlist trailing;
   layout.encode(trailing);
   trailing.append("extra");
+  WeaveCatalog catalog;
   EXPECT_EQ(catalog.load_from_disk(trailing), -EINVAL);
   EXPECT_EQ(catalog.lookup(first), nullptr);
 }
 
-TEST(WeaveCatalog, BackgroundV2MembersReloadWithoutLogicalVersions) {
-  const auto volume_oid = object("volume");
-  const auto first = object("first");
-  const auto second = object("second");
-  const auto layout = metadata(volume_oid, first, second);
-  bufferlist encoded;
-  ENCODE_START(2, 2, encoded);
-  encode(volume_oid, encoded);
-  encode(layout.data_shards, encoded);
-  encode(layout.slot_size, encoded);
-  encode(uint32_t(layout.members.size()), encoded);
-  for (const auto &[oid, member] : layout.members) {
-    encode(oid, encoded);
-    encode(member.shard, encoded);
-    encode(member.size, encoded);
-    encode(member.mtime, encoded);
-  }
-  ENCODE_FINISH(encoded);
-  WeaveCatalog catalog;
-  ASSERT_EQ(catalog.load_from_disk(encoded), 0);
-  const auto restored = catalog.lookup(second);
-  ASSERT_NE(restored, nullptr);
-  EXPECT_EQ(restored->members.at(first).user_version, 0u);
-  EXPECT_EQ(restored->members.at(second).user_version, 0u);
-  EXPECT_EQ(restored->members.at(second).shard, 1u);
-  EXPECT_EQ(restored->members.at(second).size, 200u);
-  EXPECT_EQ(restored->members.at(second).mtime, utime_t(2, 0));
-  bufferlist upgraded;
-  restored->encode(upgraded);
-  ASSERT_EQ(catalog.load_from_disk(upgraded), 0);
-  EXPECT_EQ(catalog.lookup(second)->members.at(second).user_version, 0u);
-}
-
-TEST(WeaveCatalog, RejectsMissingMemberVersionWithoutReplacingPublishedVolume) {
+TEST(WeaveCatalog, RejectsTruncatedMemberWithoutReplacingPublishedVolume) {
   const auto volume_oid = object("volume");
   const auto first = object("first");
   const auto second = object("second");
   WeaveCatalog catalog;
   catalog.upsert(metadata(volume_oid, first, second));
+
+  // The header claims two members but the payload stops after the first: the
+  // attribute is incomplete, so the published mapping must stay untouched.
+  const auto layout = metadata(volume_oid, first, second);
   bufferlist encoded;
-  ENCODE_START(3, 3, encoded);
-  encode(volume_oid, encoded);
-  encode(uint32_t{2}, encoded);
-  encode(UNIT, encoded);
-  encode(uint32_t{1}, encoded);
-  encode(second, encoded);
-  encode(uint8_t{1}, encoded);
-  encode(uint64_t{200}, encoded);
-  encode(utime_t(2, 0), encoded);
+  ENCODE_START(1, 1, encoded);
+  encode(layout.volume_oid, encoded);
+  encode(layout.data_shards, encoded);
+  encode(layout.slot_size, encoded);
+  encode(uint32_t(layout.members.size()), encoded);
+  const auto& member = layout.members.at(first);
+  encode(first, encoded);
+  encode(member, encoded);
   ENCODE_FINISH(encoded);
   EXPECT_EQ(catalog.load_from_disk(encoded), -EINVAL);
+
   ASSERT_NE(catalog.lookup(first), nullptr);
   EXPECT_EQ(catalog.lookup(first)->members.at(first).user_version, 11u);
 }
@@ -835,7 +806,7 @@ TEST(WeaveCatalog, ConflictingDiskOwnershipRejectsBothScanOrdersAtomically) {
     std::vector<bufferlist> snapshot{first, second};
     if (reverse) std::reverse(snapshot.begin(), snapshot.end());
     EXPECT_EQ(catalog.replace_from_disk(snapshot), -EEXIST);
-    EXPECT_TRUE(catalog.contains_volume(old_volume));
+    EXPECT_NE(catalog.lookup_volume(old_volume), nullptr);
     EXPECT_FALSE(catalog.contains(member));
   }
 }
@@ -849,7 +820,7 @@ TEST(WeaveCatalog, DamagedDiskSnapshotDoesNotPublishPartialMappings) {
   broken.append("broken");
   std::vector<bufferlist> snapshot{valid, broken};
   EXPECT_EQ(catalog.replace_from_disk(snapshot), -EINVAL);
-  EXPECT_TRUE(catalog.contains_volume(original.volume_oid));
+  EXPECT_NE(catalog.lookup_volume(original.volume_oid), nullptr);
   EXPECT_FALSE(catalog.contains(object("new-member")));
 }
 

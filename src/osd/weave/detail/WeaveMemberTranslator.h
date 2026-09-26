@@ -16,17 +16,17 @@ namespace ceph::weave {
 class WeaveRequestContext;
 
 /**
- * Ceph-facing logical member access. No PG, Objecter, scheduler or write jobs:
+ * Ceph-facing logical member requests. No PG, Objecter, scheduler or write jobs:
  * the host port owns native placement and durability, while this class owns
  * every logical-to-physical translation and the matching reply rewrite.
  */
-class WeaveMemberAccess {
+class WeaveMemberTranslator {
 public:
   using XAttrs = std::map<std::string, ceph::buffer::list, std::less<>>;
   static constexpr int kPreprocessContinue = 0;
 
-  WeaveMemberAccess(CephContext* cct, const WeaveCatalog& catalog);
-  ~WeaveMemberAccess();
+  WeaveMemberTranslator(CephContext* cct, const WeaveCatalog& catalog);
+  ~WeaveMemberTranslator();
   void activate(uint8_t data_chunks, uint64_t stripe_unit);
   bool initialized() const { return initialized_; }
   void shutdown();
@@ -39,7 +39,7 @@ public:
   void finish_request(const OpRequestRef& op);
   ClsParmContext* get_cls_ctx(const OpRequestRef& op, std::size_t subop) const;
   int prepare_member_delete(const OpRequestRef&, const ceph::buffer::list&,
-                            version_t, ceph::buffer::list&);
+                            ceph::buffer::list&);
   void restore_client_reply_ops(const OpRequestRef&, MOSDOpReply*) const;
   bool handles_logical_stat(const OpRequestRef&) const;
   bool encode_logical_stat(const OpRequestRef&, ceph::buffer::list&) const;
@@ -64,7 +64,7 @@ private:
                                        int& error) const;
   int validate_member_ops(const std::vector<OSDOp>&) const;
   int validate_op(const OSDOp& entry, bool is_last) const;
-  int aggregate_class_name(const OSDOp&, std::string& name) const;
+  int data_class_name(const OSDOp&, std::string& name) const;
   bool class_is_allowed(const std::string& name) const;
   void rewrite_ops(std::vector<OSDOp>& ops, const Target& target,
                   WeaveRequestContext& ctx) const;

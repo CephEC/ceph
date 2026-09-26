@@ -64,7 +64,7 @@ void WeaveScheduler::cancel(const spg_t& pgid)
 bool WeaveScheduler::try_acquire(const spg_t& pgid)
 {
   const auto limit =
-    cct_->_conf.get_val<uint64_t>("osd_aggregate_max_concurrent");
+    cct_->_conf.get_val<uint64_t>("osd_weave_max_concurrent");
 
   std::lock_guard l(mutex_);
   if (stopping_ || active_.size() >= limit) {

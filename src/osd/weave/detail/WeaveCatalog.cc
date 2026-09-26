@@ -52,7 +52,9 @@ void WeaveMemberMeta::decode(ceph::buffer::list::const_iterator &p) {
 
 void WeaveVolumeMeta::encode(ceph::buffer::list &bl) const {
   using ceph::encode;
-  ENCODE_START(4, 4, bl);
+  // First generation of the Weave layout; no earlier on-disk version of this
+  // codec ever shipped, so the version stays at 1 and compat stays exact.
+  ENCODE_START(1, 1, bl);
   encode(volume_oid, bl);
   encode(data_shards, bl);
   encode(slot_size, bl);
@@ -62,10 +64,13 @@ void WeaveVolumeMeta::encode(ceph::buffer::list &bl) const {
 
 void WeaveVolumeMeta::decode(ceph::buffer::list::const_iterator &p) {
   using ceph::decode;
-  DECODE_START(4, p);
-  if (struct_v < 2 || struct_v > 4) {
+  DECODE_START(1, p);
+  // Only this layout is understood. A newer version that claims compatibility
+  // would otherwise decode as garbage under the v1 field order, so any other
+  // struct version is rejected as corruption rather than guessed at.
+  if (struct_v != 1) {
     throw ceph::buffer::malformed_input(
-      "unsupported aggregate metadata version");
+      "unsupported Weave metadata version");
   }
 
   decode(volume_oid, p);
@@ -74,49 +79,32 @@ void WeaveVolumeMeta::decode(ceph::buffer::list::const_iterator &p) {
   uint32_t count;
   decode(count, p);
 
-  // v2 stored exactly one member per data shard; later versions allow fewer.
-  if (data_shards == 0 || data_shards > 256 || count > data_shards ||
-      (struct_v == 2 && count != data_shards)) {
-    throw ceph::buffer::malformed_input("invalid aggregate member count");
+  if (data_shards == 0 || data_shards > 256 || count > data_shards) {
+    throw ceph::buffer::malformed_input("invalid Weave member count");
   }
   members.clear();
-  decode_members(count, struct_v, p);
+  decode_members(count, p);
 
   if (!valid_metadata(*this) || p.get_off() != struct_end) {
-    throw ceph::buffer::malformed_input("invalid aggregate metadata");
+    throw ceph::buffer::malformed_input("invalid Weave metadata");
   }
   DECODE_FINISH(p);
 }
 
 void WeaveVolumeMeta::decode_members(
-  uint32_t count, __u8 struct_v, ceph::buffer::list::const_iterator &p) {
+  uint32_t count, ceph::buffer::list::const_iterator &p) {
   using ceph::decode;
   for (uint32_t i = 0; i < count; ++i) {
     hobject_t oid;
     WeaveMemberMeta member;
     decode(oid, p);
-    if (struct_v < 4) {
-      member = decode_legacy_member(struct_v, p);
-    } else {
-      decode(member, p);
-    }
+    decode(member, p);
 
     // A repeated member would leave the map smaller than the encoded count.
     if (!members.emplace(std::move(oid), member).second) {
-      throw ceph::buffer::malformed_input("duplicate aggregate member");
+      throw ceph::buffer::malformed_input("duplicate Weave member");
     }
   }
-}
-
-WeaveMemberMeta WeaveVolumeMeta::decode_legacy_member(
-  __u8 struct_v, ceph::buffer::list::const_iterator &p) {
-  using ceph::decode;
-  WeaveMemberMeta member;
-  decode(member.shard, p);
-  decode(member.size, p);
-  decode(member.mtime, p);
-  if (struct_v >= 3) decode(member.user_version, p);
-  return member;
 }
 
 std::shared_ptr<const WeaveVolumeMeta> WeaveCatalog::lookup(
@@ -151,11 +139,6 @@ bool WeaveCatalog::contains(const hobject_t &obj_oid) const {
   return index_.find(obj_oid) != index_.end();
 }
 
-bool WeaveCatalog::contains_volume(const hobject_t &volume_oid) const {
-  std::shared_lock lock(mutex_);
-  return volumes_.find(volume_oid) != volumes_.end();
-}
-
 std::vector<hobject_t> WeaveCatalog::list_objects(
   const hobject_t &start, size_t limit,
   std::optional<hobject_t> &next) const {
@@ -174,11 +157,6 @@ std::vector<hobject_t> WeaveCatalog::list_objects(
   // lower_bound neither repeats nor skips a logical object.
   if (it != index_.end()) next = it->first;
   return result;
-}
-
-size_t WeaveCatalog::size() const {
-  std::shared_lock lock(mutex_);
-  return index_.size();
 }
 
 void WeaveCatalog::upsert(const WeaveVolumeMeta &info) {

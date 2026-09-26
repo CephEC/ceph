@@ -18,8 +18,8 @@ struct WeaveMemberMeta {
   uint64_t size = 0;
   utime_t mtime;
   version_t user_version = 0;
-  // Last snapshot context applied to the original native head. Unknown in
-  // legacy v2/v3 Volumes; new writes always persist the exact sequence.
+  // Last snapshot context applied to the original native head, as recorded
+  // when the member was packed.
   snapid_t snap_sequence = CEPH_NOSNAP;
 
   void encode(ceph::buffer::list &bl) const;
@@ -37,11 +37,7 @@ struct WeaveVolumeMeta {
   void decode(ceph::buffer::list::const_iterator &p);
 
 private:
-  void decode_members(uint32_t count, __u8 struct_v,
-                      ceph::buffer::list::const_iterator &p);
-  // Layout of a member as written before struct_v 4, without snap_sequence.
-  static WeaveMemberMeta decode_legacy_member(
-    __u8 struct_v, ceph::buffer::list::const_iterator &p);
+  void decode_members(uint32_t count, ceph::buffer::list::const_iterator &p);
 };
 WRITE_CLASS_ENCODER(WeaveVolumeMeta)
 
@@ -52,11 +48,9 @@ public:
     const hobject_t &volume_oid) const;
   std::vector<std::shared_ptr<const WeaveVolumeMeta>> list_volumes() const;
   bool contains(const hobject_t &obj_oid) const;
-  bool contains_volume(const hobject_t &volume_oid) const;
   std::vector<hobject_t> list_objects(
     const hobject_t &start, size_t limit,
     std::optional<hobject_t> &next) const;
-  size_t size() const;
 
   void upsert(const WeaveVolumeMeta &info);
   void remove_member(const hobject_t &volume_oid, const hobject_t &member_oid);

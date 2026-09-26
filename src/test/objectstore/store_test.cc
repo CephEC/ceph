@@ -3005,9 +3005,9 @@ int commit_volume_transaction(
   const multiset<string>& expected)
 {
   vector<pair<hobject_t, bufferlist>> attrs;
-  int r = store->load_volume_attrs(ch, attrs);
+  int r = store->load_attr_mirror("_volume_meta", ch, attrs);
   if (r != 0) {
-    return ::testing::AssertionFailure() << "load_volume_attrs returned " << r;
+    return ::testing::AssertionFailure() << "load_attr_mirror returned " << r;
   }
   multiset<string> actual;
   for (const auto& attr : attrs) {
@@ -3055,8 +3055,9 @@ TEST_P(StoreTest, BlueStoreVolumeAttrsCollectionIsolation) {
       if (j == 0) {
         t.setattr(cid, oid, "_volume_meta", i == 0 ? opaque : other);
       } else if (i == 0 && j == 1) {
-        // Version 3 Volume metadata with zero members. The store must
-        // return these bytes unchanged, not decide whether it is live.
+        // A Volume metadata blob written by an unrecognized version, with zero
+        // members. The store must return these bytes unchanged, not decide
+        // whether the attribute is live or parse it.
         ENCODE_START(3, 3, empty_members);
         encode(oid.hobj, empty_members);
         encode(uint32_t(2), empty_members);

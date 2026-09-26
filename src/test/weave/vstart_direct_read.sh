@@ -37,8 +37,8 @@ trap cleanup EXIT
 "$weave_source_dir/src/vstart.sh" -n -l --nolockdep --without-dashboard \
   -o 'bluestore block size = 1073741824' \
   -o 'osd memory target = 536870912' \
-  -o 'osd aggregate quiet period = 1' \
-  -o 'osd aggregate scan interval = 1' \
-  -o 'osd aggregate min object size = 1'
+  -o 'osd weave quiet period = 1' \
+  -o 'osd weave scan interval = 1' \
+  -o 'osd weave min object size = 1'
 python3 "$weave_source_dir/src/test/weave/vstart_direct_read.py" \
   --build-dir "$weave_build_dir" --cluster-dir "$weave_cluster_dir" --stop-target

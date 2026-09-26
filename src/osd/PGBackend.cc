@@ -466,9 +466,11 @@ int PGBackend::objects_get_attr(
   return r;
 }
 
-int PGBackend::load_volume_attrs(std::vector<std::pair<hobject_t, bufferlist>>& out)
+int PGBackend::load_attr_mirror(
+  const std::string& attr,
+  std::vector<std::pair<hobject_t, bufferlist>>& out)
 {
-  return store->load_volume_attrs(ch, out);
+  return store->load_attr_mirror(attr, ch, out);
 }
 
 int PGBackend::objects_get_attrs(

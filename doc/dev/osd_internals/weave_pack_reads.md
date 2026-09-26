@@ -1,5 +1,7 @@
 # Weave 打包期间的并发读取
 
+配置和命令名称已统一为当前 weave 接口；历史验收结果仍对应各节注明的版本与日期，不代表本次重跑。
+
 2026-09-15。此修改取消原生对象打包为 Volume 时的普通读取屏障，保留 D1
 的持久化提交协议和修改隔离。反向物化、后台租约和永久错误收敛仍按原有边界处理。
 
@@ -57,7 +59,7 @@ bash src/test/weave/concurrent_pack_reads.sh /root/ceph/build /tmp/weave-pack-re
 持续注入来源删除 EIO，验证 Volume 读取继续完成，最后放开清理，让等待写入
 完成并验证新版本、删除后同名重建、已有快照和全 OSD 重启后的状态。
 
-`osd_aggregate_debug_source_remove_error` 是默认关闭的开发测试开关，仅对
+`osd_weave_debug_source_remove_error` 是默认关闭的开发测试开关，仅对
 打包来源的带版本删除返回异步 EIO；不对 Volume 删除或普通客户端请求注入。
 脚本在退出时恢复暂停进程和测试配置，只删除自己创建的池并停止自己的进程。
 

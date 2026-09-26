@@ -2541,14 +2541,14 @@ void OSD::asok_command(
   stringstream ss;   // stderr error message stream
   bufferlist outbl;  // if empty at end, we'll dump formatter as output
 
-  if (prefix == "aggregate_ec cleanup") {
+  if (prefix == "weave cleanup") {
     {
       std::lock_guard l(osd_lock);
       if (is_stopping()) {
         ret = -ESHUTDOWN;
         ss << "OSD is stopping";
       } else {
-        f->open_object_section("aggregate_cleanup");
+        f->open_object_section("weave_cleanup");
         f->dump_string("status", request_weave_reclaim()
           ? "accepted" : "already_running");
         f->close_section();
@@ -3823,7 +3823,7 @@ int OSD::init()
   heartbeat_thread.create("osd_srv_heartbt");
 
   ceph_assert(service.weave_service->update_reclaim_time(
-    cct->_conf.get_val<std::string>("osd_aggregate_cleanup_time"),
+    cct->_conf.get_val<std::string>("osd_weave_cleanup_time"),
     ceph_clock_now().sec()));
 
   // tick
@@ -3915,8 +3915,8 @@ void OSD::final_init()
   int r = admin_socket->register_command("status", asok_hook,
 					 "high-level status of OSD");
   ceph_assert(r == 0);
-  r = admin_socket->register_command("aggregate_ec cleanup", asok_hook,
-    "enqueue sparse aggregate Volume cleanup (accepted or already_running)");
+  r = admin_socket->register_command("weave cleanup", asok_hook,
+    "enqueue sparse Weave Volume cleanup (accepted or already_running)");
   ceph_assert(r == 0);
   r = admin_socket->register_command("flush_journal",
                                      asok_hook,
@@ -6115,7 +6115,7 @@ bool OSD::request_weave_reclaim()
   ceph_assert(ceph_mutex_is_locked(osd_lock));
   ceph_assert(!is_stopping());
   return service.weave_service->request_reclaim(
-    cct->_conf.get_val<uint64_t>("osd_aggregate_cleanup_live_percent"),
+    cct->_conf.get_val<uint64_t>("osd_weave_cleanup_live_percent"),
     [this] { return snapshot_weave_reclaim(); }) ==
       ceph::weave::WeaveService::ReclaimResult::kAccepted;
 }
@@ -6127,7 +6127,7 @@ void OSD::tick()
 
   utime_t now = ceph_clock_now();
   service.weave_service->tick(now.sec(), !is_stopping() && is_active(),
-    cct->_conf.get_val<uint64_t>("osd_aggregate_cleanup_live_percent"),
+    cct->_conf.get_val<uint64_t>("osd_weave_cleanup_live_percent"),
     [this] { return snapshot_weave_reclaim(); });
   // throw out any obsolete markdown log
   utime_t grace = utime_t(cct->_conf->osd_max_markdown_period, 0);
@@ -10025,13 +10025,13 @@ const char** OSD::get_tracked_conf_keys() const
     "osd_object_clean_region_max_num_intervals",
     "osd_scrub_min_interval",
     "osd_scrub_max_interval",
-    "osd_aggregate_cleanup_time",
-    "osd_aggregate_background_enabled",
-    "osd_aggregate_min_object_size",
-    "osd_aggregate_max_volume_size",
-    "osd_aggregate_quiet_period",
-    "osd_aggregate_scan_interval",
-    "osd_aggregate_max_padding_percent",
+    "osd_weave_cleanup_time",
+    "osd_weave_background_enabled",
+    "osd_weave_min_object_size",
+    "osd_weave_max_volume_size",
+    "osd_weave_quiet_period",
+    "osd_weave_scan_interval",
+    "osd_weave_max_padding_percent",
     NULL
   };
   return KEYS;
@@ -10041,17 +10041,17 @@ void OSD::handle_conf_change(const ConfigProxy& conf,
 			     const std::set <std::string> &changed)
 {
   std::lock_guard l{osd_lock};
-  if (changed.count("osd_aggregate_cleanup_time")) {
+  if (changed.count("osd_weave_cleanup_time")) {
     ceph_assert(service.weave_service->update_reclaim_time(
-      conf.get_val<std::string>("osd_aggregate_cleanup_time"),
+      conf.get_val<std::string>("osd_weave_cleanup_time"),
       ceph_clock_now().sec()));
   }
-  if ((changed.count("osd_aggregate_background_enabled") ||
-       changed.count("osd_aggregate_min_object_size") ||
-       changed.count("osd_aggregate_max_volume_size") ||
-       changed.count("osd_aggregate_quiet_period") ||
-       changed.count("osd_aggregate_scan_interval") ||
-       changed.count("osd_aggregate_max_padding_percent")) &&
+  if ((changed.count("osd_weave_background_enabled") ||
+       changed.count("osd_weave_min_object_size") ||
+       changed.count("osd_weave_max_volume_size") ||
+       changed.count("osd_weave_quiet_period") ||
+       changed.count("osd_weave_scan_interval") ||
+       changed.count("osd_weave_max_padding_percent")) &&
       service.weave_service && !is_stopping()) {
     // Candidates restored while scanning was disabled must not require a new
     // foreground commit to wake up. Do not acquire PG locks under osd_lock.
@@ -10062,7 +10062,7 @@ void OSD::handle_conf_change(const ConfigProxy& conf,
         std::lock_guard<PG> l(*pg);
         if (!pg->is_deleted() && pg->is_primary() &&
             pg->get_pool().info.is_erasure())
-          static_cast<PrimaryLogPG*>(pg.get())->schedule_aggregate_work();
+          static_cast<PrimaryLogPG*>(pg.get())->schedule_weave_work();
       }
     });
   }

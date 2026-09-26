@@ -1,10 +1,12 @@
 # Weave 问题、修复方案与设计缺口台账
 
+配置和命令名称已统一为当前 weave 接口；历史验收结果仍对应各节注明的版本与日期，不代表本次重跑。
+
 初次记录：2026-09-14；补充审查：2026-09-16。用途：供后续代码和设计审查。
 
 **当前 Weave 还不完整。**D1 已实现以磁盘元数据为权威的转换提交协议；PG 分裂、功能启停和版本准入仍缺少保证正确性的机制。不能把 D1 或 R1–R3、F1–F7 的验收完成理解为整个存储设计已经闭环。
 
-本文汇总已遇到的问题及处理方案，并补充设计复核发现。前两次设计复核没有修改产品；后续 D1 实现和验收单独记录在 [weave_d1_recovery.md](weave_d1_recovery.md)，D6 的内存集合增长根因随 D1 一并移除。上一轮运行记录见 [weave_review_status.md](weave_review_status.md)，需求与非目标见 [aggregate_ec_data_lake_requirements.md](aggregate_ec_data_lake_requirements.md)。
+本文汇总已遇到的问题及处理方案，并补充设计复核发现。前两次设计复核没有修改产品；后续 D1 实现和验收单独记录在 [weave_d1_recovery.md](weave_d1_recovery.md)，D6 的内存集合增长根因随 D1 一并移除。上一轮运行记录见 [weave_review_status.md](weave_review_status.md)，需求与非目标见 [weave_data_lake_requirements.md](weave_data_lake_requirements.md)。
 
 ## 1. 状态和证据如何阅读
 
@@ -23,7 +25,7 @@
 
 - **问题与根因：**Catalog 需要定位 Volume；逐 PG 扫描普通 onode 的成本随普通对象数增加。建立索引后，若属性变更、删除、克隆或重命名不同步维护，会造成漏加载或错误加载。
 - **方案：**BlueStore 新增 RocksDB `V` 前缀，以 onode key 索引原始 `_volume_meta` 字节，在同一 KV 事务中维护。加载限定当前 collection／PG；旧库首次挂载按 1024 条分批重建，全部成功后写 `S/weave_volume_index` 标记。
-- **代码：**[BlueStore.cc](../../../src/os/bluestore/BlueStore.cc) 的 `load_volume_attrs`、索引重建及 onode 事务维护；[ObjectStore.h](../../../src/os/ObjectStore.h)、[PGBackend.cc](../../../src/osd/PGBackend.cc) 的加载接口。
+- **代码：**[BlueStore.cc](../../../src/os/bluestore/BlueStore.cc) 的 `load_attr_mirror`、索引重建及 onode 事务维护（镜像机制本身在 [AttrMirror.cc](../../../src/os/AttrMirror.cc)）；[ObjectStore.h](../../../src/os/ObjectStore.h)、[PGBackend.cc](../../../src/osd/PGBackend.cc) 的加载接口。
 - **证据：**BlueStore 专项 3/3 通过；历史实验覆盖 10000 个普通对象、1032 个 Volume、跨重建批次及 collection split／merge 索引范围。
 - **边界：**索引是属性的事务性副本，不是转换事务日志。I1 没有解决 D1，也没有解决逻辑成员的 PG split 语义。
 
@@ -32,7 +34,7 @@
 - **触发：**请求已从成员名称翻译为 Volume，进入原生等待队列后重新执行。
 - **根因：**若直接用物理身份继续执行，权限检查、对象查找和操作参数会基于错误对象；重复翻译还会破坏原始输入。
 - **方案：**请求上下文保存原始对象及操作；在原生权限检查前恢复，再按当前映射重新解释，回复时恢复客户端操作形式。
-- **代码：**[WeavePGControllerImpl.cc](../../../src/osd/weave/detail/WeavePGControllerImpl.cc) 的 `prepare_request`；[WeaveMemberAccess.cc](../../../src/osd/weave/detail/WeaveMemberAccess.cc) 的 `finish_request`；`WeaveRequestContext`。
+- **代码：**[WeavePGControllerImpl.cc](../../../src/osd/weave/detail/WeavePGControllerImpl.cc) 的 `prepare_request`；[WeaveMemberTranslator.cc](../../../src/osd/weave/detail/WeaveMemberTranslator.cc) 的 `finish_request`；`WeaveRequestContext`。
 - **证据：**逻辑权限、延迟删除及重排队单元测试；真实恢复期间请求等待后继续执行。
 
 ### I3 — Catalog 加载失败被当作空 Catalog
@@ -105,10 +107,10 @@
 ### F1 — 聚合后新建快照读不到成员
 
 - **触发／根因：**Catalog 只有 head 映射，原生来源被删除；快照身份直接走原生查找会得到 ENOENT。物化时使用最新 snapc 还会错误地把对象视为快照之后创建。
-- **修复：**快照按 head 解析并物化；v4 元数据保存源 `snapset.seq`，恢复时沿用；有快照历史的删除走物化及原生 COW；私有 Volume 不生成新的池快照 clone。
+- **修复：**快照按 head 解析并物化；v1 元数据保存源 `snapset.seq`，恢复时沿用；有快照历史的删除走物化及原生 COW；私有 Volume 不生成新的池快照 clone。
 - **代码：**[WeaveCatalog.h](../../../src/osd/weave/detail/WeaveCatalog.h)／[WeaveCatalog.cc](../../../src/osd/weave/detail/WeaveCatalog.cc)、Controller、ConversionJob、WeaveCephHost、PrimaryLogPG 的 snapc 接点。
 - **证据：**池快照和 self-managed 两套真实测试，覆盖创建前不存在、聚合前后快照、全量／局部覆盖、删除、同名重建、字节及元数据、全 OSD 重启。
-- **格式代价：**v4／compat v4。v2／v3 仍能解码，但无法恢复其未记录或已丢失的历史；旧卷以 Volume 的快照序号兼容。需要完整保证的数据应在建立所需快照前物化。不能回退到只认识旧格式的 OSD。
+- **格式代价：**`ENCODE_START(1,1)`，只解码这一种布局：其他 `struct_v` 的属性按损坏拒绝，没有兼容分支，也不再有“以 Volume 快照序号兜底”的降级行为。不能回退到不认这一布局的 OSD。（该布局最初编号 v4：`c33178db7ed` 写 4、读 `[2,4]`，其中 v2/v3 走 `decode_legacy_member` 兼容解码；这些 legacy 路径已在工作区移除，2026-09-26 编码与解码统一为 1。）
 - **未覆盖保证：**任意物化崩溃点、混合版本准入和资源耗尽下的快照读取可用性，分别见 D1、D3、D5。
 
 ### F2 — thumbnail 参数错误使 OSD 退出
@@ -197,15 +199,15 @@ Volume 使用一个成员的 hash，分组只保证“现在同 PG”，没有�
 
 **状态：关闭解释层的后果已在独立 BlueStore 4+2 集群复现；版本准入缺失静态确认／未修复。**
 
-当前 `osd_aggregate_ec_enabled` 和后台开关默认都为 true；前者在构造时决定是否加载／解释 Catalog。把已有聚合数据的 OSD 以 enabled=false 启动，会跳过映射并走原生路径。模型确认：磁盘 Volume 存在、原生来源不存在，关闭的 Controller 没有加载成员，也没有拒绝这种配置。按原生路径查找会误报对象不存在。
+当前 `osd_weave_enabled` 和后台开关默认都为 true；前者在构造时决定是否加载／解释 Catalog。把已有聚合数据的 OSD 以 enabled=false 启动，会跳过映射并走原生路径。模型确认：磁盘 Volume 存在、原生来源不存在，关闭的 Controller 没有加载成员，也没有拒绝这种配置。按原生路径查找会误报对象不存在。
 
-2026-09-16 真实验证：4 个成员聚合后均可读取；关闭 `osd_aggregate_ec_enabled` 并重启全部 OSD，4 个成员全部返回 ENOENT；重新开启并重启后恢复可读，长度、逻辑版本及记录的内容前缀与关闭前相同。每阶段使用新客户端以排除旧直读路由缓存。这验证了配置导致的不可访问，没有验证关闭期间写入的后果或混合版本接管。
+2026-09-16 真实验证：4 个成员聚合后均可读取；关闭 `osd_weave_enabled` 并重启全部 OSD，4 个成员全部返回 ENOENT；重新开启并重启后恢复可读，长度、逻辑版本及记录的内容前缀与关闭前相同。每阶段使用新客户端以排除旧直读路由缓存。这验证了配置导致的不可访问，没有验证关闭期间写入的后果或混合版本接管。
 
-v4 编解码限制只会在读取格式时暴露不兼容；目前没有对应的 pool 持久化功能标志、acting OSD 最低格式版本准入和禁止不安全降级的机制。`WEAVE_READ_REDIRECT` 协商保护的是可选直读消息，不等于所有可能成为 primary 的 OSD 都能解释 v4 数据。
+v1 编解码限制只会在读取格式时暴露不兼容；目前没有对应的 pool 持久化功能标志、acting OSD 最低格式版本准入和禁止不安全降级的机制。`WEAVE_READ_REDIRECT` 协商保护的是可选直读消息，不等于所有可能成为 primary 的 OSD 都能解释 v1 数据。
 
 代码：[osd.yaml.in](../../../src/common/options/osd.yaml.in) 的两个 enabled 选项；PrimaryLogPG 构造；Controller 的 `initialize`／`prepare_request`；[ceph_features.h](../../../src/include/ceph_features.h)。没有对混合版本接管作真实集群验证。
 
-**待设计方案：**将“允许产生新聚合数据”和“必须解释已有格式”分开。池记录持久化特性和最低版本；写入 v4 前验证参与节点支持，禁止不兼容节点接管；关闭或降级必须先完成可验证的数据排空，或者明确拒绝操作。D1 的修复不能代替 D2/D3 的部署保护。
+**待设计方案：**将“允许产生新聚合数据”和“必须解释已有格式”分开。池记录持久化特性和最低版本；写入当前格式前验证参与节点支持，禁止不兼容节点接管；关闭或降级必须先完成可验证的数据排空，或者明确拒绝操作。D1 的修复不能代替 D2/D3 的部署保护。
 
 **验收要求：**不同 OSD 配置、重启、primary 切换、混合格式版本、关闭后重开、排空后关闭；任何拒绝都要明确报错，不能把实际存在的逻辑对象当成不存在。
 
@@ -227,7 +229,7 @@ v4 编解码限制只会在读取格式时暴露不兼容；目前没有对应�
 
 **状态：模型复现及静态确认／未修复。打包来源删除持续 EIO 已有真实测试；尚未开展真实满盘、成员物化写入或删卷永久错误测试。**
 
-覆盖写、不支持的操作和快照访问必须先物化；它们使用和可选后台打包相同的 `acquire`。`osd_aggregate_max_concurrent=0` 会拒绝所有租约，因此这些前台操作也会持续等待。`write_member`／`retire_volume` 对所有负返回值重试，没有区分临时错误、永久错误或可向等待客户端返回的失败。
+覆盖写、不支持的操作和快照访问必须先物化；它们使用和可选后台打包相同的 `acquire`。`osd_weave_max_concurrent=0` 会拒绝所有租约，因此这些前台操作也会持续等待。`write_member`／`retire_volume` 对所有负返回值重试，没有区分临时错误、永久错误或可向等待客户端返回的失败。
 
 2026-09-16 补充模型复现：即使没有 I/O 错误、租约可用，Volume 持续存在共享读者时，`start_deaggregation` 也会在建立成员预留前返回；新读仍被接纳，等待的覆盖写无法启动物化。连续 10 次调度与请求重试均无转换 I/O；读者排空后才启动并完成。必要物化缺少公平准入，不能依赖偶然出现的无读者窗口。另一个模型验证租约持续不可用时前台写不推进也不报错，恢复租约后才完成。
 
@@ -279,7 +281,7 @@ data-class 在 OSD 进程内执行。Parquet 已限制请求大小、谓词复�
 
 **例子：**管理员收到“已接受清理”，过一段时间空间没有下降，却无法通过该任务接口分辨是没有符合阈值的卷、等待资源，还是某个卷清理失败。
 
-代码：[OSD.cc](../../../src/osd/OSD.cc) 的 `aggregate_ec cleanup`、`snapshot_weave_reclaim`；[WeaveService.cc](../../../src/osd/weave/WeaveService.cc) 的 `ReclaimPass`；Controller 的 `Cleanup`／`finish_cleanup`。
+代码：[OSD.cc](../../../src/osd/OSD.cc) 的 `weave cleanup`、`snapshot_weave_reclaim`；[WeaveService.cc](../../../src/osd/weave/WeaveService.cc) 的 `ReclaimPass`；Controller 的 `Cleanup`／`finish_cleanup`。
 
 **待设计方案：**增加任务 ID、状态查询、分原因计数、最后错误和完成时间；空间指标明确逻辑字节与包含 EC 冗余／填充的物理字节口径。诊断信息不能以“命令已接受”冒充回收成功。
 

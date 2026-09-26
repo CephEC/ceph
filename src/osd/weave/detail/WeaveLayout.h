@@ -35,6 +35,11 @@ inline void append_slot_padding(uint64_t length, uint64_t unit,
   if (length < unit) output.append_zero(unit - length);
 }
 
+// Marks a server-side physical Objecter request. The host injects it on every
+// sub-op it issues and the controller strips it before the native OSD inspects
+// the operation, so both sides must agree on the bit.
+constexpr uint32_t kInternalIo = 1u << 29;
+
 // Flags for translated read extents. They are internal to Weave, never
 // ObjectStore hints; offsets on such extents are member/shard-relative, not
 // Volume logical offsets.

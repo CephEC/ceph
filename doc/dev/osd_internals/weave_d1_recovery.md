@@ -1,11 +1,13 @@
 # Weave D1：持久化提交与故障恢复
 
+配置和命令名称已统一为当前 weave 接口；历史验收结果仍对应各节注明的版本与日期，不代表本次重跑。
+
 ## 提交规则
 
 Volume 的数据与 `volume_meta` 在同一条原生对象事务中提交。该事务提交后，
 Volume 就是成员的权威来源；Catalog 是磁盘状态的缓存，Objecter 完成回调
-只推动后续步骤，不决定已提交的映射是否有效。元数据仍使用 v4，保留成员的
-逻辑版本、mtime、xattr 与原生 `snapset.seq`。
+只推动后续步骤，不决定已提交的映射是否有效。元数据使用当前布局（v1，
+`ENCODE_START(1,1)`），保留成员的逻辑版本、mtime、xattr 与原生 `snapset.seq`。
 
 反向物化先写出所有存活成员，等待各成员的持久化完成，再删除 Volume。
 **Volume 删除事务是交还原生对象的提交点。**删除确认之前不撤销 Catalog
@@ -44,7 +46,8 @@ Volume 就是成员的权威来源；Catalog 是磁盘状态的缓存，Objecter
   或版本大小猜测归属。磁盘修复后可以重新初始化。
 
 以上协议约束新执行的转换，不能恢复旧实现已经丢失的历史数据，也不提供
-冲突元数据的自动修复。v2/v3 未记录的快照历史仍受既有格式限制。
+冲突元数据的自动修复。元数据只接受当前布局（v1）：没有兼容分支，其他
+`struct_v` 的属性按损坏拒绝。
 D2 的 PG split、D3 的功能关闭与混合版本准入、D4/D5/D7/D8 的独立问题
 仍需分别处理。D6 所述排除集合增长随集合移除一并消失。
 
@@ -73,7 +76,7 @@ bash src/test/weave/durable_recovery.sh /root/ceph/build /tmp/ceph-weave-d1-one 
   --point pack_committed:0
 ```
 
-仅测试时设置 `osd_aggregate_debug_crash_point=checkpoint:index`。默认值为空，
+仅测试时设置 `osd_weave_debug_crash_point=checkpoint:index`。默认值为空，
 无故障注入；匹配后 OSD 主动 abort。index 为零起始成员序号，卷级检查点为 0。
 
 | 检查点 | 故障位置 |

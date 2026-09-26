@@ -54,9 +54,9 @@ public:
   bool need_skip_promote() const { return op_info.need_skip_promote(); }
   bool allows_returnvec() const { return op_info.allows_returnvec(); }
 
-  bool is_background_aggregate_io() const { return background_aggregate_io; }
-  void set_background_aggregate_io() { background_aggregate_io = true; }
-  bool is_aggregate_member_op() const;
+  bool is_background_weave_io() const { return background_weave_io; }
+  void set_background_weave_io() { background_weave_io = true; }
+  bool is_weave_member_op() const;
   ceph::weave::WeaveRequestContext* get_weave_context();
   const ceph::weave::WeaveRequestContext* get_weave_context() const;
   ceph::weave::WeaveRequestContext& ensure_weave_context();
@@ -78,7 +78,7 @@ private:
   uint8_t hit_flag_points;
   uint8_t latest_flag_point;
   utime_t dequeued_time;
-  bool background_aggregate_io = false;
+  bool background_weave_io = false;
   std::unique_ptr<ceph::weave::WeaveRequestContext> weave_context;
   static const uint8_t flag_queued_for_pg=1 << 0;
   static const uint8_t flag_reached_pg =  1 << 1;

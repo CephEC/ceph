@@ -5,9 +5,8 @@
 #include <memory>
 #include <string_view>
 
+#include "include/common_fwd.h"
 #include "osd/osd_types.h"
-
-class CephContext;
 
 namespace ceph::weave {
 

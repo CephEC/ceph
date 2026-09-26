@@ -11,13 +11,6 @@ namespace ceph::weave {
 
 namespace {
 
-// Marks a server-side physical Objecter request. Injected by the host and
-// stripped from every operation before the native OSD inspects its flags.
-constexpr uint32_t kInternalIo = 1u << 29;
-
-// Namespace of the physical Volume objects backing logical members.
-constexpr const char* kVolumeNamespace = ".ceph-internal-aggregate";
-
 bool has_pg_op(const std::vector<OSDOp>& ops)
 {
   return std::any_of(ops.begin(), ops.end(), [](const auto& entry) {
@@ -39,8 +32,8 @@ void sort_and_deduplicate(std::vector<hobject_t>& entries)
 
 WeavePGController::Impl::Impl(CephContext* cct,
                               std::unique_ptr<WeavePGHost> host, bool enabled)
-  : host_(std::move(host)), enabled_(enabled), members_(cct, catalog_),
-    reads_(*host_, members_) {}
+  : host_(std::move(host)), enabled_(enabled), translator_(cct, catalog_),
+    reads_(*host_, translator_) {}
 
 WeavePGController::Impl::~Impl()
 {
@@ -52,7 +45,7 @@ WeavePGController::Impl::~Impl()
 
 void WeavePGController::Impl::initialize()
 {
-  if (!enabled_ || members_.initialized() || !host_->primary() ||
+  if (!enabled_ || translator_.initialized() || !host_->primary() ||
       !host_->active() || host_->has_missing()) {
     return;
   }
@@ -61,9 +54,9 @@ void WeavePGController::Impl::initialize()
     return;
   }
   // Geometry is only trusted once the PG is active and complete; activate()
-  // revalidates it for MemberAccess.
+  // revalidates it for the member translator.
   const auto geometry = host_->geometry();
-  members_.activate(geometry.data_shards, geometry.unit);
+  translator_.activate(geometry.data_shards, geometry.unit);
 
   host_->requeue(waiting_for_recovery_);
   schedule_work();
@@ -75,7 +68,7 @@ bool WeavePGController::Impl::reload_metadata()
   WeaveVolumeAttrs stored;
   metadata_error_ = host_->load_metadata(stored);
   if (metadata_error_ < 0) {
-    members_.shutdown();
+    translator_.shutdown();
     return false;
   }
   std::vector<bufferlist> metadata;
@@ -88,10 +81,8 @@ bool WeavePGController::Impl::reload_metadata()
 
     switch (decode_stored_volume(source, encoded)) {
     case StoredVolume::kInvalid:
-      members_.shutdown();
+      translator_.shutdown();
       return false;
-    case StoredVolume::kIgnored:
-      continue;
     case StoredVolume::kLoaded:
       metadata.push_back(std::move(encoded));
       break;
@@ -101,14 +92,14 @@ bool WeavePGController::Impl::reload_metadata()
   // mapping set or the new one, never a partial mixture.
   if (catalog_.replace_from_disk(metadata) < 0) {
     metadata_error_ = -EIO;
-    members_.shutdown();
+    translator_.shutdown();
     return false;
   }
   return true;
 }
 
-// Decodes one stored Volume attribute, upgrading the legacy codecs in place.
-// kIgnored reports an attribute that must be dropped rather than loaded.
+// Decodes one stored Volume attribute. The codec accepts the current layout
+// only, so an unreadable attribute is an error rather than a downgrade.
 WeavePGController::Impl::StoredVolume
 WeavePGController::Impl::decode_stored_volume(const hobject_t& source,
                                               bufferlist& encoded)
@@ -122,40 +113,11 @@ WeavePGController::Impl::decode_stored_volume(const hobject_t& source,
       metadata_error_ = -EIO;
       return StoredVolume::kInvalid;
     }
-    // Background codec v2 did not store logical versions. Freeze its former
-    // Volume-version fallback before any member deletion changes the Volume.
-    if (!host_->unreadable(info.volume_oid) &&
-        std::any_of(info.members.begin(), info.members.end(),
-          [](const auto& entry) { return entry.second.user_version == 0; })) {
-      if (!freeze_legacy_versions(info)) return StoredVolume::kIgnored;
-      encoded.clear();
-      encode(info, encoded);
-    }
-
     return StoredVolume::kLoaded;
   } catch (const buffer::error&) {
     metadata_error_ = -EIO;
     return StoredVolume::kInvalid;
   }
-}
-
-// Resolves the logical versions a legacy Volume never recorded. Returns false
-// when the Volume itself is gone, so the caller drops the stale attribute.
-bool WeavePGController::Impl::freeze_legacy_versions(
-  WeaveVolumeMeta& info) const
-{
-  const auto object = host_->inspect(info.volume_oid);
-  if (!object.exists) return false;
-  const auto previous = catalog_.lookup_volume(info.volume_oid);
-  for (auto& [oid, member] : info.members) {
-    if (member.user_version) continue;
-    const auto old =
-      previous ? previous->members.find(oid) : info.members.end();
-    member.user_version = previous && old != previous->members.end() &&
-      old->second.user_version ? old->second.user_version
-                               : object.info.user_version;
-  }
-  return true;
 }
 
 void WeavePGController::Impl::fail_recovery_waiters()
@@ -171,7 +133,7 @@ void WeavePGController::Impl::fail_recovery_waiters()
 
 bool WeavePGController::Impl::can_work() const
 {
-  return enabled_ && members_.initialized() && host_->primary() &&
+  return enabled_ && translator_.initialized() && host_->primary() &&
     host_->active() && host_->clean();
 }
 
@@ -185,7 +147,7 @@ void WeavePGController::Impl::on_recovery_progress()
   if (!enabled_ || !host_->primary()) return;
   // on_local_recover runs before submitting the recovery transaction.
   // initialize waits for the host's missing/applied barrier before reloading.
-  members_.shutdown();
+  translator_.shutdown();
   initialize();
 }
 
@@ -199,14 +161,14 @@ void WeavePGController::Impl::on_pg_change(bool requeue)
   host_->cancel_wakeup();
   cancel_job();
 
-  // Per-role state: reservations belong to the cancelled job, candidates are
-  // rebuilt from committed changes.
-  reserved_.clear();
+  // Per-role state: the cancelled job already released its reservations in
+  // finish_job(), so only candidates are dropped here. They are rebuilt from
+  // committed changes.
   candidates_.clear();
 
   // A replica can initialize MemberAccess for a direct request without loading
   // the primary catalog. Promotion must always reload that catalog.
-  members_.shutdown();
+  translator_.shutdown();
   finish_cleanup();
 
   if (requeue) {
@@ -439,8 +401,8 @@ bool WeavePGController::Impl::start_deaggregation(
   }
 
   auto members = unpack_candidates(volume, object);
-  start_job(std::move(members), restored_volume(volume, object),
-            std::move(lease), true, object.info.user_version, object.info.size);
+  start_job(std::move(members), *volume, std::move(lease), true,
+            object.info.user_version, object.info.size);
   return true;
 }
 
@@ -464,25 +426,9 @@ std::vector<WeaveCandidate> WeavePGController::Impl::unpack_candidates(
   members.reserve(volume->members.size());
   for (const auto& [oid, member] : volume->members) {
     members.push_back({oid, member.size, object.info.version,
-      member.user_version ? member.user_version : object.info.user_version,
-      member.mtime, ceph::mono_clock::now()});
+      member.user_version, member.mtime, ceph::mono_clock::now()});
   }
   return members;
-}
-
-// Members restored by materialization inherit the Volume's snapshot sequence
-// when their own was never recorded.
-WeaveVolumeMeta WeavePGController::Impl::restored_volume(
-  const std::shared_ptr<const WeaveVolumeMeta>& volume,
-  const WeaveObjectState& object) const
-{
-  auto restored = *volume;
-  for (auto& [oid, member] : restored.members) {
-    if (member.snap_sequence == CEPH_NOSNAP) {
-      member.snap_sequence = object.snap_sequence;
-    }
-  }
-  return restored;
 }
 
 void WeavePGController::Impl::start_job(std::vector<WeaveCandidate> members,
@@ -565,7 +511,7 @@ void WeavePGController::Impl::finish_job(uint64_t identity, bool unpack,
 
   // A failed Volume write may have committed before its reply was lost.
   // Resolve ownership before any waiter or new candidate can mutate a source.
-  if (!unpack && result.error) members_.shutdown();
+  if (!unpack && result.error) translator_.shutdown();
   initialize();
 
   if (result.error) fail_waiters(result.error);
@@ -642,7 +588,7 @@ int WeavePGController::Impl::consume_internal_ops(MOSDOp& message,
 bool WeavePGController::Impl::background_io_unauthenticated(
   const OpRequestRef& op, const MOSDOp& message) const
 {
-  if (!op->is_background_aggregate_io()) return false;
+  if (!op->is_background_weave_io()) return false;
   return !job_ || !job_->authenticates(message.get_tid());
 }
 
@@ -651,20 +597,20 @@ bool WeavePGController::Impl::background_io_unauthenticated(
 bool WeavePGController::Impl::private_object_access_denied(
   const OpRequestRef& op, const MOSDOp& message, bool internal) const
 {
-  if (internal || op->is_background_aggregate_io()) return false;
+  if (internal || op->is_background_weave_io()) return false;
   return is_private_object(message.get_hobj());
 }
 
 std::optional<RequestDisposition>
 WeavePGController::Impl::defer_for_metadata_recovery(OpRequestRef& op)
 {
-  if (op->is_background_aggregate_io() || !host_->primary() ||
-      (members_.initialized() && !host_->has_missing())) {
+  if (op->is_background_weave_io() || !host_->primary() ||
+      (translator_.initialized() && !host_->has_missing())) {
     return std::nullopt;
   }
   // Either this OSD cannot describe the objects yet (missing map entries) or
   // the last load failed permanently.
-  members_.shutdown();
+  translator_.shutdown();
   if (metadata_error_ < 0 && !host_->has_missing()) {
     return reject(op, metadata_error_);
   }
@@ -672,7 +618,7 @@ WeavePGController::Impl::defer_for_metadata_recovery(OpRequestRef& op)
   // A missing local Volume is absent from the index, not a deleted logical
   // object. This gate also covers PG listing before native PG-op dispatch.
   waiting_for_recovery_.push_back(op);
-  op->mark_delayed("waiting for aggregate metadata recovery");
+  op->mark_delayed("waiting for Weave metadata recovery");
   return RequestDisposition::kDeferred;
 }
 
@@ -687,7 +633,7 @@ WeavePGController::Impl::defer_listing_during_retirement(
     return std::nullopt;
   }
   waiting_for_conversion_.push_back(op);
-  op->mark_delayed("waiting for aggregate retirement");
+  op->mark_delayed("waiting for Weave retirement");
   return RequestDisposition::kDeferred;
 }
 
@@ -696,7 +642,7 @@ RequestDisposition WeavePGController::Impl::prepare_request(OpRequestRef& op)
   auto* message = static_cast<MOSDOp*>(op->get_nonconst_req());
   // Native lock/recovery queues retain the translated request. Restore it
   // before do_op checks the logical namespace and object capability again.
-  members_.finish_request(op);
+  translator_.finish_request(op);
 
   const bool local_source = message->get_source().is_osd() &&
     message->get_source().num() == host_->osd_id();
@@ -718,7 +664,7 @@ RequestDisposition WeavePGController::Impl::prepare_request(OpRequestRef& op)
   // From here on the request is Weave's to admit.
   if (internal) {
     // Server-only physical Objecter request.
-    op->set_background_aggregate_io();
+    op->set_background_weave_io();
   }
   if (background_io_unauthenticated(op, *message)) {
     return reject(op, -ECANCELED);
@@ -740,7 +686,7 @@ RequestDisposition WeavePGController::Impl::accept_routed_read(OpRequestRef& op)
 {
   const int result = reads_.accept(op);
   if (result < 0) {
-    members_.finish_request(op);
+    translator_.finish_request(op);
     return reject(op, result);
   }
   return RequestDisposition::kTranslated;
@@ -755,28 +701,8 @@ bool WeavePGController::Impl::defer_while_reserved(const hobject_t& head,
 {
   if (!reserved_.count(head) || can_read_during_pack(op)) return false;
   waiting_for_conversion_.push_back(op);
-  op->mark_delayed("waiting for background aggregate publication");
+  op->mark_delayed("waiting for Weave publication");
   return true;
-}
-
-// A legacy Volume may recover before the rest of the PG. Freeze its fallback
-// before the first member operation can advance its version.
-std::shared_ptr<const WeaveVolumeMeta>
-WeavePGController::Impl::lookup_member_metadata(const hobject_t& head)
-{
-  auto metadata = catalog_.lookup(head);
-  if (!metadata || metadata->members.at(head).user_version ||
-      host_->unreadable(metadata->volume_oid)) {
-    return metadata;
-  }
-  auto volume = host_->inspect(metadata->volume_oid);
-  if (!volume.exists) return metadata;
-  auto upgraded = *metadata;
-  for (auto& [oid, member] : upgraded.members) {
-    if (!member.user_version) member.user_version = volume.info.user_version;
-  }
-  catalog_.upsert(upgraded);
-  return catalog_.lookup(head);
 }
 
 // A logical DELETE needs no snapshot context of its own; it only shrinks the
@@ -795,7 +721,7 @@ bool WeavePGController::Impl::is_logical_delete(
   // Only a trailing DELETE may update the mapping directly.
   return !message.ops.empty() &&
     message.ops.back().op.op == CEPH_OSD_OP_DELETE &&
-    members_.supports_member_ops(message.ops);
+    translator_.supports_member_ops(message.ops);
 }
 
 // Materialize snapshots using the original head's snapshot sequence. Native
@@ -808,7 +734,7 @@ bool WeavePGController::Impl::needs_native_transition(
   if (op->may_write()) return !logical_delete;
   if (op->may_cache()) return true;
   // Operations Weave cannot translate keep their native meaning.
-  return !members_.supports_member_ops(message.ops);
+  return !translator_.supports_member_ops(message.ops);
 }
 
 // A cancelled publication/materialization can leave a native shadow.
@@ -819,7 +745,7 @@ WeavePGController::Impl::drain_shadow_before_delete(
   OpRequestRef& op, const MOSDOp& message, bool logical_delete,
   bool& needs_native)
 {
-  if (!logical_delete || op->is_aggregate_member_op()) return std::nullopt;
+  if (!logical_delete || op->is_weave_member_op()) return std::nullopt;
   const auto& oid = message.get_hobj();
   if (host_->wait_for_available(oid, op)) {
     return RequestDisposition::kDeferred;
@@ -833,14 +759,14 @@ WeavePGController::Impl::defer_for_materialization(
   OpRequestRef& op, const std::shared_ptr<const WeaveVolumeMeta>& metadata,
   bool needs_native)
 {
-  if (!metadata || !needs_native || op->is_aggregate_member_op()) {
+  if (!metadata || !needs_native || op->is_weave_member_op()) {
     return std::nullopt;
   }
   if (host_->wait_for_available(metadata->volume_oid, op)) {
     return RequestDisposition::kDeferred;
   }
   waiting_for_conversion_.push_back(op);
-  op->mark_delayed("waiting for aggregate materialization");
+  op->mark_delayed("waiting for Weave materialization");
   if (!job_) start_deaggregation(metadata);
   return RequestDisposition::kDeferred;
 }
@@ -857,16 +783,16 @@ bool WeavePGController::Impl::can_read_during_pack(const OpRequestRef& op) const
     !op->rwordered() && !op->includes_pg_op() &&
     !(message->get_flags() &
       (CEPH_OSD_FLAG_SKIPRWLOCKS | CEPH_OSD_FLAG_FLUSH)) &&
-    members_.supports_member_ops(message->ops);
+    translator_.supports_member_ops(message->ops);
 }
 
 RequestDisposition WeavePGController::Impl::preprocess_client_op(
   OpRequestRef& op)
 {
-  if (!enabled_ || op->is_background_aggregate_io()) {
+  if (!enabled_ || op->is_background_weave_io()) {
     return RequestDisposition::kNative;
   }
-  members_.finish_request(op);
+  translator_.finish_request(op);
 
   // A request that arrives with a route was accepted here once already: it is
   // a member operation to translate, not a logical request to route.
@@ -880,7 +806,7 @@ RequestDisposition WeavePGController::Impl::preprocess_client_op(
   // A reserved head belongs to the running job until that job finishes.
   if (defer_while_reserved(head, op)) return RequestDisposition::kDeferred;
 
-  auto metadata = lookup_member_metadata(head);
+  auto metadata = catalog_.lookup(head);
   const bool logical_delete = is_logical_delete(*message, snapshot, metadata);
   bool needs_native =
     needs_native_transition(op, *message, snapshot, logical_delete);
@@ -896,17 +822,17 @@ RequestDisposition WeavePGController::Impl::preprocess_client_op(
   }
 
   // Translate in place: a published member is then served from its Volume.
-  const int result = members_.preprocess(op);
+  const int result = translator_.preprocess(op);
   if (result < 0) return reject(op, result);
   if (reads_.redirect(op)) return RequestDisposition::kReplied;
-  return op->is_aggregate_member_op() ? RequestDisposition::kTranslated
+  return op->is_weave_member_op() ? RequestDisposition::kTranslated
                                       : RequestDisposition::kNative;
 }
 
 std::optional<version_t> WeavePGController::Impl::internal_copy_version(
   const OpRequestRef& op) const
 {
-  if (!job_ || !op || !op->is_background_aggregate_io()) return std::nullopt;
+  if (!job_ || !op || !op->is_background_weave_io()) return std::nullopt;
   auto* message = static_cast<MOSDOp*>(op->get_nonconst_req());
   return job_->copy_version(message->get_hobj());
 }
@@ -914,7 +840,7 @@ std::optional<version_t> WeavePGController::Impl::internal_copy_version(
 std::optional<snapid_t> WeavePGController::Impl::internal_copy_snap_sequence(
   const OpRequestRef& op) const
 {
-  if (!job_ || !op || !op->is_background_aggregate_io()) return std::nullopt;
+  if (!job_ || !op || !op->is_background_weave_io()) return std::nullopt;
   return job_->copy_snap_sequence(op->get_req<MOSDOp>()->get_hobj());
 }
 
@@ -927,7 +853,7 @@ void WeavePGController::Impl::on_commit(const object_info_t& oi, bool exists,
 {
   // Physical writes of the Volume itself are not logical commits.
   if (!enabled_ || !host_->primary() ||
-      (op && op->is_background_aggregate_io())) {
+      (op && op->is_background_weave_io())) {
     return;
   }
   if (oi.soid.snap != CEPH_NOSNAP) return;
@@ -940,9 +866,11 @@ void WeavePGController::Impl::on_commit(const object_info_t& oi, bool exists,
     return;
   }
 
-  // A Volume object, and a refresh of an object that already has a mapping,
-  // never become candidates by themselves.
-  if (is_private_object(oi.soid) || catalog_.contains_volume(oi.soid)) return;
+  // A Volume object never becomes a candidate. Volumes only ever exist in the
+  // private namespace (new_volume is their only creator), so this covers the
+  // whole catalog; a refresh of an object that already has a mapping is dropped
+  // by refresh_candidate() below.
+  if (is_private_object(oi.soid)) return;
 
   refresh_candidate(oi, exists);
   schedule_work();
@@ -968,7 +896,7 @@ void WeavePGController::Impl::refresh_candidate(const object_info_t& oi,
 }
 
 int WeavePGController::Impl::prepare_member_delete(const OpRequestRef& op,
-  version_t fallback, WeaveTransaction& txn)
+  WeaveTransaction& txn)
 {
   // The caller already holds the native object lock, so the projected
   // attribute cache is the current membership.
@@ -977,7 +905,7 @@ int WeavePGController::Impl::prepare_member_delete(const OpRequestRef& op,
   if (result < 0) return result;
 
   bufferlist updated;
-  result = members_.prepare_member_delete(op, encoded, fallback, updated);
+  result = translator_.prepare_member_delete(op, encoded, updated);
   if (result < 0) return result;
 
   // The shrunken membership is committed with the native transaction, but
@@ -1000,18 +928,18 @@ void WeavePGController::Impl::finish_reply(const OpRequestRef& op,
 void WeavePGController::Impl::restore_client_reply_ops(
   const OpRequestRef& op, MOSDOpReply* reply) const
 {
-  members_.restore_client_reply_ops(op, reply);
+  translator_.restore_client_reply_ops(op, reply);
 }
 
 void WeavePGController::Impl::finish_request(const OpRequestRef& op)
 {
-  if (enabled_) members_.finish_request(op);
+  if (enabled_) translator_.finish_request(op);
 }
 
 ClsParmContext* WeavePGController::Impl::get_cls_ctx(const OpRequestRef& op,
                                                      std::size_t subop) const
 {
-  return enabled_ ? members_.get_cls_ctx(op, subop) : nullptr;
+  return enabled_ ? translator_.get_cls_ctx(op, subop) : nullptr;
 }
 
 bool WeavePGController::Impl::is_private_object(const hobject_t& oid) const
@@ -1021,14 +949,14 @@ bool WeavePGController::Impl::is_private_object(const hobject_t& oid) const
 
 bool WeavePGController::Impl::is_logical_member(const hobject_t& oid) const
 {
-  return enabled_ && members_.initialized() && catalog_.contains(oid);
+  return enabled_ && translator_.initialized() && catalog_.contains(oid);
 }
 
 std::pair<hobject_t, std::string> WeavePGController::Impl::listing_attribute(
   const hobject_t& oid, const std::string& key) const
 {
   auto volume =
-    enabled_ && members_.initialized() ? catalog_.lookup(oid) : nullptr;
+    enabled_ && translator_.initialized() ? catalog_.lookup(oid) : nullptr;
   if (!volume) return {oid, key};
   // PGLS supplies the ObjectStore name, including the user-xattr underscore.
   if (key.empty() || key.front() != '_') return {oid, key};
@@ -1065,26 +993,26 @@ void WeavePGController::Impl::merge_listing(const hobject_t& start,
 bool WeavePGController::Impl::encode_logical_stat(const OpRequestRef& op,
                                                   bufferlist& out) const
 {
-  return enabled_ && members_.encode_logical_stat(op, out);
+  return enabled_ && translator_.encode_logical_stat(op, out);
 }
 
 uint64_t WeavePGController::Impl::logical_user_version(
   const OpRequestRef& op, uint64_t fallback) const
 {
-  return members_.logical_user_version(op, fallback);
+  return translator_.logical_user_version(op, fallback);
 }
 
 void WeavePGController::Impl::encode_getxattrs_result(
   const OpRequestRef& request, const OSDOp& op, XAttrs& attrs,
   bufferlist& encoded) const
 {
-  members_.encode_getxattrs_result(request, op, attrs, encoded);
+  translator_.encode_getxattrs_result(request, op, attrs, encoded);
 }
 
 int WeavePGController::Impl::translate_native_class_ops(
   OpRequestRef& request, std::vector<OSDOp>& ops, uint64_t size)
 {
-  return enabled_ ? members_.translate_native_class_ops(request, ops, size) : 0;
+  return enabled_ ? translator_.translate_native_class_ops(request, ops, size) : 0;
 }
 
 }  // namespace ceph::weave

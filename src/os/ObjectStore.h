@@ -628,10 +628,12 @@ public:
     return r;
   }
 
-  // Return current head objects with their exact _volume_meta attribute.
-  // The object identity, not an identity claimed by the payload, is authoritative.
-  virtual int load_volume_attrs(CollectionHandle &c,
-         std::vector<std::pair<hobject_t, bufferlist>>& volume_meta) {
+  // Return the current head objects that carry `attr`, with exactly the bytes
+  // stored under that attribute. The object identity, not an identity claimed
+  // by the payload, is authoritative. -EOPNOTSUPP when this store keeps no
+  // mirror for the attribute.
+  virtual int load_attr_mirror(const std::string& attr, CollectionHandle &c,
+         std::vector<std::pair<hobject_t, bufferlist>>& out) {
     return -EOPNOTSUPP;
   }
 
