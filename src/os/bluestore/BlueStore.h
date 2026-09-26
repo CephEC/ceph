@@ -1141,7 +1141,7 @@ public:
 
     bluestore_onode_t onode;  ///< metadata stored as value in kv store
     bool exists;              ///< true if object logically exists
-    uint8_t indexed_mask = 0; ///< mirrors this onode holds rows for
+    bool attr_mirrored = false; ///< whether this onode has a mirrored attribute row
     bool cached;              ///< Onode is logically in the cache
                               /// (it can be pinned and hence physically out
                               /// of it at the moment though)
@@ -2135,8 +2135,8 @@ private:
 
   KeyValueDB *db = nullptr;
   BlockDevice *bdev = nullptr;
-  // Attribute mirrors this store maintains, one per kAttrMirrorSpecs entry.
-  std::vector<ceph::os::AttrMirror> attr_mirrors_;
+  // One opaque attribute mirrored for collection range scans.
+  ceph::os::AttrMirror attr_mirror_;
   std::string freelist_type;
   FreelistManager *fm = nullptr;
 
@@ -2616,8 +2616,6 @@ private:
   int _set_bdev_label_size(const std::string& path, uint64_t size);
 
   int _open_super_meta();
-  int _open_attr_mirrors();
-  const ceph::os::AttrMirror* find_attr_mirror(const std::string& attr) const;
 
   void _open_statfs();
   void _get_statfs_overall(struct store_statfs_t *buf);

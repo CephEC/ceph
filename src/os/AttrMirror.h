@@ -2,9 +2,6 @@
 // vim: ts=8 sw=2 smarttab
 #pragma once
 
-#include <cstdint>
-#include <functional>
-#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -14,80 +11,34 @@
 #include "include/buffer.h"
 #include "kv/KeyValueDB.h"
 
-class CephContext;
-
 namespace ceph::os {
 
 /**
- * AttrMirror - a mirrored onode attribute.
- *
- * The attribute is authoritative and lives on the object, so it is replicated,
- * rolled back, recovered, exported and repaired together with the object's
- * data. This class maintains a second copy of exactly those bytes under a
- * separate keyspace, keyed like the primary record, so that a range scan can
- * enumerate the carriers of the attribute without decoding primary records.
- *
- * The mirror is derived state: it is always rebuilt from the attribute and
- * never the other way round. That is why the attribute name is the public
- * identity of a mirror, while its keyspace stays private to the store.
+ * Keep an opaque object attribute in a separate keyspace for range scans.
+ * The onode attribute remains authoritative and follows normal object
+ * replication, rollback and recovery. Both copies are maintained in the same
+ * transaction from object creation; mounting never rebuilds missing rows.
  */
 class AttrMirror {
 public:
-  struct Spec {
-    // Onode attribute holding the authoritative bytes.
-    std::string attr;
-    // Keyspace holding the mirror.
-    std::string prefix;
-    // Key under the store's super prefix recording that the mirror is
-    // complete, valued with the layout version.
-    std::string marker;
-    uint32_t version = 1;
-  };
+  AttrMirror(std::string attr, std::string prefix)
+    : attr_(std::move(attr)), prefix_(std::move(prefix)) {}
 
-  // Everything a mirror needs from the store that owns both keyspaces: how to
-  // read the attribute out of one primary record, and what a mirror key names.
-  struct Port {
-    // Report the attribute bytes this primary record carries: *out holds them,
-    // or is unset when the record is not a carrier. 0 on success; a negative
-    // result aborts the rebuild instead of leaving a silently short mirror.
-    std::function<int(const std::string& key, const ceph::buffer::list& value,
-                      std::optional<ceph::buffer::list>& out)> read_attr;
-    // Recover the object a mirror key names. Mirror keys are the primary
-    // record's key bytes, so a range computed by the store selects exactly one
-    // collection.
-    std::function<int(const std::string& key, ghobject_t* oid)> decode_key;
-  };
+  const std::string& attr() const { return attr_; }
 
-  // `bit` is the mask bit this mirror owns; the owner assigns one per mirror.
-  AttrMirror(const Spec& spec, const Port& port, CephContext* cct, unsigned bit);
-
-  const std::string& attr() const { return spec_.attr; }
-
-  // Mirror one record in the same transaction that writes it. `value` is the
-  // attribute as committed, or nullptr when the record no longer carries it
-  // (attribute removed, or the record itself is gone). `mask` reports which
-  // mirrors this record currently has, so a drop removes a row that exists
-  // instead of deleting blindly on every write.
+  // nullptr removes the row. Track whether a row exists to avoid issuing
+  // deletes for ordinary objects that never carried the attribute.
   void record(std::string_view key, const ceph::buffer::ptr* value,
-              KeyValueDB::Transaction& txn, uint8_t& mask) const;
+              KeyValueDB::Transaction& txn, bool& present) const;
 
-  // Mirror every primary record carrying the attribute. Gated by the
-  // completion marker: whether the mirror is complete cannot be read off the
-  // mirror itself, since an absent row is the normal state of most records, so
-  // completeness is declared instead. An unrecognized marker version refuses
-  // rather than guesses at a layout it does not know.
-  int bootstrap(KeyValueDB* db, const std::string& primary_prefix,
-                const std::string& super_prefix);
-
-  // Append the mirror rows whose keys fall in [lower, upper).
+  // Append published head rows in [lower, upper), decoding only object keys.
   int load(KeyValueDB* db, const std::string& lower, const std::string& upper,
+           int (*decode_key)(const std::string&, ghobject_t*),
            std::vector<std::pair<hobject_t, ceph::buffer::list>>& out) const;
 
 private:
-  Spec spec_;
-  Port port_;
-  CephContext* cct_ = nullptr;
-  uint8_t bit_ = 0;
+  std::string attr_;
+  std::string prefix_;
 };
 
 }  // namespace ceph::os

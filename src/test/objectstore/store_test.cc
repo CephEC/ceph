@@ -3078,20 +3078,10 @@ TEST_P(StoreTest, BlueStoreVolumeAttrsCollectionIsolation) {
   ASSERT_TRUE(volume_attrs_equal(store.get(), handles[1], {other.to_str()}));
   ASSERT_TRUE(volume_attrs_equal(store.get(), handles[2], {other.to_str()}));
 
-#if defined(WITH_BLUESTORE)
-  // Recreate a legacy store: persisted onodes, but no Volume index or
-  // completion marker. Only the subsequent mount may rebuild the catalog.
+  // Both the ordinary attributes and scan rows must survive remount without
+  // an index rebuild or completion marker.
   handles.clear();
   ASSERT_EQ(0, store->umount());
-  auto bstore = static_cast<BlueStore*>(store.get());
-  KeyValueDB *db = nullptr;
-  ASSERT_EQ(0, bstore->open_db_environment(&db, false));
-  auto legacy = db->get_transaction();
-  legacy->rmkeys_by_prefix("V");
-  legacy->rmkey("S", "weave_volume_index");
-  int r = db->submit_transaction_sync(legacy);
-  ASSERT_EQ(0, bstore->close_db_environment());
-  ASSERT_EQ(0, r);
   ASSERT_EQ(0, store->mount());
   for (const auto& cid : collections) {
     handles.push_back(store->open_collection(cid));
@@ -3101,7 +3091,10 @@ TEST_P(StoreTest, BlueStoreVolumeAttrsCollectionIsolation) {
                                 {opaque.to_str(), empty_members.to_str()}));
   ASSERT_TRUE(volume_attrs_equal(store.get(), handles[1], {other.to_str()}));
   ASSERT_TRUE(volume_attrs_equal(store.get(), handles[2], {other.to_str()}));
-#endif
+  bufferptr persisted;
+  ASSERT_EQ(0, store->getattr(handles[0], objects[0][0],
+                             "_volume_meta", persisted));
+  ASSERT_EQ(opaque.to_str(), string(persisted.c_str(), persisted.length()));
 
   for (unsigned i = 0; i < collections.size(); ++i) {
     ObjectStore::Transaction t;

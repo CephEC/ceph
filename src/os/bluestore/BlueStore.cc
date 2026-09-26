@@ -122,7 +122,7 @@ const string PREFIX_SUPER = "S";       // field -> value
 const string PREFIX_STAT = "T";        // field -> value(int64 array)
 const string PREFIX_COLL = "C";        // collection name -> cnode_t
 const string PREFIX_OBJ = "O";         // object name -> onode_t
-const string PREFIX_VOLUME = "V";      // object name -> mirrored attr (kAttrMirrorSpecs)
+const string PREFIX_VOLUME = "V";      // object name -> mirrored attribute bytes
 const string PREFIX_OMAP = "M";        // u64 + keyname -> value
 const string PREFIX_PGMETA_OMAP = "P"; // u64 + keyname -> value(for meta coll)
 const string PREFIX_PERPOOL_OMAP = "m"; // s64 + u64 + keyname -> value
@@ -139,27 +139,6 @@ const string PREFIX_ZONED_CL_INFO = "G";  // (per-zone cleaner metadata)
 #endif
 
 const string BLUESTORE_GLOBAL_STATFS_KEY = "bluestore_statfs";
-
-// Attributes whose bytes are mirrored into a separate keyspace, so that a
-// range scan can enumerate their carriers without decoding every onode. The
-// attribute name is the durable contract shared with the writer; prefix and
-// marker are this store's layout, and the layout version gates the rebuild.
-// A store keeps one mask bit per entry, in this order.
-static const ceph::os::AttrMirror::Spec kAttrMirrorSpecs[] = {
-  {"_volume_meta", PREFIX_VOLUME, "weave_volume_index", 1},
-};
-
-// Which mirrors the onode holds rows for, so that a rewrite drops a row that
-// exists instead of deleting blindly on every write.
-static uint8_t attr_mirror_mask(const bluestore_onode_t& onode)
-{
-  uint8_t mask = 0;
-  for (unsigned i = 0; i < std::size(kAttrMirrorSpecs); ++i) {
-    if (onode.attrs.count(kAttrMirrorSpecs[i].attr.c_str()))
-      mask |= 1u << i;
-  }
-  return mask;
-}
 
 // write a label in the first block.  always use this size.  note that
 // bluefs makes a matching assumption about the location of its
@@ -3740,7 +3719,8 @@ BlueStore::Onode* BlueStore::Onode::decode(
   on->exists = true;
   auto p = v.front().begin_deep();
   on->onode.decode(p);
-  on->indexed_mask = attr_mirror_mask(on->onode);
+  on->attr_mirrored =
+    on->onode.attrs.count(c->store->attr_mirror_.attr().c_str()) != 0;
   for (auto& i : on->onode.attrs) {
     i.second.reassign_to_mempool(mempool::mempool_bluestore_cache_meta);
   }
@@ -4611,6 +4591,7 @@ BlueStore::BlueStore(CephContext *cct,
   uint64_t _min_alloc_size)
   : ObjectStore(cct, path),
     throttle(cct),
+    attr_mirror_("_volume_meta", PREFIX_VOLUME),
     finisher(cct, "commit_finisher", "cfin"),
     kv_sync_thread(this),
     kv_finalize_thread(this),
@@ -4624,38 +4605,6 @@ BlueStore::BlueStore(CephContext *cct,
   _init_logger();
   cct->_conf.add_observer(this);
   set_cache_shards(1);
-
-  // The store supplies only the key shapes and how to read one attribute out
-  // of a primary record; the mirror itself is AttrMirror's business.
-  unsigned bit = 0;
-  attr_mirrors_.reserve(std::size(kAttrMirrorSpecs));
-  for (const auto& spec : kAttrMirrorSpecs) {
-    attr_mirrors_.emplace_back(spec, ceph::os::AttrMirror::Port{
-      [this, cct, spec](const std::string& key, const bufferlist& value,
-                   std::optional<bufferlist>& out) -> int {
-        // Extent shards carry no attributes of their own.
-        if (is_extent_shard_key(key))
-          return 0;
-        bluestore_onode_t onode;
-        auto p = value.cbegin();
-        try {
-          decode(onode, p);
-        } catch (const ceph::buffer::error&) {
-          return -EIO;
-        }
-        auto attr = onode.attrs.find(spec.attr.c_str());
-        if (attr == onode.attrs.end())
-          return 0;
-        bufferlist bytes;
-        bytes.push_back(attr->second);
-        out = std::move(bytes);
-        return 0;
-      },
-      [](const std::string& key, ghobject_t* oid) {
-        return get_key_object(key, oid);
-      }},
-      cct, bit++);
-  }
 }
 
 BlueStore::~BlueStore()
@@ -7701,11 +7650,6 @@ int BlueStore::_mount()
   });
 
   r = _deferred_replay();
-  if (r < 0) {
-    return r;
-  }
-
-  r = _open_attr_mirrors();
   if (r < 0) {
     return r;
   }
@@ -11675,8 +11619,7 @@ int BlueStore::load_attr_mirror(
   CollectionHandle &c_,
   std::vector<std::pair<hobject_t, bufferlist>>& out)
 {
-  const ceph::os::AttrMirror* index = find_attr_mirror(attr);
-  if (!index)
+  if (attr != attr_mirror_.attr())
     return -EOPNOTSUPP;
 
   Collection *c = static_cast<Collection *>(c_.get());
@@ -11699,21 +11642,12 @@ int BlueStore::load_attr_mirror(
       // so this includes every object at that hash, in either pool.
       upper.push_back('\xff');
     }
-    return index->load(db, lower, upper, out);
+    return attr_mirror_.load(db, lower, upper, get_key_object, out);
   };
   int r = load_range(temp_start, temp_end);
   if (r < 0)
     return r;
   return load_range(start, end);
-}
-
-const ceph::os::AttrMirror* BlueStore::find_attr_mirror(const std::string& attr) const
-{
-  for (const auto& index : attr_mirrors_) {
-    if (index.attr() == attr)
-      return &index;
-  }
-  return nullptr;
 }
 
 int BlueStore::list_collections(vector<coll_t>& ls)
@@ -12290,16 +12224,6 @@ void BlueStore::_prepare_ondisk_format_super(KeyValueDB::Transaction& t)
     encode(min_compat_ondisk_format, bl);
     t->set(PREFIX_SUPER, "min_compat_ondisk_format", bl);
   }
-}
-
-int BlueStore::_open_attr_mirrors()
-{
-  for (auto& index : attr_mirrors_) {
-    int r = index.bootstrap(db, PREFIX_OBJ, PREFIX_SUPER);
-    if (r < 0)
-      return r;
-  }
-  return 0;
 }
 
 int BlueStore::_open_super_meta()
@@ -16414,9 +16338,7 @@ int BlueStore::_do_remove(
     );
   }
   txc->t->rmkey(PREFIX_OBJ, o->key.c_str(), o->key.size());
-  for (auto& index : attr_mirrors_) {
-    index.record(o->key, nullptr, txc->t, o->indexed_mask);
-  }
+  attr_mirror_.record(o->key, nullptr, txc->t, o->attr_mirrored);
   txc->note_removed_object(o);
   o->extent_map.clear();
   o->onode = bluestore_onode_t();
@@ -17025,11 +16947,8 @@ int BlueStore::_rename(TransContext *txc,
   }
 
   txc->t->rmkey(PREFIX_OBJ, oldo->key.c_str(), oldo->key.size());
-  for (auto& index : attr_mirrors_) {
-    // The mirror for the new key is written when the renamed onode is
-    // recorded; this drops the row the old key had.
-    index.record(oldo->key, nullptr, txc->t, oldo->indexed_mask);
-  }
+  // The new row is written when the renamed onode is recorded.
+  attr_mirror_.record(oldo->key, nullptr, txc->t, oldo->attr_mirrored);
 
   // rewrite shards
   {
@@ -17712,15 +17631,11 @@ void BlueStore::_record_onode(OnodeRef &o, KeyValueDB::Transaction &txn)
 
   txn->set(PREFIX_OBJ, o->key.c_str(), o->key.size(), bl);
 
-  // Mirrors ride in the same transaction as the record they derive from, so a
-  // load never sees one without the other, and never has to look up a record
-  // separately from the metadata it carries.
-  for (auto& index : attr_mirrors_) {
-    auto attr = o->onode.attrs.find(index.attr().c_str());
-    index.record(o->key,
-                 attr == o->onode.attrs.end() ? nullptr : &attr->second,
-                 txn, o->indexed_mask);
-  }
+  // Persist both copies atomically; the mirror contains opaque attribute bytes.
+  auto attr = o->onode.attrs.find(attr_mirror_.attr().c_str());
+  attr_mirror_.record(o->key,
+                      attr == o->onode.attrs.end() ? nullptr : &attr->second,
+                      txn, o->attr_mirrored);
 }
 
 void BlueStore::_log_alerts(osd_alert_list_t& alerts)

@@ -129,20 +129,16 @@ WeaveVolumeMeta { hobject_t volume_oid; uint32 data_shards; uint64 slot_size;
 
 ### 2.4 BlueStore 属性镜像（Catalog 的可枚举副本）
 
-通用机制 `ceph::os::AttrMirror`，本仓库只注册一条 spec：
+BlueStore 持有一个轻量的 `ceph::os::AttrMirror`，构造时固定属性名与磁盘前缀：
 
-```c
-// src/os/bluestore/BlueStore.cc:124-150
-const string PREFIX_VOLUME = "V";     // object name -> mirrored attr
-static const ceph::os::AttrMirror::Spec kAttrMirrorSpecs[] = {
-  {"_volume_meta", PREFIX_VOLUME, "weave_volume_index", 1},
-};
+```cpp
+attr_mirror_("_volume_meta", PREFIX_VOLUME)  // PREFIX_VOLUME = "V"
 ```
 
-- **写入**：镜像行与 onode 在同一个 RocksDB 事务；`bluestore_onode_t::indexed_mask` 记录该 onode 当前有哪些镜像行，只有行存在时才 `rmkey`（`AttrMirror.cc:38-49`；写 `BlueStore.cc:17717-17722`，删 `:16416-16419`，rename `:17027-17032`，构造 Port 在 `:4628-4657`）。
-- **完备性**：靠 super 前缀下的 marker `S/weave_volume_index` = 1 声明，而不是从镜像自身推断；marker 缺失则 mount 时以 **1024 行/批**重建（中断即无 marker，下次整轮重来），版本不匹配返回 `-EOPNOTSUPP` 而**不猜测布局**（`AttrMirror.cc:51-115`，`kBatchRows` 在 `:22`；`BlueStore.cc:12295-12302` 挂载调用）。
-- **读取**：`load_attr_mirror` 按 collection 的 key 区间扫 `V`，只接受 `generation == NO_GEN && snap == CEPH_NOSNAP && pool >= 0` 的 head（`AttrMirror.cc:117-140`、`BlueStore.cc:11673-11708`）；接口链 `ObjectStore.h:634-638` → `PGBackend.cc:469-474`，非 BlueStore 后端返回 `-EOPNOTSUPP`（PG 侧据此走原生 EC，见 R1）。
-- **维护面**：镜像只是属性的**事务性副本**，不是转换日志；重复归属、冲突裁决仍由 Catalog/Controller 负责。
+- **写入**：保留 onode 属性和 `V` 副本，两者在同一个 RocksDB 事务中维护。`BlueStore::Onode::attr_mirrored` 是内存布尔状态，只有行存在时才发出删除，避免普通对象写入产生无用的 `rmkey`。更新、删除和重命名使用同一个 `record` 方法，克隆沿用普通属性复制。
+- **挂载**：索引从对象创建起持续维护；没有 bootstrap、完成 marker 或旧库迁移路径。挂载不扫描 `O` 重建缺失的 `V` 行，不支持由未维护索引的旧实现写入的数据。
+- **读取**：`load_attr_mirror` 按 collection 的 key 区间扫描 `V`，只接受 `generation == NO_GEN && snap == CEPH_NOSNAP && pool >= 0` 的 head。接口链为 `PGBackend` → `ObjectStore` → `BlueStore`；不支持该接口的后端返回 `-EOPNOTSUPP`。
+- **维护面**：组件只处理原始属性字节和对象 key，不解析 Weave 元数据。没有多镜像配置表、Port 回调集合、镜像位分配或重建版本管理。重复归属、冲突裁决仍由 Catalog/Controller 负责。
 
 ### 2.5 私有位标志（`OSDOp::op.flags`）
 

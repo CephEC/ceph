@@ -24,8 +24,8 @@
 ### I1 — Volume 元数据发现和索引维护
 
 - **问题与根因：**Catalog 需要定位 Volume；逐 PG 扫描普通 onode 的成本随普通对象数增加。建立索引后，若属性变更、删除、克隆或重命名不同步维护，会造成漏加载或错误加载。
-- **方案：**BlueStore 新增 RocksDB `V` 前缀，以 onode key 索引原始 `_volume_meta` 字节，在同一 KV 事务中维护。加载限定当前 collection／PG；旧库首次挂载按 1024 条分批重建，全部成功后写 `S/weave_volume_index` 标记。
-- **代码：**[BlueStore.cc](../../../src/os/bluestore/BlueStore.cc) 的 `load_attr_mirror`、索引重建及 onode 事务维护（镜像机制本身在 [AttrMirror.cc](../../../src/os/AttrMirror.cc)）；[ObjectStore.h](../../../src/os/ObjectStore.h)、[PGBackend.cc](../../../src/osd/PGBackend.cc) 的加载接口。
+- **方案：**BlueStore 新增 RocksDB `V` 前缀，以 onode key 索引原始 `_volume_meta` 字节，在同一 KV 事务中维护。加载限定当前 collection／PG。索引从对象创建起维护，挂载不重建，不使用完成标记或提供旧库迁移。
+- **代码：**[BlueStore.cc](../../../src/os/bluestore/BlueStore.cc) 的 `load_attr_mirror` 及 onode 事务维护（镜像机制本身在 [AttrMirror.cc](../../../src/os/AttrMirror.cc)）；[ObjectStore.h](../../../src/os/ObjectStore.h)、[PGBackend.cc](../../../src/osd/PGBackend.cc) 的加载接口。
 - **证据：**BlueStore 专项 3/3 通过；历史实验覆盖 10000 个普通对象、1032 个 Volume、跨重建批次及 collection split／merge 索引范围。
 - **边界：**索引是属性的事务性副本，不是转换事务日志。I1 没有解决 D1，也没有解决逻辑成员的 PG split 语义。
 

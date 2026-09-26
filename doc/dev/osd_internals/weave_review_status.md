@@ -139,7 +139,7 @@ ninja -C build -j3 ceph-osd ceph-mon ceph-mgr rados ceph-kvstore-tool \
 
 最终还重跑了成员删除、同名重建、覆盖物化、删除全部非空成员；七个 BlueStore OSD 重启后，空 Volume 不复活成员。手工回收将物理对象数从 **45 降到 40**，最终精确保留 40 个原生空对象。
 
-原交接阶段已取得的索引专项和联合证据继续保留：10000 个普通对象／1032 个 Volume、跨 1024 条索引重建批次、ObjectStore collection split／merge 范围、接收端拒绝路由后的 primary 回退、陈旧 primary 元数据恢复屏障、删除索引标记后的重建。它们属于历史验证，不冒充本轮全部重新执行过的场景。
+原交接阶段已取得的索引专项和联合证据继续保留：10000 个普通对象／1032 个 Volume、跨 1024 条索引重建批次、ObjectStore collection split／merge 范围、接收端拒绝路由后的 primary 回退、陈旧 primary 元数据恢复屏障、删除索引标记后的重建。它们属于历史验证，不冒充本轮全部重新执行过的场景。当前实现已删除旧库索引重建和完成标记，对应历史重建测试不再适用。
 
 测试过程中已排除并修正的 fixture 问题：MemStore 重启后旧 PG 不存在；C++ `write_full` 消耗复用 bufferlist 导致后续对象为空；快照物理计数必须同时计入 clone 和 snapdir；Python `io.execute` 成功可能返回正的输出长度；候选集合不应依赖无关的 hobject 遍历顺序。对应有效场景均已重新通过。
 
@@ -148,7 +148,7 @@ ninja -C build -j3 ceph-osd ceph-mon ceph-mgr rados ceph-kvstore-tool \
 永久回归代码：
 
 - `src/test/weave/test_weave.cc`、`test_weave_conversion.cc`：编解码、候选准入／公平性、转换、快照、列举及接口回归。
-- `src/test/objectstore/store_test.cc`：BlueStore 索引维护和重建。
+- `src/test/objectstore/store_test.cc`：BlueStore 索引维护和重新挂载。
 - `src/test/weave/compound_calls.cc`：目标 `ceph_test_weave_compound`，参数为 `CONF POOL PARQUET_OBJECT OUTPUT_DIR`。
 - `src/test/weave/regression_client.cc`：目标 `ceph_test_weave_regressions`，参数为 `CONF POOL MODE [OBJECT]`；模式包括 `thumbnail`、`list-create`、`list-check`、`list-all`、`read-error`。
 - `src/test/weave/review_regressions.py`：参数为 `--conf CONF --pool POOL --state STATE [--self-managed] seed|mutate|verify`。
