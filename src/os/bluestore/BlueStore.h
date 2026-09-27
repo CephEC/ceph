@@ -2760,6 +2760,11 @@ private:
 		      uint64_t tail_pad,
 		      ceph::buffer::list& padded);
 
+  // Keep attribute-mirror details out of the onode lifecycle paths.
+  void _restore_attr_mirror_state(Onode& o);
+  void _record_attr_mirror(Onode& o, KeyValueDB::Transaction& txn);
+  void _remove_attr_mirror(Onode& o, KeyValueDB::Transaction& txn);
+
   void _record_onode(OnodeRef &o, KeyValueDB::Transaction &txn);
 
   // -- ondisk version ---

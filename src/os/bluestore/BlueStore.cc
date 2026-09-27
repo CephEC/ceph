@@ -3719,8 +3719,7 @@ BlueStore::Onode* BlueStore::Onode::decode(
   on->exists = true;
   auto p = v.front().begin_deep();
   on->onode.decode(p);
-  on->attr_mirrored =
-    on->onode.attrs.count(c->store->attr_mirror_.attr().c_str()) != 0;
+  c->store->_restore_attr_mirror_state(*on);
   for (auto& i : on->onode.attrs) {
     i.second.reassign_to_mempool(mempool::mempool_bluestore_cache_meta);
   }
@@ -16338,7 +16337,7 @@ int BlueStore::_do_remove(
     );
   }
   txc->t->rmkey(PREFIX_OBJ, o->key.c_str(), o->key.size());
-  attr_mirror_.record(o->key, nullptr, txc->t, o->attr_mirrored);
+  _remove_attr_mirror(*o, txc->t);
   txc->note_removed_object(o);
   o->extent_map.clear();
   o->onode = bluestore_onode_t();
@@ -16948,7 +16947,7 @@ int BlueStore::_rename(TransContext *txc,
 
   txc->t->rmkey(PREFIX_OBJ, oldo->key.c_str(), oldo->key.size());
   // The new row is written when the renamed onode is recorded.
-  attr_mirror_.record(oldo->key, nullptr, txc->t, oldo->attr_mirrored);
+  _remove_attr_mirror(*oldo, txc->t);
 
   // rewrite shards
   {
@@ -17584,6 +17583,25 @@ void BlueStore::_apply_padding(uint64_t head_pad,
   }
 }
 
+void BlueStore::_restore_attr_mirror_state(Onode& o)
+{
+  o.attr_mirrored = o.onode.attrs.count(attr_mirror_.attr().c_str()) != 0;
+}
+
+void BlueStore::_record_attr_mirror(Onode& o, KeyValueDB::Transaction& txn)
+{
+  // Persist opaque attribute bytes in the same transaction as the onode.
+  auto attr = o.onode.attrs.find(attr_mirror_.attr().c_str());
+  attr_mirror_.record(o.key,
+                      attr == o.onode.attrs.end() ? nullptr : &attr->second,
+                      txn, o.attr_mirrored);
+}
+
+void BlueStore::_remove_attr_mirror(Onode& o, KeyValueDB::Transaction& txn)
+{
+  attr_mirror_.record(o.key, nullptr, txn, o.attr_mirrored);
+}
+
 void BlueStore::_record_onode(OnodeRef &o, KeyValueDB::Transaction &txn)
 {
   // finalize extent_map shards
@@ -17631,11 +17649,7 @@ void BlueStore::_record_onode(OnodeRef &o, KeyValueDB::Transaction &txn)
 
   txn->set(PREFIX_OBJ, o->key.c_str(), o->key.size(), bl);
 
-  // Persist both copies atomically; the mirror contains opaque attribute bytes.
-  auto attr = o->onode.attrs.find(attr_mirror_.attr().c_str());
-  attr_mirror_.record(o->key,
-                      attr == o->onode.attrs.end() ? nullptr : &attr->second,
-                      txn, o->attr_mirrored);
+  _record_attr_mirror(*o, txn);
 }
 
 void BlueStore::_log_alerts(osd_alert_list_t& alerts)
