@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import signal
 import threading
 import time
@@ -88,6 +89,44 @@ class PackingReadCase:
         result, digest = io.execute(key, 'openssl_md5', 'compute', b'')
         assert result == len(digest) and digest == self.digests[key], (key, 'data-class')
 
+    def check_routing(self, primary, acting):
+        c = self.cluster
+        # A separate client log excludes fallbacks from the concurrent phase.
+        client_log = c.directory / f'{self.pool}-routing.log'
+        replica_logs = {osd: c.directory / f'osd.{osd}.log'
+                        for osd in acting[:4] if osd != primary}
+        offsets = {osd: log.stat().st_size for osd, log in replica_logs.items()}
+        client = rados.Rados(conffile=str(c.conf), conf={
+            'debug_objecter': '15/15', 'log_to_file': 'true',
+            'log_file': str(client_log), 'rados_osd_op_timeout': '120'})
+        client.connect()
+        try:
+            with client.open_ioctx(self.pool) as io:
+                for key in self.data:
+                    self.check(io, key)
+        finally:
+            client.shutdown()  # Flush the log before checking completed requests.
+        log = client_log.read_text(errors='replace')
+        routes = re.findall(r'Weave redirect \S+ to (\d+)\(\d+\) accepted=1', log)
+        targets = {int(osd) for osd in routes}
+        if not self.direct:
+            assert not targets, 'unexpected redirect with direct reads disabled'
+            return []
+        assert targets == set(replica_logs), (primary, targets, 'wrong redirect targets')
+        assert 'Weave direct read fallback' not in log, 'sequential direct read fell back'
+        sent = {int(tid): int(osd) for tid, osd in re.findall(
+            r'_send_op (\d+) to \S+ on osd\.(\d+)', log)}
+        completed = {int(tid) for tid in re.findall(r'handle_osd_op_reply completed tid (\d+)', log)}
+        served = {sent[tid] for tid in completed if tid in sent}
+        assert targets <= served, (targets, served, 'replica did not complete the request')
+        for osd in targets:
+            def local_reads():
+                text = replica_logs[osd].read_text(errors='replace')[offsets[osd]:]
+                return ('Weave local member read ' in text and
+                        'Weave local data-class call ' in text)
+            wait_for(f'OSD {osd} performed local READ and data-class CALL', local_reads, 10)
+        return sorted(targets)
+
     def run(self):
         c = self.cluster
         c.configure('osd_weave_background_enabled', 'false')
@@ -157,12 +196,9 @@ class PackingReadCase:
             load = None
             # Check direct routing without concurrent readers forcing normal
             # primary fallback. Retirement remains in its injected error loop.
-            for key in self.data:
-                self.check(io, key)
+            direct_targets = self.check_routing(primary, mapping['acting'])
             redirected = 'accepted=1' in client_log.read_text(errors='replace')[client_offset:]
-            if self.direct:
-                assert redirected, 'no successful data-shard redirect observed'
-            else:
+            if not self.direct:
                 assert not redirected, 'unexpected redirect with direct reads disabled'
             c.configure('osd_weave_debug_source_remove_error', 'false')
             writer.result(timeout=120)
@@ -191,6 +227,7 @@ class PackingReadCase:
                     'packed_samples_per_reader': packed_samples,
                     'total_samples_per_reader': counts, 'max_sample_seconds': longest,
                     'source_retirement_errors': errors, 'redirect_observed': redirected,
+                    'direct_read_osds': direct_targets,
                     'acknowledged_versions': changed}
         finally:
             if paused:

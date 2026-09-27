@@ -59,6 +59,10 @@ bash src/test/weave/concurrent_pack_reads.sh /root/ceph/build /tmp/weave-pack-re
 持续注入来源删除 EIO，验证 Volume 读取继续完成，最后放开清理，让等待写入
 完成并验证新版本、删除后同名重建、已有快照和全 OSD 重启后的状态。
 
+直读场景还使用独立客户端验证：重定向覆盖所有非 primary 的数据 shard，
+请求在目标副本上完成，目标 OSD 实际执行本地 READ 和数据类 CALL，且客户端
+没有回退。仅出现 `accepted=1` 不能证明直读成功。
+
 `osd_weave_debug_source_remove_error` 是默认关闭的开发测试开关，仅对
 打包来源的带版本删除返回异步 EIO；不对 Volume 删除或普通客户端请求注入。
 脚本在退出时恢复暂停进程和测试配置，只删除自己创建的池并停止自己的进程。

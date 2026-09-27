@@ -278,7 +278,7 @@ sequenceDiagram
 
 - `eligible`：只读、非写、非 cache、非 PG-op、`snapid == CEPH_NOSNAP`，且不带 `RWORDERED|SKIPRWLOCKS|FLUSH|IGNORE_REDIRECT`（`WeaveReadRouter.cc:9-16`）。
 - `may_redirect`：`message.allows_weave_redirect()` + weave context（含 volume 元数据与原始 oid）（`:18-24`）。
-- `locate_read`（`WeaveCephHost.cc:149-178`）：`osd_weave_redirect_reads` 开、PG active、primary 须 clean、成员序号在 data chunk 范围内、Volume 不是 unreadable、`redirect_supported(target)`（目标 up 且具备 `WEAVE_READ_REDIRECT`+`SERVER_QUINCY`；primary 只能指向自己，replica 只能指向同组 peer，`:318-333`）、Volume 存在且不 busy、replica 还要 `can_serve_replica_read`。
+- `locate_read`（`WeaveCephHost.cc:149-178`）：`osd_weave_redirect_reads` 开、PG active、primary 须 clean、成员序号在 data chunk 范围内、Volume 不是 unreadable、`redirect_supported(target)`（目标 up 且具备 `WEAVE_READ_REDIRECT`+`SERVER_QUINCY`；primary 只能指向同组其他 shard，replica 只能确认目标是自己，`:318-333`）、Volume 存在且不 busy、replica 还要 `can_serve_replica_read`。
 - 通过后先 `translator_.finish_request(op)`（撤销本地翻译）再发 `-EAGAIN` 回复（`WeaveReadRouter.cc:33-46`；`WeaveCephHost.cc:195-205`）。
 
 ### 5.3 副本接受

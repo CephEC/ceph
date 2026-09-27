@@ -313,8 +313,8 @@ private:
       }), osd_.get_objecter_finisher(pg_.get_pg_shard()));
   }
 
-  // Up-ness, feature bits and role: a primary redirects only to itself, a
-  // replica only to a peer shard of the same PG.
+  // The primary redirects to another shard; the receiving replica validates
+  // that the member belongs to its own shard.
   bool redirect_supported(const pg_shard_t& target) const {
     if (target.osd < 0 || !pg_.get_osdmap()->is_up(target.osd)) return false;
 
@@ -324,8 +324,10 @@ private:
         !HAVE_FEATURE(features, SERVER_QUINCY)) {
       return false;
     }
-    return pg_.is_primary() ? target == pg_.whoami_shard()
-                            : target != pg_.whoami_shard();
+    if (pg_.is_primary()) {
+      return target != pg_.whoami_shard();
+    }
+    return target == pg_.whoami_shard();
   }
 
   // The caller has already checked member against the data-chunk count.
