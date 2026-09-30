@@ -136,12 +136,7 @@ std::vector<WeaveCandidate> WeaveCandidateIndex::select(
       continue;
     }
 
-    // One slot must hold the largest member at a whole number of units.
-    const uint64_t largest = window[head]->size;
-    const uint64_t largest_remainder = largest % unit;
-    const uint64_t slot = largest +
-      (largest_remainder ? unit - largest_remainder : 0);
-    const uint64_t volume_size = slot * k;
+    const uint64_t volume_size = packed_size(window[head]->size, unit, k);
 
     if (within_padding_budget(volume_size, sum, padding_percent)) {
       return window_snapshot(window, head, k);
@@ -185,6 +180,14 @@ void WeaveCandidateIndex::advance_window(
 
   // Each size is bounded by max_volume_size / k, so this rolling sum fits.
   sum += candidate.size;
+}
+
+uint64_t WeaveCandidateIndex::packed_size(
+  uint64_t largest, uint64_t unit, uint32_t k) const {
+  // One slot holds the largest member, rounded up to a whole number of units.
+  const uint64_t remainder = largest % unit;
+  const uint64_t slot = largest + (remainder ? unit - remainder : 0);
+  return slot * k;
 }
 
 bool WeaveCandidateIndex::within_padding_budget(

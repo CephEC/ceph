@@ -114,6 +114,7 @@ TEST(WeaveConfig, RegistersOnlyWeaveOptions)
   ConfigProxy conf{false};
   EXPECT_EQ(0, conf.set_val("osd_weave_enabled", "true"));
   EXPECT_EQ(-ENOENT, conf.set_val("osd_aggregate_ec_enabled", "true"));
+  EXPECT_EQ(-ENOENT, conf.set_val("osd_weave_max_volume_size", "67108864"));
   const std::pair<const char*, const char*> options[] = {
     {"background_enabled", "true"},
     {"debug_crash_point", ""},
@@ -121,7 +122,6 @@ TEST(WeaveConfig, RegistersOnlyWeaveOptions)
     {"min_object_size", "1"},
     {"quiet_period", "0"},
     {"scan_interval", "1"},
-    {"max_volume_size", "67108864"},
     {"max_concurrent", "1"},
     {"max_padding_percent", "10"},
     {"cleanup_time", "12:00"},

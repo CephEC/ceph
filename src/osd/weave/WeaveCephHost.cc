@@ -6,6 +6,7 @@
 #include "common/Finisher.h"
 #include "detail/WeaveLayout.h"
 #include "detail/WeaveXAttr.h"
+#include "detail/WeaveWriteLimits.h"
 #include "osd/OSD.h"
 #include "osd/PrimaryLogPG.h"
 #include "osdc/Objecter.h"
@@ -45,7 +46,7 @@ public:
       conf->osd_weave_min_object_size,
       conf->osd_weave_quiet_period,
       conf->osd_weave_scan_interval,
-      conf->osd_weave_max_volume_size,
+      write_limits().data_limit(),
       static_cast<unsigned>(conf->osd_weave_max_padding_percent)};
   }
 
@@ -258,6 +259,10 @@ public:
                    const ceph::weave::WeaveAttrs& attrs, utime_t mtime,
                    bool replace,
                    ceph::weave::WeaveCompletion callback) override {
+    if (!write_limits().accepts(data.length(), attrs)) {
+      complete(std::move(callback))->complete(-EFBIG);
+      return 0;
+    }
     ObjectOperation op;
     // A replace drops the old object first, but a missing one must not fail
     // the write.
@@ -302,6 +307,12 @@ public:
   }
 
 private:
+  ceph::weave::WeaveWriteLimits write_limits() const {
+    const auto& conf = pg_.cct->_conf;
+    return {conf.get_val<Option::size_t>("osd_max_object_size"),
+            conf->osd_max_write_size};
+  }
+
   // Never run an I/O callback inline: bounce it onto the objecter finisher and
   // reacquire the PG lock before invoking the caller's continuation.
   Context* complete(ceph::weave::WeaveCompletion callback) {

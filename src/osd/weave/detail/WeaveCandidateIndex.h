@@ -73,6 +73,7 @@ private:
   void advance_window(std::vector<const WeaveCandidate*>& window,
                       size_t& head, uint64_t& sum,
                       const WeaveCandidate& candidate, uint32_t k) const;
+  uint64_t packed_size(uint64_t largest, uint64_t unit, uint32_t k) const;
   bool within_padding_budget(uint64_t volume_size, uint64_t sum,
                              unsigned padding_percent) const;
   std::vector<WeaveCandidate> window_snapshot(

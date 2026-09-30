@@ -190,6 +190,7 @@ stateDiagram-v2
 
 - `on_commit` → `refresh_candidate`：Volume 私有对象永不入候选；已有映射的对象会被剔除（`WeavePGControllerImpl.cc:851-897`）。
 - `eligible()` 只排除原生截断历史无法表达的对象：`truncate_seq == 0 && truncate_size == 0`（`WeaveCandidateIndex.h:35-38`，对应台账 I6）。
+- Volume 大小上限复用 `osd_max_object_size` 和 `osd_max_write_size`（后者单位 MiB，0 表示不限），并受 32 位编码长度限制；没有独立的 Weave 大小配置。提交前按数据、属性名及属性值精确检查请求载荷，超限返回 `-EFBIG`。系统上限变化会唤醒候选扫描。
 - 容量上界 `kMaxCandidates = 4096`；`configure()` 推导每 slot 上限 `(max_volume_size/k/unit)*unit`，配置收紧时立即 `prune_inadmissible()`（`WeaveCandidateIndex.cc:11-32`）。
 - `upsert` 拒绝旧版本回放（`oi.version < 已有`），状态完全相同不重启 quiet 计时；改尺寸时先把排序节点 `extract` 出来再改（`WeaveCandidateIndex.cc:34-70`）。
 
@@ -370,7 +371,7 @@ sequenceDiagram
 | `osd_weave_min_object_size` | size / `1_M` | 候选准入 |
 | `osd_weave_quiet_period` | float / `30` | 停滞判定 |
 | `osd_weave_scan_interval` | float / `5` | 唤醒延迟 |
-| `osd_weave_max_volume_size` | size / `64_M` | 每 slot 上限推导 |
+| `osd_max_object_size` / `osd_max_write_size` | 系统已有配置 | 推导 Volume 数据上限；提交前另检查数据及属性的总载荷 |
 | `osd_weave_max_concurrent` | uint / `1` | 全局转换槽（**0 会同时拒绝前台必要物化**） |
 | `osd_weave_max_padding_percent` | uint / `10` | 选组填充预算 |
 | `osd_weave_cleanup_time` | str / 空 | 每日 UTC 清理时刻；空只保留手工命令，validator 严格 `HH:MM` |

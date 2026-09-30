@@ -67,11 +67,11 @@ class ReaderLoad:
 
 
 class PackingReadCase:
-    def __init__(self, cluster, direct):
+    def __init__(self, cluster, direct, member_size=2 << 20):
         self.cluster = cluster
         self.direct = direct
         self.pool = 'weave-pack-reads-' + ('direct' if direct else 'primary')
-        self.data = {f'member-{i}': bytes([65 + i]) * (2 << 20) for i in range(4)}
+        self.data = {f'member-{i}': bytes([65 + i]) * member_size for i in range(4)}
         self.saved = {}
         # The class appends its whole char[33], including the terminating NUL.
         self.digests = {key: hashlib.md5(value).hexdigest().encode() + b'\0'
@@ -244,8 +244,8 @@ class PackingReadCase:
 
 
 class ReadFailoverCase(PackingReadCase):
-    def __init__(self, cluster):
-        super().__init__(cluster, True)
+    def __init__(self, cluster, member_size=2 << 20):
+        super().__init__(cluster, True, member_size)
         self.pool = 'weave-pack-reads-failover'
 
     def run(self):
@@ -315,14 +315,21 @@ def main():
     parser.add_argument('--build-dir', type=Path, required=True)
     parser.add_argument('--work-dir', type=Path, required=True)
     parser.add_argument('--case', action='append', choices=['primary', 'direct', 'failover'])
+    parser.add_argument('--member-size', type=int, default=2 << 20,
+                        help='bytes per member (four members per Volume)')
     args = parser.parse_args()
+    if args.member_size <= 0:
+        parser.error('--member-size must be positive')
     cluster = IsolatedCluster(args.build_dir, args.work_dir)
     results = []
     try:
         cluster.start()
         for name in args.case or ['primary', 'direct', 'failover']:
             print('RUN:', name, flush=True)
-            case = ReadFailoverCase(cluster) if name == 'failover' else PackingReadCase(cluster, name == 'direct')
+            if name == 'failover':
+                case = ReadFailoverCase(cluster, args.member_size)
+            else:
+                case = PackingReadCase(cluster, name == 'direct', args.member_size)
             results.append(case.run())
             (cluster.directory / 'results.json').write_text(json.dumps(results, indent=2))
             print('PASS:', results[-1], flush=True)

@@ -201,24 +201,27 @@ void WeaveScheduler::shutdown()
 {
   ceph_assert(!worker_.am_self());
 
-  std::call_once(stopped_, [this] {
-    decltype(scans_) discarded_scans;
-    decltype(work_) discarded_work;
-    {
-      std::lock_guard l(mutex_);
-      stopping_ = true;
-      discarded_scans.swap(scans_);
-      discarded_work.swap(work_);
-      deadlines_.clear();
-      active_.clear();
-      cond_.notify_one();
-    }
+  std::call_once(stopped_, [this] { stop_worker(); });
+}
 
-    // Destroy the discarded callbacks, and any PGRef they hold, unlocked.
-    discarded_scans.clear();
-    discarded_work.clear();
-    worker_.join();
-  });
+void WeaveScheduler::stop_worker()
+{
+  decltype(scans_) discarded_scans;
+  decltype(work_) discarded_work;
+  {
+    std::lock_guard l(mutex_);
+    stopping_ = true;
+    discarded_scans.swap(scans_);
+    discarded_work.swap(work_);
+    deadlines_.clear();
+    active_.clear();
+    cond_.notify_one();
+  }
+
+  // Destroy the discarded callbacks, and any PGRef they hold, unlocked.
+  discarded_scans.clear();
+  discarded_work.clear();
+  worker_.join();
 }
 
 }  // namespace ceph::weave

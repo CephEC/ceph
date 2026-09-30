@@ -70,6 +70,8 @@ bash src/test/weave/concurrent_pack_reads.sh /root/ceph/build /tmp/weave-pack-re
 默认还运行持续读取中的 primary 故障场景：已发布但来源尚未清理时强制结束
 primary，恢复该 OSD 并让另一 OSD 接管；读取自动重试，随后验证新写和全重启。
 可用 `--case primary`、`--case direct`、`--case failover` 单独执行。
+`--member-size` 指定每个成员的字节数；例如 `--case direct --member-size 20971520`
+验证 4 个 20 MiB 成员组成的 80 MiB Volume，覆盖移除原 64 MiB 独立上限后的真实读写路径。
 
 ## 验收结果
 

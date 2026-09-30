@@ -1343,14 +1343,6 @@ options:
   with_legacy: true
   flags:
   - runtime
-- name: osd_weave_max_volume_size
-  desc: Maximum padded logical size of a Weave Volume
-  type: size
-  level: advanced
-  default: 64_M
-  with_legacy: true
-  flags:
-  - runtime
 - name: osd_weave_max_concurrent
   desc: Maximum simultaneous Weave conversions per OSD
   type: uint

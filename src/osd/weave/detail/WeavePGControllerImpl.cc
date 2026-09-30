@@ -237,21 +237,27 @@ std::vector<WeaveCandidate> WeavePGController::Impl::select_packable(
     policy.min_size, policy.quiet_seconds, policy.max_volume_size,
     policy.padding_percent, ceph::mono_clock::now(),
     [this, &stale](const auto& member) {
-      const auto object = host_->inspect(member.oid);
-      // Anything the candidate index no longer describes exactly is
-      // dropped here, so the next commit can reconsider it.
-      if (catalog_.lookup(member.oid) ||
-          !object.exists || object.info.version != member.version ||
-          !WeaveCandidateIndex::eligible(object.info) ||
-          !object.info.watchers.empty() || object.has_clones) {
-        stale.push_back(member.oid);
-        return false;
-      }
-
-      // Shared readers keep the source stable. Writers and queued native work
-      // must drain before we reserve it against further modification.
-      return !object.blocks_pack();
+      return candidate_available(member, stale);
     });
+}
+
+bool WeavePGController::Impl::candidate_available(
+  const WeaveCandidate& member, std::vector<hobject_t>& stale)
+{
+  const auto object = host_->inspect(member.oid);
+  // Anything the candidate index no longer describes exactly is
+  // dropped here, so the next commit can reconsider it.
+  if (catalog_.lookup(member.oid) ||
+      !object.exists || object.info.version != member.version ||
+      !WeaveCandidateIndex::eligible(object.info) ||
+      !object.info.watchers.empty() || object.has_clones) {
+    stale.push_back(member.oid);
+    return false;
+  }
+
+  // Shared readers keep the source stable. Writers and queued native work
+  // must drain before we reserve it against further modification.
+  return !object.blocks_pack();
 }
 
 // Slot geometry comes from the largest member: every member then fits one

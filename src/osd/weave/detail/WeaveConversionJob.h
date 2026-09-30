@@ -61,19 +61,32 @@ private:
   bool terminal() const;
   void finish(Result);
   WeaveCompletion completion(std::function<void(int)>);
+  bool accept_completion(uint64_t sequence);
   void retry(std::function<void()>);
 
   void read_member(size_t);
+  void read_volume();
+  void volume_read(int);
+  void member_read(size_t, int);
   void build_volume();
+  void volume_built(bool valid);
   bool compose_volume(PackState&);
+  void collect_member_attrs(WeaveAttrs&) const;
   void submit_volume();
+  void volume_written(int);
   void resolve_volume(int error);
   void retire_member(size_t);
+  void member_retired(size_t, int);
 
   void materialize();
+  void members_materialized(bool valid);
   bool extract_member(size_t index, const ObjectData& volume);
+  bool extract_member_data(size_t index, const ceph::buffer::list& data);
+  void extract_member_attrs(size_t index, const WeaveAttrs& attrs);
   void write_member(size_t);
+  void member_written(size_t, int);
   void retire_volume();
+  void volume_retired(int);
 
   WeavePGHost& host_;
   std::shared_ptr<void> owner_;

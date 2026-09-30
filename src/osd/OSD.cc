@@ -10028,7 +10028,8 @@ const char** OSD::get_tracked_conf_keys() const
     "osd_weave_cleanup_time",
     "osd_weave_background_enabled",
     "osd_weave_min_object_size",
-    "osd_weave_max_volume_size",
+    "osd_max_object_size",
+    "osd_max_write_size",
     "osd_weave_quiet_period",
     "osd_weave_scan_interval",
     "osd_weave_max_padding_percent",
@@ -10048,7 +10049,8 @@ void OSD::handle_conf_change(const ConfigProxy& conf,
   }
   if ((changed.count("osd_weave_background_enabled") ||
        changed.count("osd_weave_min_object_size") ||
-       changed.count("osd_weave_max_volume_size") ||
+       changed.count("osd_max_object_size") ||
+       changed.count("osd_max_write_size") ||
        changed.count("osd_weave_quiet_period") ||
        changed.count("osd_weave_scan_interval") ||
        changed.count("osd_weave_max_padding_percent")) &&

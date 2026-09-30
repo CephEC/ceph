@@ -39,6 +39,7 @@ public:
   void shutdown();
 
 private:
+  void stop_worker();
   using Deadlines = std::multimap<ceph::mono_time, spg_t>;
   struct Scan {
     Deadlines::iterator deadline;

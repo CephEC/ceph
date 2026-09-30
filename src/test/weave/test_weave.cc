@@ -17,6 +17,8 @@
 #include "osd/weave/detail/WeaveLayout.h"
 #include "osd/weave/detail/WeaveCatalog.h"
 #include "osdc/WeaveReadSession.h"
+#include "osdc/Objecter.h"
+#include "osd/weave/detail/WeaveWriteLimits.h"
 #include "test/unit.cc"
 
 #include <atomic>
@@ -96,6 +98,58 @@ protected:
   ceph::ErasureCodeInterfaceRef ec;
 };
 } // anonymous namespace
+
+TEST(WeaveWriteLimits, UsesNativeObjectAndRequestLimits) {
+  constexpr uint64_t mib = 1 << 20;
+  EXPECT_EQ(128 * mib, WeaveWriteLimits(128 * mib, 256).data_limit());
+  EXPECT_EQ(32 * mib, WeaveWriteLimits(128 * mib, 32).data_limit());
+  EXPECT_EQ(128 * mib, WeaveWriteLimits(128 * mib, 0).data_limit());
+  EXPECT_FALSE(WeaveWriteLimits(0, 0).accepts(1, {}));
+}
+
+TEST(WeaveWriteLimits, BoundsEncodingAndLargeMiBValues) {
+  const uint64_t encoded = std::numeric_limits<uint32_t>::max();
+  const uint64_t huge = std::numeric_limits<uint64_t>::max();
+  EXPECT_EQ(encoded, WeaveWriteLimits(huge, huge).data_limit());
+  EXPECT_EQ(encoded, WeaveWriteLimits(huge, 0).data_limit());
+  EXPECT_EQ(encoded, WeaveWriteLimits(huge, 4096).data_limit());
+  EXPECT_FALSE(WeaveWriteLimits(huge, huge).accepts(encoded + 1, {}));
+}
+
+TEST(WeaveWriteLimits, CountsExactSetxattrPayloadAtBoundary) {
+  constexpr uint64_t mib = 1 << 20;
+  std::map<std::string, bufferlist> attrs;
+  attrs["volume_meta"].append("metadata");
+  attrs["empty"] = bufferlist();
+  ObjectOperation op;
+  for (const auto& [name, value] : attrs) op.setxattr(name, value);
+  uint64_t attribute_bytes = 0;
+  for (const auto& entry : op.ops) attribute_bytes += entry.indata.length();
+  const WeaveWriteLimits limits(2 * mib, 1);
+  EXPECT_TRUE(limits.accepts(mib - attribute_bytes, attrs));
+  EXPECT_FALSE(limits.accepts(mib - attribute_bytes + 1, attrs));
+  EXPECT_FALSE(limits.accepts(mib, attrs));
+  // Attributes count toward the request limit, not the object data limit.
+  EXPECT_TRUE(WeaveWriteLimits(100, 1).accepts(100, attrs));
+  EXPECT_FALSE(WeaveWriteLimits(100, 1).accepts(101, {}));
+}
+
+TEST(WeaveCandidateIndex, NativeLimitsAllowLargeVolumesAndPruneOnReduction) {
+  constexpr uint64_t mib = 1 << 20;
+  const ceph::mono_time now{};
+  WeaveCandidateIndex index;
+  const auto limit = WeaveWriteLimits(128 * mib, 256).data_limit();
+  index.configure(4, UNIT, 1, limit);
+  for (unsigned i = 0; i < 4; ++i) {
+    index.upsert(candidate_info(std::to_string(i), 20 * mib), now);
+  }
+  // An 80 MiB Volume exceeds the removed 64 MiB policy, but is writable.
+  ASSERT_EQ(4u, index.select(4, UNIT, 1, 0, limit, 10, now).size());
+  const auto reduced = WeaveWriteLimits(128 * mib, 64).data_limit();
+  index.configure(4, UNIT, 1, reduced);
+  EXPECT_TRUE(index.empty());
+  EXPECT_TRUE(index.select(4, UNIT, 1, 0, reduced, 10, now).empty());
+}
 
 TEST(WeaveCandidateIndex, SkipsLargeOutliersAndGroupsSmallerObjects) {
   WeaveCandidateIndex index;

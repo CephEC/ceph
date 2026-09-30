@@ -92,6 +92,7 @@ private:
   void scan();
   std::vector<WeaveCandidate> select_packable(
     const WeaveGeometry&, const WeavePolicy&, std::vector<hobject_t>& stale);
+  bool candidate_available(const WeaveCandidate&, std::vector<hobject_t>& stale);
   WeaveVolumeMeta plan_volume(const std::vector<WeaveCandidate>&,
                               const WeaveGeometry&);
   void scan_cleanup();

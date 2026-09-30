@@ -18,7 +18,8 @@ struct WeavePolicy {
   uint64_t min_size = 1 << 20;
   double quiet_seconds = 30;
   double scan_seconds = 5;
-  uint64_t max_volume_size = 64 << 20;
+  // Derived from native object/request limits, not a separate Weave setting.
+  uint64_t max_volume_size = 0;
   unsigned padding_percent = 10;
 };
 
