@@ -1,5 +1,5 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-#include "WeaveScheduler.h"
+#include "WeaveWorker.h"
 
 #include <algorithm>
 #include <chrono>
@@ -12,18 +12,18 @@
 
 namespace ceph::weave {
 
-WeaveScheduler::WeaveScheduler(CephContext* cct)
-  : cct_(cct), worker_(*this)
+WeaveWorker::WeaveWorker(CephContext* cct)
+  : cct_(cct), thread_(*this)
 {
-  worker_.create("weave_worker");
+  thread_.create("weave_worker");
 }
 
-WeaveScheduler::~WeaveScheduler()
+WeaveWorker::~WeaveWorker()
 {
   shutdown();
 }
 
-void WeaveScheduler::schedule(
+void WeaveWorker::schedule(
   const spg_t& pgid, double delay_seconds, std::function<void()> callback)
 {
   if (!callback || std::isnan(delay_seconds)) {
@@ -32,7 +32,7 @@ void WeaveScheduler::schedule(
   const auto when = deadline_for(delay_seconds);
 
   // Releasing a captured PGRef can run a destructor. Always do that outside
-  // the scheduler lock, including replacement, cancellation, and shutdown.
+  // the worker lock, including replacement, cancellation, and shutdown.
   std::function<void()> discarded;
   {
     std::lock_guard l(mutex_);
@@ -44,7 +44,7 @@ void WeaveScheduler::schedule(
   }
 }
 
-void WeaveScheduler::cancel(const spg_t& pgid)
+void WeaveWorker::cancel(const spg_t& pgid)
 {
   // Hold the cancelled callback until the lock is dropped; destroying it may
   // run a PGRef destructor.
@@ -61,7 +61,7 @@ void WeaveScheduler::cancel(const spg_t& pgid)
   }
 }
 
-bool WeaveScheduler::try_acquire(const spg_t& pgid)
+bool WeaveWorker::try_acquire(const spg_t& pgid)
 {
   const auto limit =
     cct_->_conf.get_val<uint64_t>("osd_weave_max_concurrent");
@@ -75,13 +75,13 @@ bool WeaveScheduler::try_acquire(const spg_t& pgid)
   return active_.insert(pgid).second;
 }
 
-void WeaveScheduler::release(const spg_t& pgid)
+void WeaveWorker::release(const spg_t& pgid)
 {
   std::lock_guard l(mutex_);
   active_.erase(pgid);
 }
 
-void WeaveScheduler::post(std::function<void()> callback)
+void WeaveWorker::post(std::function<void()> callback)
 {
   if (!callback) {
     return;
@@ -94,7 +94,7 @@ void WeaveScheduler::post(std::function<void()> callback)
   }
 }
 
-void WeaveScheduler::run()
+void WeaveWorker::run()
 {
   std::unique_lock l(mutex_);
   while (!stopping_) {
@@ -104,7 +104,7 @@ void WeaveScheduler::run()
       continue;
     }
 
-    // Run the callback with the lock dropped; it may re-enter the scheduler.
+    // Run the callback with the lock dropped; it may re-enter the worker.
     l.unlock();
     callback();
     callback = {};
@@ -112,7 +112,7 @@ void WeaveScheduler::run()
   }
 }
 
-bool WeaveScheduler::take_next_locked(std::function<void()>& callback)
+bool WeaveWorker::take_next_locked(std::function<void()>& callback)
 {
   // Give posted job progress precedence over scans, including a configured
   // zero scan interval that can continually enqueue immediately-due scans.
@@ -135,7 +135,7 @@ bool WeaveScheduler::take_next_locked(std::function<void()>& callback)
   return true;
 }
 
-void WeaveScheduler::wait_locked(std::unique_lock<ceph::mutex>& l,
+void WeaveWorker::wait_locked(std::unique_lock<ceph::mutex>& l,
                                  ceph::mono_time now)
 {
   if (deadlines_.empty()) {
@@ -154,7 +154,7 @@ void WeaveScheduler::wait_locked(std::unique_lock<ceph::mutex>& l,
   cond_.wait_for(l, std::chrono::duration_cast<ceph::signedspan>(delay));
 }
 
-ceph::mono_time WeaveScheduler::deadline_for(double delay_seconds) const
+ceph::mono_time WeaveWorker::deadline_for(double delay_seconds) const
 {
   const auto now = ceph::mono_clock::now();
   if (delay_seconds <= 0) {
@@ -176,7 +176,7 @@ ceph::mono_time WeaveScheduler::deadline_for(double delay_seconds) const
   return when;
 }
 
-void WeaveScheduler::publish_locked(spg_t pgid, ceph::mono_time when,
+void WeaveWorker::publish_locked(spg_t pgid, ceph::mono_time when,
                                     std::function<void()> callback,
                                     std::function<void()>& discarded)
 {
@@ -197,14 +197,14 @@ void WeaveScheduler::publish_locked(spg_t pgid, ceph::mono_time when,
   cond_.notify_one();
 }
 
-void WeaveScheduler::shutdown()
+void WeaveWorker::shutdown()
 {
-  ceph_assert(!worker_.am_self());
+  ceph_assert(!thread_.am_self());
 
   std::call_once(stopped_, [this] { stop_worker(); });
 }
 
-void WeaveScheduler::stop_worker()
+void WeaveWorker::stop_worker()
 {
   decltype(scans_) discarded_scans;
   decltype(work_) discarded_work;
@@ -221,7 +221,7 @@ void WeaveScheduler::stop_worker()
   // Destroy the discarded callbacks, and any PGRef they hold, unlocked.
   discarded_scans.clear();
   discarded_work.clear();
-  worker_.join();
+  thread_.join();
 }
 
 }  // namespace ceph::weave

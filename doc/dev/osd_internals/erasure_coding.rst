@@ -139,7 +139,7 @@ Implementation classes live in ``src/osd/weave/detail``:
   and per-I/O sequence checks reject stale or duplicate completions. Controller
   reservations are tagged with job identities, so an old task cannot release a
   newer task's reservation. Publication revalidates sources under the PG lock.
-* ``WeaveScheduler`` runs one shared OSD worker. ``WeaveReclaimTimer`` computes
+* ``WeaveWorker`` runs one shared OSD worker. ``WeaveReclaimTimer`` computes
   daily UTC deadlines without owning a thread. Both are hidden by the service.
 
 ``WeaveTransaction`` borrows projected-attribute access and mutation functions

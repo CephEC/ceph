@@ -32,7 +32,7 @@ graph TB
     H[PrimaryLogPG::WeaveHost<br/>PG 指针只在这里] --> I
   end
   subgraph OSD 级
-    S[WeaveService<br/>租约/调度/回收单飞] --> SC[WeaveScheduler 工作线程]
+    S[WeaveService<br/>租约/调度/回收单飞] --> SC[WeaveWorker 工作线程]
     S --> RT[WeaveReclaimTimer HH:MM UTC]
   end
   subgraph 存储
@@ -57,7 +57,7 @@ graph TB
 | `detail/WeaveLayout.h` | 100 | 私有位标志 + 交错布局 |
 | `detail/WeaveXAttr.h` | 54 | 属性名、私有 namespace、xattr 前缀与载荷重建 |
 | `detail/WeaveCandidateIndex.{h,cc}` | 90/212 | 有界候选集 + 选组算法 |
-| `detail/WeaveScheduler.{h,cc}` | 77/224 | 每 OSD 单工作线程：延迟扫描 + CPU 工作 + 租约槽 |
+| `detail/WeaveWorker.{h,cc}` | 77/224 | 每 OSD 单工作线程：延迟扫描 + CPU 工作 + 租约槽 |
 | `WeaveService.{h,cc}` | 45/116 | 每 OSD 服务：回收单飞、租约、调度入口 |
 | `detail/WeaveReclaimTimer.h` | 88 | 严格 `HH:MM` UTC 每日触发，含跨日/回拨高水位 |
 | `WeaveECAdapter.{h,cc}` | 66/188 | EC 后端适配：成员 extent 换算、`decode_member`、data-class 执行 |
@@ -212,7 +212,7 @@ volume_size * 100 <= sum * (padding_percent + 100)      // 128 位宽运算，�
 
 ### 3.4 提交与交付顺序
 
-1. `host_->acquire()` 取 OSD 级租约：`osd_weave_max_concurrent` 为全局槽数，每 PG 仅一个槽（`WeaveScheduler.cc:66-78`、`WeaveService.cc:91-101`）。
+1. `host_->acquire()` 取 OSD 级租约：`osd_weave_max_concurrent` 为全局槽数，每 PG 仅一个槽（`WeaveWorker.cc:66-78`、`WeaveService.cc:91-101`）。
 2. `plan_volume` 分配 Volume oid（`WeaveCephHost.cc:129-140`，本地唯一名：`volume_<osd>_<pgid>_<epoch>_<tid>_<seq>`），并把 shard 顺序**在预留仍在时**固化进元数据。
 3. `start_job` 先为每个成员写 `reserved_[oid] = identity`，再构造并启动 job（`WeavePGControllerImpl.cc:434-449`）。
 4. 逐个成员 `read(oid, assert_version(user_version), size)`；短读直接失败（`WeaveConversionJob.cc:136-155`）。

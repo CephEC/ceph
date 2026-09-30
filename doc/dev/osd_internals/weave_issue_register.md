@@ -233,7 +233,7 @@ v1 编解码限制只会在读取格式时暴露不兼容；目前没有对应�
 
 2026-09-16 补充模型复现：即使没有 I/O 错误、租约可用，Volume 持续存在共享读者时，`start_deaggregation` 也会在建立成员预留前返回；新读仍被接纳，等待的覆盖写无法启动物化。连续 10 次调度与请求重试均无转换 I/O；读者排空后才启动并完成。必要物化缺少公平准入，不能依赖偶然出现的无读者窗口。另一个模型验证租约持续不可用时前台写不推进也不报错，恢复租约后才完成。
 
-代码：Controller 的 `start_deaggregation`／`preprocess_client_op`；ConversionJob 的 `write_member`／`retire_volume`；[WeaveScheduler.cc](../../../src/osd/weave/detail/WeaveScheduler.cc) 的 `try_acquire`。
+代码：Controller 的 `start_deaggregation`／`preprocess_client_op`；ConversionJob 的 `write_member`／`retire_volume`；[WeaveWorker.cc](../../../src/osd/weave/detail/WeaveWorker.cc) 的 `try_acquire`。
 
 由代码推断：一个无法完成的转换会长期保留 PG 的转换槽、逻辑对象预留及 OSD 租约，默认并发为 1 时还会影响其他 PG。满盘时先写存活成员再删卷需要额外空间；已有文档说明了这个空间前提，但尚无完整的失败恢复和前台可用性策略。
 

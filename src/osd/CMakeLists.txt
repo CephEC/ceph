@@ -15,7 +15,7 @@ set(osd_srcs
   ClassHandler.cc
   weave/detail/WeaveMemberTranslator.cc
   weave/detail/WeaveReadRouter.cc
-  weave/detail/WeaveScheduler.cc
+  weave/detail/WeaveWorker.cc
   weave/detail/WeaveCandidateIndex.cc
   weave/WeaveECAdapter.cc
   weave/WeavePGController.cc

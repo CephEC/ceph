@@ -10,7 +10,7 @@
 #include "osd/OpRequest.h"
 #include "osd/ClassHandler.h"
 #include "osd/weave/detail/WeaveMemberTranslator.h"
-#include "osd/weave/detail/WeaveScheduler.h"
+#include "osd/weave/detail/WeaveWorker.h"
 #include "osd/weave/detail/WeaveCandidateIndex.h"
 #include "osd/weave/WeaveECAdapter.h"
 #include "osd/weave/detail/WeaveRequestContext.h"
@@ -901,12 +901,12 @@ TEST(WeaveCatalog, DamagedDiskSnapshotDoesNotPublishPartialMappings) {
   EXPECT_FALSE(catalog.contains(object("new-member")));
 }
 
-TEST(WeaveScheduler, NewCandidatesDoNotPostponeAnEarlierPositiveDeadline) {
-  WeaveScheduler scheduler(g_ceph_context);
+TEST(WeaveWorker, NewCandidatesDoNotPostponeAnEarlierPositiveDeadline) {
+  WeaveWorker worker(g_ceph_context);
   std::promise<void> entered;
   std::promise<void> release;
   auto release_future = release.get_future().share();
-  scheduler.post([&] {
+  worker.post([&] {
     entered.set_value();
     release_future.wait();
   });
@@ -919,12 +919,12 @@ TEST(WeaveScheduler, NewCandidatesDoNotPostponeAnEarlierPositiveDeadline) {
   std::promise<void> scanned;
   auto scanned_future = scanned.get_future();
   const spg_t pgid(pg_t(1, 7), shard_id_t(0));
-  scheduler.schedule(pgid, 0.01, [&] { superseded = true; });
-  scheduler.schedule(pgid, 60, [&] { scanned.set_value(); });
+  worker.schedule(pgid, 0.01, [&] { superseded = true; });
+  worker.schedule(pgid, 60, [&] { scanned.set_value(); });
   release.set_value();
   EXPECT_EQ(scanned_future.wait_for(std::chrono::seconds(5)),
             std::future_status::ready);
-  scheduler.shutdown();
+  worker.shutdown();
   EXPECT_FALSE(superseded);
 }
 

@@ -17,10 +17,10 @@ namespace ceph::weave {
 
 // One worker per OSD services delayed scans and CPU work. Objecter I/O must be
 // asynchronous: callbacks must not wait for another callback on this worker.
-class WeaveScheduler {
+class WeaveWorker {
 public:
-  explicit WeaveScheduler(CephContext* cct);
-  ~WeaveScheduler();
+  explicit WeaveWorker(CephContext* cct);
+  ~WeaveWorker();
 
   // Coalesce the pending scan without postponing its earliest deadline.
   // Cancellation cannot recall a running callback; validate PG role/epoch.
@@ -45,13 +45,13 @@ private:
     Deadlines::iterator deadline;
     std::function<void()> callback;
   };
-  struct Worker final : Thread {
-    explicit Worker(WeaveScheduler& scheduler) : scheduler_(scheduler) {}
+  struct WorkerThread final : Thread {
+    explicit WorkerThread(WeaveWorker& worker) : worker_(worker) {}
     void* entry() override {
-      scheduler_.run();
+      worker_.run();
       return nullptr;
     }
-    WeaveScheduler& scheduler_;
+    WeaveWorker& worker_;
   };
 
   // The worker loop and its two blocking steps; all require mutex_.
@@ -64,7 +64,7 @@ private:
                       std::function<void()>& discarded);
 
   CephContext* const cct_;
-  ceph::mutex mutex_ = ceph::make_mutex("weave::WeaveScheduler");
+  ceph::mutex mutex_ = ceph::make_mutex("weave::WeaveWorker");
   ceph::condition_variable cond_;
   bool stopping_ = false;
   Deadlines deadlines_;
@@ -72,7 +72,7 @@ private:
   std::deque<std::function<void()>> work_;
   std::set<spg_t> active_;
   std::once_flag stopped_;
-  Worker worker_;
+  WorkerThread thread_;
 };
 
 }  // namespace ceph::weave
