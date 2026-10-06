@@ -1942,8 +1942,7 @@ public:
   // Caller holds the PG lock; completion also runs under that lock.
   void request_weave_reclaim(unsigned live_percent,
                              std::function<void()> on_finish);
-  void schedule_weave_work();
-  Context* on_clean() override;
+  void scan_weave_candidates();
 
 private:
   DynamicPerfStats m_dynamic_perf_stats;

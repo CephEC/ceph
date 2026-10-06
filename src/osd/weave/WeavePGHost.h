@@ -17,7 +17,6 @@ struct WeavePolicy {
   bool background = true;
   uint64_t min_size = 1 << 20;
   double quiet_seconds = 30;
-  double scan_seconds = 5;
   // Derived from native object/request limits, not a separate Weave setting.
   uint64_t max_volume_size = 0;
   unsigned padding_percent = 10;
@@ -45,6 +44,10 @@ struct WeaveObjectState {
 using WeaveAttrs = std::map<std::string, ceph::buffer::list>;
 using WeaveVolumeAttrs = std::vector<std::pair<hobject_t, ceph::buffer::list>>;
 using WeaveCompletion = std::function<void(int)>;
+
+// Independent continuations: one kind must never replace another's callback.
+// Candidate scans are driven by the OSD's periodic scan, not by these retries.
+enum class WeaveRetryKind { kMaterialization, kCleanup, kConversion };
 
 // Move-only ownership of one conversion slot. Release is thread safe and
 // idempotent; PG reservations are retired by the job's serialized completion.
@@ -104,8 +107,8 @@ public:
                                    const WeaveReadRoute&) = 0;
 
   virtual std::unique_ptr<WeaveLease> acquire() = 0;
-  virtual void schedule(double seconds, std::function<void()>) = 0;
-  virtual void cancel_wakeup() = 0;
+  virtual void retry(WeaveRetryKind, std::function<void()>) = 0;
+  virtual void cancel_retries() = 0;
   // post() runs CPU work without the PG lock. serialized() reacquires it.
   virtual void post(std::function<void()>) = 0;
   virtual void serialized(std::function<void()>) = 0;

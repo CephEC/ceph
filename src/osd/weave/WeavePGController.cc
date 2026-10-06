@@ -21,7 +21,7 @@ void WeavePGController::on_pg_change(bool requeue) {
   impl_->on_pg_change(requeue);
 }
 
-void WeavePGController::schedule_work() { impl_->schedule_work(); }
+void WeavePGController::scan_candidates() { impl_->scan_candidates(); }
 
 RequestDisposition WeavePGController::prepare_request(OpRequestRef& op) {
   return impl_->prepare_request(op);

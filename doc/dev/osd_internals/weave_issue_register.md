@@ -161,7 +161,7 @@
 
 **原始根因：**打包在 Volume 落盘之后才复核源版本；物化在删卷之前撤销内存映射。`unpublished_or_retired_` 只在内存中排除尚未发布或已经撤下的 Volume，控制器重建后丢失排除信息。
 
-代码：[WeaveConversionJob.cc](../../../src/osd/weave/detail/WeaveConversionJob.cc) 的 `build_volume`、`resolve_volume`、`write_member`、`retire_volume`；[WeavePGControllerImpl.cc](../../../src/osd/weave/detail/WeavePGControllerImpl.cc) 的 `reload_metadata`、`start_job`、`prepare_request`；[WeaveCatalog.cc](../../../src/osd/weave/detail/WeaveCatalog.cc) 的整体加载。
+代码：[WeaveConversionJob.cc](../../../src/osd/weave/detail/WeaveConversionJob.cc) 的 `build_volume`、`resolve_volume`、`submit_member_write`、`submit_volume_remove`；[WeavePGControllerImpl.cc](../../../src/osd/weave/detail/WeavePGControllerImpl.cc) 的 `reload_metadata`、`start_job`、`prepare_request`；[WeaveCatalog.cc](../../../src/osd/weave/detail/WeaveCatalog.cc) 的整体加载。
 
 原诊断模型执行过如下链路：
 
@@ -229,11 +229,11 @@ v1 编解码限制只会在读取格式时暴露不兼容；目前没有对应�
 
 **状态：模型复现及静态确认／未修复。打包来源删除持续 EIO 已有真实测试；尚未开展真实满盘、成员物化写入或删卷永久错误测试。**
 
-覆盖写、不支持的操作和快照访问必须先物化；它们使用和可选后台打包相同的 `acquire`。`osd_weave_max_concurrent=0` 会拒绝所有租约，因此这些前台操作也会持续等待。`write_member`／`retire_volume` 对所有负返回值重试，没有区分临时错误、永久错误或可向等待客户端返回的失败。
+覆盖写、不支持的操作和快照访问必须先物化；它们使用和可选后台打包相同的 `acquire`。`osd_weave_max_concurrent=0` 会拒绝所有租约，因此这些前台操作也会持续等待。`submit_member_write`／`submit_volume_remove` 对所有负返回值重试，没有区分临时错误、永久错误或可向等待客户端返回的失败。
 
 2026-09-16 补充模型复现：即使没有 I/O 错误、租约可用，Volume 持续存在共享读者时，`start_deaggregation` 也会在建立成员预留前返回；新读仍被接纳，等待的覆盖写无法启动物化。连续 10 次调度与请求重试均无转换 I/O；读者排空后才启动并完成。必要物化缺少公平准入，不能依赖偶然出现的无读者窗口。另一个模型验证租约持续不可用时前台写不推进也不报错，恢复租约后才完成。
 
-代码：Controller 的 `start_deaggregation`／`preprocess_client_op`；ConversionJob 的 `write_member`／`retire_volume`；[WeaveWorker.cc](../../../src/osd/weave/detail/WeaveWorker.cc) 的 `try_acquire`。
+代码：Controller 的 `start_deaggregation`／`preprocess_client_op`；ConversionJob 的 `submit_member_write`／`submit_volume_remove`；[WeaveWorker.cc](../../../src/osd/weave/detail/WeaveWorker.cc) 的 `try_acquire`。
 
 由代码推断：一个无法完成的转换会长期保留 PG 的转换槽、逻辑对象预留及 OSD 租约，默认并发为 1 时还会影响其他 PG。满盘时先写存活成员再删卷需要额外空间；已有文档说明了这个空间前提，但尚无完整的失败恢复和前台可用性策略。
 
@@ -251,7 +251,7 @@ v1 编解码限制只会在读取格式时暴露不兼容；目前没有对应�
 
 **例子：**同一组对象因持续读错误反复尝试打包，每次都没有成功生成卷，却持续留下新的“未发布卷”记录。F5 的 4096 候选上限约束不到这个集合。
 
-代码：[WeavePGControllerImpl.cc](../../../src/osd/weave/detail/WeavePGControllerImpl.cc) 的 `scan`、`start_job`／`hooks.finish`；[WeaveConversionJob.cc](../../../src/osd/weave/detail/WeaveConversionJob.cc) 的 `read_member`、`build_volume`；WeaveCephHost 的 `new_volume`。
+代码：[WeavePGControllerImpl.cc](../../../src/osd/weave/detail/WeavePGControllerImpl.cc) 的 `scan`、`start_job`／`hooks.finish`；[WeaveConversionJob.cc](../../../src/osd/weave/detail/WeaveConversionJob.cc) 的 `submit_member_read`、`build_volume`；WeaveCephHost 的 `new_volume`。
 
 **修复：**采用 D1 的元数据提交协议，移除该集合；提交后丢回调的卷作为有效卷加载，不能作为失败垃圾删除。
 

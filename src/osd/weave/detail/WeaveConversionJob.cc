@@ -105,8 +105,8 @@ bool WeaveConversionJob::accept_completion(uint64_t sequence) {
 }
 
 void WeaveConversionJob::retry(std::function<void()> callback) {
-  // Retry one scan interval later, and only while the epoch is still ours.
-  host_.schedule(host_.policy().scan_seconds,
+  // Retry this job's failed step, independently of scans and cleanup retries.
+  host_.retry(WeaveRetryKind::kConversion,
     [self = shared_from_this(), callback = std::move(callback)] {
       if (self->current()) callback();
     });
@@ -118,55 +118,55 @@ void WeaveConversionJob::start() {
 
   if (packing()) {
     ceph_assert(!members_.empty());
-    read_member(0);
+    submit_member_read(0);
   } else if (members_.empty()) {
     // A volume with no members has nothing left to restore.
-    retire_volume();
+    submit_volume_remove();
   } else {
-    read_volume();
+    submit_volume_read();
   }
 }
 
-void WeaveConversionJob::read_volume() {
+void WeaveConversionJob::submit_volume_read() {
   auto& unpack = std::get<UnpackState>(state_);
   stage_ = Stage::kReadingVolume;
   tid_ = host_.read(volume_.volume_oid, unpack.version, unpack.size,
     &unpack.volume.data, &unpack.volume.attrs, completion([this](int r) {
-      volume_read(r);
+      on_volume_read_complete(r);
     }));
 }
 
-void WeaveConversionJob::volume_read(int r) {
+void WeaveConversionJob::on_volume_read_complete(int r) {
   if (r < 0) {
     finish({false, r});
     return;
   }
 
   stage_ = Stage::kMaterializing;
-  // materialize() is CPU work, so it is posted outside the lock.
-  host_.post([self = shared_from_this()] { self->materialize(); });
+  // materialize_members() is CPU work, so it is posted outside the lock.
+  host_.post([self = shared_from_this()] { self->materialize_members(); });
 }
 
 // Enters kReadingMembers, one member per round trip.
-void WeaveConversionJob::read_member(size_t index) {
+void WeaveConversionJob::submit_member_read(size_t index) {
   stage_ = Stage::kReadingMembers;
   const auto& member = members_[index];
 
   // One member per round trip; the next read starts from this reply.
   tid_ = host_.read(member.oid, member.user_version, member.size,
     &data_[index].data, &data_[index].attrs, completion([this, index](int r) {
-      member_read(index, r);
+      on_member_read_complete(index, r);
     }));
 }
 
-void WeaveConversionJob::member_read(size_t index, int r) {
+void WeaveConversionJob::on_member_read_complete(size_t index, int r) {
   // A short read would truncate the interleave, so fail the job instead.
   if (r < 0 || data_[index].data.length() != members_[index].size) {
     finish({true});
     return;
   }
 
-  if (index + 1 < members_.size()) read_member(index + 1);
+  if (index + 1 < members_.size()) submit_member_read(index + 1);
   else {
     stage_ = Stage::kBuildingVolume;
     host_.post([self = shared_from_this()] { self->build_volume(); });
@@ -181,17 +181,17 @@ void WeaveConversionJob::build_volume() {
 
   // Submit only under the PG lock, and only while the epoch is still ours.
   host_.serialized([self = shared_from_this(), valid] {
-    self->volume_built(valid);
+    self->on_volume_build_complete(valid);
   });
 }
 
-void WeaveConversionJob::volume_built(bool valid) {
+void WeaveConversionJob::on_volume_build_complete(bool valid) {
   if (!current()) return;
   if (!valid) {
     finish({true});
     return;
   }
-  submit_volume();
+  submit_volume_write();
 }
 
 bool WeaveConversionJob::compose_volume(PackState& pack) {
@@ -220,7 +220,7 @@ void WeaveConversionJob::collect_member_attrs(WeaveAttrs& attrs) const {
 }
 
 // Enters kWritingVolume, then kPublishing once the volume is durable.
-void WeaveConversionJob::submit_volume() {
+void WeaveConversionJob::submit_volume_write() {
   // Called under the PG lock, while the controller still holds the
   // reservations this write depends on.
   if (!hooks_.validate()) {
@@ -234,11 +234,11 @@ void WeaveConversionJob::submit_volume() {
   host_.conversion_checkpoint("pack_before_write");
   tid_ = host_.write(volume_.volume_oid, volume.data, volume.attrs,
     utime_t(ceph::real_clock::now()), false, completion([this](int r) {
-      volume_written(r);
+      on_volume_write_complete(r);
     }));
 }
 
-void WeaveConversionJob::volume_written(int r) {
+void WeaveConversionJob::on_volume_write_complete(int r) {
   if (r < 0) {
     resolve_volume(r);
     return;
@@ -252,7 +252,7 @@ void WeaveConversionJob::volume_written(int r) {
   host_.conversion_checkpoint("pack_published");
 
   // Sources are only removed once the packed volume can be reloaded.
-  retire_member(0);
+  submit_member_remove(0);
 }
 
 // Enters kResolvingVolume.
@@ -271,31 +271,31 @@ void WeaveConversionJob::resolve_volume(int error) {
 }
 
 // Enters kRetiringMembers, one member per round trip.
-void WeaveConversionJob::retire_member(size_t index) {
+void WeaveConversionJob::submit_member_remove(size_t index) {
   stage_ = Stage::kRetiringMembers;
   const auto& member = members_[index];
 
   host_.conversion_checkpoint("source_before_remove", index);
   tid_ = host_.remove(member.oid, member.user_version,
     completion([this, index](int r) {
-      member_retired(index, r);
+      on_member_remove_complete(index, r);
     }));
 }
 
-void WeaveConversionJob::member_retired(size_t index, int r) {
+void WeaveConversionJob::on_member_remove_complete(size_t index, int r) {
   // A member already gone counts as retired; anything else is retried.
   if (r < 0 && r != -ENOENT) {
-    retry([this, index] { retire_member(index); });
+    retry([this, index] { submit_member_remove(index); });
     return;
   }
 
   host_.conversion_checkpoint("source_removed", index);
-  if (index + 1 < members_.size()) retire_member(index + 1);
+  if (index + 1 < members_.size()) submit_member_remove(index + 1);
   else finish({false});
 }
 
 // Runs the kMaterializing CPU phase, then submits the restored members.
-void WeaveConversionJob::materialize() {
+void WeaveConversionJob::materialize_members() {
   const auto& volume = std::get<UnpackState>(state_).volume;
   // Restore every member from the packed volume before touching host state.
   bool valid = true;
@@ -305,17 +305,17 @@ void WeaveConversionJob::materialize() {
 
   // Writing restored members requires the PG lock.
   host_.serialized([self = shared_from_this(), valid] {
-    self->members_materialized(valid);
+    self->on_members_materialization_complete(valid);
   });
 }
 
-void WeaveConversionJob::members_materialized(bool valid) {
+void WeaveConversionJob::on_members_materialization_complete(bool valid) {
   if (!current()) return;
   if (!valid) {
     finish({false, -EIO});
     return;
   }
-  write_member(0);
+  submit_member_write(0);
 }
 
 bool WeaveConversionJob::extract_member(
@@ -356,44 +356,44 @@ void WeaveConversionJob::extract_member_attrs(size_t index, const WeaveAttrs& at
 }
 
 // Enters kWritingMembers, one member per round trip.
-void WeaveConversionJob::write_member(size_t index) {
+void WeaveConversionJob::submit_member_write(size_t index) {
   stage_ = Stage::kWritingMembers;
   const auto& member = members_[index];
 
   host_.conversion_checkpoint("member_before_write", index);
   tid_ = host_.write(member.oid, data_[index].data, data_[index].attrs,
     member.mtime, true, completion([this, index](int r) {
-      member_written(index, r);
+      on_member_write_complete(index, r);
     }));
 }
 
-void WeaveConversionJob::member_written(size_t index, int r) {
+void WeaveConversionJob::on_member_write_complete(size_t index, int r) {
   if (r < 0) {
-    retry([this, index] { write_member(index); });
+    retry([this, index] { submit_member_write(index); });
     return;
   }
 
   host_.conversion_checkpoint("member_written", index);
   // Every member must be back natively before the volume is retired.
-  if (index + 1 < members_.size()) write_member(index + 1);
-  else retire_volume();
+  if (index + 1 < members_.size()) submit_member_write(index + 1);
+  else submit_volume_remove();
 }
 
 // Enters kRetiringVolume, then kDetaching once the volume is gone.
-void WeaveConversionJob::retire_volume() {
+void WeaveConversionJob::submit_volume_remove() {
   stage_ = Stage::kRetiringVolume;
 
   host_.conversion_checkpoint("volume_before_remove");
   tid_ = host_.remove(volume_.volume_oid, std::nullopt,
     completion([this](int r) {
-      volume_retired(r);
+      on_volume_remove_complete(r);
     }));
 }
 
-void WeaveConversionJob::volume_retired(int r) {
+void WeaveConversionJob::on_volume_remove_complete(int r) {
   // A volume that is already gone needs no further removal attempt.
   if (r < 0 && r != -ENOENT) {
-    retry([this] { retire_volume(); });
+    retry([this] { submit_volume_remove(); });
     return;
   }
 

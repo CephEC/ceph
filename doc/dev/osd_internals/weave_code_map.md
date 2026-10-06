@@ -57,8 +57,8 @@ graph TB
 | `detail/WeaveLayout.h` | 100 | 私有位标志 + 交错布局 |
 | `detail/WeaveXAttr.h` | 54 | 属性名、私有 namespace、xattr 前缀与载荷重建 |
 | `detail/WeaveCandidateIndex.{h,cc}` | 90/212 | 有界候选集 + 选组算法 |
-| `detail/WeaveWorker.{h,cc}` | 77/224 | 每 OSD 单工作线程：延迟扫描 + CPU 工作 + 租约槽 |
-| `WeaveService.{h,cc}` | 45/116 | 每 OSD 服务：回收单飞、租约、调度入口 |
+| `detail/WeaveWorker.{h,cc}` | — | 每 OSD 单工作线程：按用途分开的转换重试 + CPU 工作 + 租约槽 |
+| `WeaveService.{h,cc}` | — | 每 OSD 服务：周期候选扫描、回收单飞、租约、转换重试 |
 | `detail/WeaveReclaimTimer.h` | 88 | 严格 `HH:MM` UTC 每日触发，含跨日/回拨高水位 |
 | `WeaveECAdapter.{h,cc}` | 66/188 | EC 后端适配：成员 extent 换算、`decode_member`、data-class 执行 |
 | `WeaveReadRoute.h` | 39 | 线上路由结构 |
@@ -123,7 +123,7 @@ WeaveVolumeMeta { hobject_t volume_oid; uint32 data_shards; uint64 slot_size;
 | `kVolumeNamespace` | `.ceph-internal-weave` | `WeaveXAttr.h:19-20` |
 | 成员属性前缀 | `"weave." + oid.to_str() + "."` | `WeaveXAttr.h:20-27` |
 
-打包时每个成员属性加前缀后合并进 Volume 属性集合（`WeaveConversionJob.cc:171-193` `compose_volume`），元数据以 `volume_meta` 与数据**同一对象事务**写入（`submit_volume`，`WeaveConversionJob.cc:195-219`）。
+打包时每个成员属性加前缀后合并进 Volume 属性集合（`WeaveConversionJob.cc:171-193` `compose_volume`），元数据以 `volume_meta` 与数据**同一对象事务**写入（`submit_volume_write`，`WeaveConversionJob.cc:195-219`）。
 
 客户端可见的 xattr 名映射：PG 把 onode 属性投影为「下划线 + 名字」，所以用户看到 `volume_meta`/用户自定义名，存储层看到 `_volume_meta`/`_<name>`；逻辑成员读时物理键为 `weave.<oid>.` 前缀，回复再剥掉前缀（`WeaveMemberTranslator.cc:210-216,368-393`；`PrimaryLogPG.cc:6564,6605,7736,7755`）。
 
@@ -177,7 +177,7 @@ header.version = (HAVE_FEATURE(features, WEAVE_READ_REDIRECT) &&
 
 ```mermaid
 stateDiagram-v2
-  [*] --> kReadingMembers: read_member(0) 逐个 assert_version 读源
+  [*] --> kReadingMembers: submit_member_read(0) 逐个 assert_version 读源
   kReadingMembers --> kBuildingVolume: 全部读完 → host.post(CPU)
   kBuildingVolume --> kWritingVolume: serialized() 后 validate() 在 PG 锁内复核
   kWritingVolume --> kPublishing: Volume 写提交（数据 + volume_meta 同事务）
@@ -208,7 +208,15 @@ volume_size * 100 <= sum * (padding_percent + 100)      // 128 位宽运算，�
 
 ### 3.3 调度与唤醒
 
-`schedule_work()` 把候选变更合并成一次 PG 唤醒，`scan_seconds` 后 `run_scheduled_work()` 执行，优先级固定为：**等待中的请求 requeue > 清理轮次 > 候选扫描**（`WeavePGControllerImpl.cc:187-236`）。唤醒闭包持有 `host_->pin()` 与 `generation_`，角色变化即失效。PG 从恢复转到 clean 时 `on_clean()` 补一次通知（`PrimaryLogPG.cc:1828-1833`，修 F6）。
+三个流程各有自己的入口，不再通过 `schedule_work()` / `run_scheduled_work()` 推测唤醒用途：
+
+- **候选扫描**：前台 `on_commit()` 只更新候选及最后变更时间。`OSD::tick()` 调用 `WeaveService::scan_candidates()`，按 `osd_weave_scan_interval` 取得 PG 快照并异步访问各 EC 主 PG；Controller 的 `scan_candidates()` 只选择、检查并尝试打包候选。候选未冷却、不能配组或无并发槽时直接返回，等下一轮扫描。扫描期间有转换、清理或等待的前台请求时让出，不负责推进这些流程。
+- **前台物化**：请求准入立即尝试物化。若 Volume 忙或没有并发槽，`schedule_materialization_retry()` 只安排原始请求重新进入 PG 准入；已有转换时由该任务的完成回调交还请求。
+- **清理**：`request_cleanup()` 直接进入 `resume_cleanup()`，一次转换完成后继续推进。Volume 忙、无并发槽或需要先交还前台请求时，`schedule_cleanup_retry()` 只继续本轮清理；角色或 clean 状态不再允许工作时结束本轮。
+
+周期扫描最多有一个 OSD 级扫描轮次在途；配置变化、PG 转为 clean 都由后续扫描观察，不需要前台写或额外调度钩子。`scan_interval = 0` 表示每次 OSD tick 都可扫描，实际分辨率受 tick 周期约束。
+
+资源及转换失败仍使用 1 秒重试，与候选扫描间隔独立。Worker 以 `(pgid, WeaveRetryKind)` 保存回调，区分物化、清理及转换步骤，防止彼此覆盖。重试闭包持有 PG 引用并校验角色代数或任务 epoch；PG 变化取消全部重试。资源释放通知尚未接入，因此上述资源等待保留短周期重试。
 
 ### 3.4 提交与交付顺序
 
@@ -238,9 +246,9 @@ volume_size * 100 <= sum * (padding_percent + 100)      // 128 位宽运算，�
 
 ### 4.2 流程
 
-`read(volume, assert_version, size)` → `host_.post(materialize)`（CPU）→ `extract_member` 逐成员还原数据与属性 → `host_.serialized` → 逐个 `write(member, replace=true, mtime, assert/copy 版本)`，其中 `copy_version`/`copy_snap_sequence` 把 `user_version` 与原 `snapset.seq` 交还原生路径（`PrimaryLogPG.cc:9197-9202`、`4295-4299`，修 F1）→ 全部成员持久化后才 `remove(volume)` → 删卷提交后 `hooks_.detach()` 撤映射（`WeaveConversionJob.cc:255-340`）。
+`read(volume, assert_version, size)` → `host_.post(materialize_members)`（CPU）→ `extract_member` 逐成员还原数据与属性 → `host_.serialized` → 逐个 `write(member, replace=true, mtime, assert/copy 版本)`，其中 `copy_version`/`copy_snap_sequence` 把 `user_version` 与原 `snapset.seq` 交还原生路径（`PrimaryLogPG.cc:9197-9202`、`4295-4299`，修 F1）→ 全部成员持久化后才 `remove(volume)` → 删卷提交后 `hooks_.detach()` 撤映射（`WeaveConversionJob.cc:255-340`）。
 
-**Volume 删除事务是交还原生对象的提交点**：删除确认前不撤映射、不释放预留；空卷（成员为空）走同一路径但直接进入 `retire_volume`（`:112-134`）。
+**Volume 删除事务是交还原生对象的提交点**：删除确认前不撤映射、不释放预留；空卷（成员为空）走同一路径但直接进入 `submit_volume_remove`（`:112-134`）。
 
 ### 4.3 回收（reclaim）
 
@@ -352,12 +360,12 @@ sequenceDiagram
 | `do_request` / `do_op` | `prepare_request`（`:2073`）/ `preprocess_client_op`（`:2288`） |
 | 提交回调 | `on_commit`（`:4468-4471`）、`finish_reply`（`:4481`、`:9350-9351`、`:2780-2781`）、错误回复前 `finish_request`（`:2046`） |
 | 恢复 | `on_recovery_progress`（`:495,546,13464,13505`）、`initialize`（`:2062,12722,12738`） |
-| PG 变化 | `on_pg_change(false)`（`:13163`）、`on_pg_change()`（`:13291`） |
+| PG 变化 | `on_pg_change(false)`、`on_pg_change()`；取消该 PG 的全部重试 |
 | 列举/过滤 | `merge_listing`（`:1342-1343`）、`is_private_object`/`is_logical_member`（`:1395-1400`）、`listing_attribute`（`:938-941`） |
 | 语义查询 | 逻辑 STAT（`:6400`）、getxattrs 过滤（`:6590`）、`logical_user_version`（`:6670,9336`）、`internal_copy_version`（`:9197`）、`internal_copy_snap_sequence`（`:4295`）、`get_cls_ctx`（`:6245`）、`translate_native_class_ops`（`:6142`） |
 | DELETE | `prepare_member_delete` + `WeaveTransaction`（`:7162-7172`） |
 | 副本读准入 | `do_op` 允许带 `weave_read_route` 或 `BALANCE_READS/LOCALIZE_READS` 的只读落到非 primary（`:2129-2137`） |
-| OSD 级 | `OSDService::weave_service`（`OSD.cc:313`）、`shutdown`（`:320,497,4344`）、`tick`（`:6129`）、配置观察（`:10044-10060`）、命令（`:2544-2557`） |
+| OSD 级 | `OSDService::weave_service`、`shutdown`、`tick`（候选周期扫描 + 每日回收检查）、回收时间配置观察、命令 |
 | 客户端 | `op_target_t::weave_read`（`Objecter.h:1803`）、`_calc_target`（`Objecter.cc:2915,2997`）、`_prepare_osd_op`（`:3221`）、回复处理（`:3457`）、reset（`:4504`） |
 
 ## 9. 配置项
@@ -370,7 +378,7 @@ sequenceDiagram
 | `osd_weave_background_enabled` | bool / `true` | `WeavePolicy.background` → `can_scan()` |
 | `osd_weave_min_object_size` | size / `1_M` | 候选准入 |
 | `osd_weave_quiet_period` | float / `30` | 停滞判定 |
-| `osd_weave_scan_interval` | float / `5` | 唤醒延迟 |
+| `osd_weave_scan_interval` | float / `5` | OSD 级候选扫描间隔；0 表示每次 tick；不控制转换重试 |
 | `osd_max_object_size` / `osd_max_write_size` | 系统已有配置 | 推导 Volume 数据上限；提交前另检查数据及属性的总载荷 |
 | `osd_weave_max_concurrent` | uint / `1` | 全局转换槽（**0 会同时拒绝前台必要物化**） |
 | `osd_weave_max_padding_percent` | uint / `10` | 选组填充预算 |
@@ -411,7 +419,7 @@ bash src/test/weave/concurrent_pack_reads.sh /root/ceph/build /tmp/weave-pack-re
 | D2 PG split/merge | `new_volume` 只继承**单个种子成员**的 hash/pool（`WeaveCephHost.cc:129-140`），Catalog 无跨 PG 协调；split 后 Volume 只能跟随一个 hash | 代码可确认；台账记录已在真机复现「已确认写入被旧映射遮蔽」 |
 | D3 启停/版本准入 | 无池级持久化特性标志与最低版本准入；`osd_weave_enabled=false` 直接走原生路径，磁盘 Volume 不装载也不拒绝该配置（`PrimaryLogPG.cc:1794-1800`、`WeavePGControllerImpl.cc:46-63`） | 代码可确认 |
 | D4 冷数据再发现 | 候选只由提交事件喂入，`on_pg_change` 直接 `candidates_.clear()`，`initialize` 只装载 Catalog，无原生对象扫描/游标 | `WeavePGControllerImpl.cc:154-186,229-236` |
-| D5 必要物化资源 | `start_deaggregation` 遇 Volume busy 或无租约即返回；`write_member`/`retire_volume` 对所有负返回一律 `retry()`，无错误分类与空间准入 | `:377-409`、`WeaveConversionJob.cc:305-340` |
+| D5 必要物化资源 | `start_deaggregation` 遇 Volume busy 或无租约即返回；`submit_member_write`/`submit_volume_remove` 对所有负返回一律 `retry()`，无错误分类与空间准入 | `:377-409`、`WeaveConversionJob.cc:305-340` |
 | D7 下推资源预算 | `execute_data_class` 在 OSD 进程内直接执行插件，无独立内存/时限预算 | `WeaveECAdapter.cc:30-59` |
 | D6 失败打包记录增长 | 随 D1 修复移除内存 `unpublished_or_retired_` 集合，改由磁盘映射裁决 | `:65-101` |
 | D8 清理无结果 | `weave cleanup` 只回 `accepted`/`already_running`，完成回调不携带统计 | `OSD.cc:2544-2557`、`WeaveService.cc:58-78` |

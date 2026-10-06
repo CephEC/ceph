@@ -6096,6 +6096,20 @@ bool OSD::heartbeat_reset(Connection *con)
 
 // =========================================
 
+ceph::weave::WeaveService::Scan OSD::snapshot_weave_candidates()
+{
+  ceph_assert(ceph_mutex_is_locked(osd_lock));
+  std::vector<PGRef> pgs;
+  _get_pgs(&pgs);
+  return [pgs = std::move(pgs)] {
+    for (const auto& pg : pgs) {
+      std::lock_guard<PG> lock(*pg);
+      if (!pg->is_deleted() && pg->is_primary() && pg->get_pool().info.is_erasure())
+        static_cast<PrimaryLogPG*>(pg.get())->scan_weave_candidates();
+    }
+  };
+}
+
 ceph::weave::WeaveService::Dispatch OSD::snapshot_weave_reclaim()
 {
   ceph_assert(ceph_mutex_is_locked(osd_lock));
@@ -6129,6 +6143,12 @@ void OSD::tick()
   service.weave_service->tick(now.sec(), !is_stopping() && is_active(),
     cct->_conf.get_val<uint64_t>("osd_weave_cleanup_live_percent"),
     [this] { return snapshot_weave_reclaim(); });
+  // Candidate scans have one OSD-wide cadence. Commits, PG clean transitions
+  // and policy changes are observed on the next pass without arming PG timers.
+  if (!is_stopping() && is_active() && cct->_conf->osd_weave_background_enabled) {
+    service.weave_service->scan_candidates(cct->_conf->osd_weave_scan_interval,
+      [this] { return snapshot_weave_candidates(); });
+  }
   // throw out any obsolete markdown log
   utime_t grace = utime_t(cct->_conf->osd_max_markdown_period, 0);
   while (!osd_markdown_log.empty() &&
@@ -10047,28 +10067,6 @@ void OSD::handle_conf_change(const ConfigProxy& conf,
       conf.get_val<std::string>("osd_weave_cleanup_time"),
       ceph_clock_now().sec()));
   }
-  if ((changed.count("osd_weave_background_enabled") ||
-       changed.count("osd_weave_min_object_size") ||
-       changed.count("osd_max_object_size") ||
-       changed.count("osd_max_write_size") ||
-       changed.count("osd_weave_quiet_period") ||
-       changed.count("osd_weave_scan_interval") ||
-       changed.count("osd_weave_max_padding_percent")) &&
-      service.weave_service && !is_stopping()) {
-    // Candidates restored while scanning was disabled must not require a new
-    // foreground commit to wake up. Do not acquire PG locks under osd_lock.
-    std::vector<PGRef> pgs;
-    _get_pgs(&pgs);
-    service.weave_service->wake_candidates([pgs = std::move(pgs)] {
-      for (const auto& pg : pgs) {
-        std::lock_guard<PG> l(*pg);
-        if (!pg->is_deleted() && pg->is_primary() &&
-            pg->get_pool().info.is_erasure())
-          static_cast<PrimaryLogPG*>(pg.get())->schedule_weave_work();
-      }
-    });
-  }
-
   if (changed.count("osd_max_backfills") ||
       changed.count("osd_delete_sleep") ||
       changed.count("osd_delete_sleep_hdd") ||

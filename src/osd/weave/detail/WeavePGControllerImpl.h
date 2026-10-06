@@ -49,8 +49,8 @@ public:
   void finish_reply(const OpRequestRef&, MOSDOpReply*);
   void finish_request(const OpRequestRef&);
 
-  // Background scheduling. schedule_work() coalesces one PG wakeup.
-  void schedule_work();
+  // Called by the OSD's periodic candidate scan, never by a write completion.
+  void scan_candidates();
 
   // Native query surface.
   ClsParmContext* get_cls_ctx(const OpRequestRef&, std::size_t) const;
@@ -87,14 +87,15 @@ private:
   void fail_recovery_waiters();
 
   // Background work.
-  void run_scheduled_work();
   void configure_candidates();
-  void scan();
   std::vector<WeaveCandidate> select_packable(
     const WeaveGeometry&, const WeavePolicy&, std::vector<hobject_t>& stale);
   bool candidate_available(const WeaveCandidate&, std::vector<hobject_t>& stale);
   WeaveVolumeMeta plan_volume(const std::vector<WeaveCandidate>&,
                               const WeaveGeometry&);
+  // Cleanup progresses from its request and each conversion completion.
+  void resume_cleanup();
+  void schedule_cleanup_retry();
   void scan_cleanup();
   bool volume_needs_reclaim(
     const std::shared_ptr<const WeaveVolumeMeta>&) const;
@@ -118,6 +119,8 @@ private:
   void release_reservations(uint64_t identity, bool restore_candidates);
   void cancel_job();
   void fail_waiters(int error);
+  // A foreground materialization that could not start retries admission.
+  void schedule_materialization_retry();
 
   // Request admission. Each predicate reports whether the request must be
   // rejected or deferred; the caller owns the reply.

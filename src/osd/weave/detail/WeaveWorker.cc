@@ -3,12 +3,13 @@
 
 #include <algorithm>
 #include <chrono>
-#include <cmath>
 #include <utility>
+#include <vector>
 
 #include "common/ceph_context.h"
 #include "common/config.h"
 #include "include/ceph_assert.h"
+#include "osd/weave/WeavePGHost.h"
 
 namespace ceph::weave {
 
@@ -23,13 +24,12 @@ WeaveWorker::~WeaveWorker()
   shutdown();
 }
 
-void WeaveWorker::schedule(
-  const spg_t& pgid, double delay_seconds, std::function<void()> callback)
+void WeaveWorker::retry(
+  const spg_t& pgid, WeaveRetryKind kind,
+  std::function<void()> callback)
 {
-  if (!callback || std::isnan(delay_seconds)) {
-    return;
-  }
-  const auto when = deadline_for(delay_seconds);
+  if (!callback) return;
+  const auto when = ceph::mono_clock::now() + std::chrono::seconds(1);
 
   // Releasing a captured PGRef can run a destructor. Always do that outside
   // the worker lock, including replacement, cancellation, and shutdown.
@@ -40,24 +40,24 @@ void WeaveWorker::schedule(
       return;
     }
 
-    publish_locked(pgid, when, std::move(callback), discarded);
+    publish_locked({pgid, kind}, when, std::move(callback), discarded);
   }
 }
 
 void WeaveWorker::cancel(const spg_t& pgid)
 {
-  // Hold the cancelled callback until the lock is dropped; destroying it may
+  // Hold cancelled callbacks until the lock is dropped; destroying them may
   // run a PGRef destructor.
-  std::function<void()> discarded;
+  std::vector<std::function<void()>> discarded;
   {
     std::lock_guard l(mutex_);
-    auto p = scans_.find(pgid);
-    if (p != scans_.end()) {
+    auto p = retries_.lower_bound({pgid, WeaveRetryKind::kMaterialization});
+    while (p != retries_.end() && p->first.first == pgid) {
       deadlines_.erase(p->second.deadline);
-      discarded = std::move(p->second.callback);
-      scans_.erase(p);
-      cond_.notify_one();
+      discarded.push_back(std::move(p->second.callback));
+      p = retries_.erase(p);
     }
+    cond_.notify_one();
   }
 }
 
@@ -114,8 +114,7 @@ void WeaveWorker::run()
 
 bool WeaveWorker::take_next_locked(std::function<void()>& callback)
 {
-  // Give posted job progress precedence over scans, including a configured
-  // zero scan interval that can continually enqueue immediately-due scans.
+  // Posted job progress runs before deferred retry callbacks.
   const auto now = ceph::mono_clock::now();
   if (!work_.empty()) {
     callback = std::move(work_.front());
@@ -127,10 +126,10 @@ bool WeaveWorker::take_next_locked(std::function<void()>& callback)
     return false;
   }
   auto first = deadlines_.begin();
-  auto p = scans_.find(first->second);
-  ceph_assert(p != scans_.end());
+  auto p = retries_.find(first->second);
+  ceph_assert(p != retries_.end());
   callback = std::move(p->second.callback);
-  scans_.erase(p);
+  retries_.erase(p);
   deadlines_.erase(first);
   return true;
 }
@@ -142,56 +141,24 @@ void WeaveWorker::wait_locked(std::unique_lock<ceph::mutex>& l,
     cond_.wait(l);
     return;
   }
-  // Bound the OS wait duration even for saturated/infinite deadlines; chrono's
-  // native timed wait may use a signed duration representation.
-  const auto remaining = deadlines_.begin()->first.time_since_epoch() -
-                         now.time_since_epoch();
-  const auto delay = std::min(
-    remaining,
-    std::chrono::duration_cast<ceph::mono_clock::duration>(
-      std::chrono::hours(1)));
-
-  cond_.wait_for(l, std::chrono::duration_cast<ceph::signedspan>(delay));
+  cond_.wait_for(l, std::chrono::duration_cast<ceph::signedspan>(
+    deadlines_.begin()->first - now));
 }
 
-ceph::mono_time WeaveWorker::deadline_for(double delay_seconds) const
-{
-  const auto now = ceph::mono_clock::now();
-  if (delay_seconds <= 0) {
-    return now;
-  }
-
-  // Ceph time-point subtraction returns signedspan; max() - now can
-  // overflow it. Subtract the underlying unsigned durations instead.
-  const auto remaining = ceph::mono_time::max().time_since_epoch() -
-                         now.time_since_epoch();
-  if (static_cast<long double>(delay_seconds) >=
-      std::chrono::duration<long double>(remaining).count()) {
-    return ceph::mono_time::max();
-  }
-
-  auto when = now;
-  when += std::chrono::duration_cast<ceph::mono_clock::duration>(
-    std::chrono::duration<long double>(delay_seconds));
-  return when;
-}
-
-void WeaveWorker::publish_locked(spg_t pgid, ceph::mono_time when,
+void WeaveWorker::publish_locked(RetryKey key, ceph::mono_time when,
                                     std::function<void()> callback,
                                     std::function<void()>& discarded)
 {
-  auto p = scans_.find(pgid);
-  if (p != scans_.end()) {
-    // New foreground commits must not postpone a periodic scan forever.
-    // Replace its callback, but retain the earliest outstanding wakeup.
+  auto p = retries_.find(key);
+  if (p != retries_.end()) {
+    // A repeated request of the same kind retains its earliest retry.
     when = std::min(when, p->second.deadline->first);
     deadlines_.erase(p->second.deadline);
     discarded = std::move(p->second.callback);
-    p->second = Scan{deadlines_.emplace(when, pgid), std::move(callback)};
+    p->second = PendingRetry{deadlines_.emplace(when, key), std::move(callback)};
   } else {
-    // No pending scan for this PG: arm it at its own deadline.
-    scans_.emplace(
-      pgid, Scan{deadlines_.emplace(when, pgid), std::move(callback)});
+    retries_.emplace(
+      key, PendingRetry{deadlines_.emplace(when, key), std::move(callback)});
   }
 
   cond_.notify_one();
@@ -206,12 +173,12 @@ void WeaveWorker::shutdown()
 
 void WeaveWorker::stop_worker()
 {
-  decltype(scans_) discarded_scans;
+  decltype(retries_) discarded_retries;
   decltype(work_) discarded_work;
   {
     std::lock_guard l(mutex_);
     stopping_ = true;
-    discarded_scans.swap(scans_);
+    discarded_retries.swap(retries_);
     discarded_work.swap(work_);
     deadlines_.clear();
     active_.clear();
@@ -219,7 +186,7 @@ void WeaveWorker::stop_worker()
   }
 
   // Destroy the discarded callbacks, and any PGRef they hold, unlocked.
-  discarded_scans.clear();
+  discarded_retries.clear();
   discarded_work.clear();
   thread_.join();
 }

@@ -45,7 +45,6 @@ public:
     return {conf->osd_weave_background_enabled,
       conf->osd_weave_min_object_size,
       conf->osd_weave_quiet_period,
-      conf->osd_weave_scan_interval,
       write_limits().data_limit(),
       static_cast<unsigned>(conf->osd_weave_max_padding_percent)};
   }
@@ -207,16 +206,17 @@ public:
     return osd_.weave_service->acquire(pg_.info.pgid);
   }
 
-  void schedule(double delay, std::function<void()> callback) override {
+  void retry(ceph::weave::WeaveRetryKind kind,
+             std::function<void()> callback) override {
     // owner keeps the PG alive until the wakeup has run under the PG lock.
-    osd_.weave_service->schedule(pg_.info.pgid, delay,
+    osd_.weave_service->retry(pg_.info.pgid, kind,
       [this, owner = pin(), callback = std::move(callback)] {
         std::lock_guard lock(pg_);
         callback();
       });
   }
 
-  void cancel_wakeup() override { osd_.weave_service->cancel(pg_.info.pgid); }
+  void cancel_retries() override { osd_.weave_service->cancel(pg_.info.pgid); }
 
   void post(std::function<void()> callback) override {
     osd_.weave_service->post(std::move(callback));

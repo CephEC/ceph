@@ -1820,16 +1820,9 @@ void PrimaryLogPG::request_weave_reclaim(
   }
 }
 
-void PrimaryLogPG::schedule_weave_work()
+void PrimaryLogPG::scan_weave_candidates()
 {
-  if (m_weave) m_weave->schedule_work();
-}
-
-Context* PrimaryLogPG::on_clean()
-{
-  auto* completion = PG::on_clean();
-  schedule_weave_work();
-  return completion;
+  if (m_weave) m_weave->scan_candidates();
 }
 
 void PrimaryLogPG::get_src_oloc(const object_t& oid, const object_locator_t& oloc, object_locator_t& src_oloc)

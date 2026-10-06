@@ -6,6 +6,7 @@
 #include <map>
 #include <mutex>
 #include <set>
+#include <utility>
 
 #include "common/Thread.h"
 #include "common/ceph_mutex.h"
@@ -15,17 +16,21 @@
 
 namespace ceph::weave {
 
-// One worker per OSD services delayed scans and CPU work. Objecter I/O must be
-// asynchronous: callbacks must not wait for another callback on this worker.
+enum class WeaveRetryKind;
+
+// One worker per OSD services conversion retries and CPU work. Objecter I/O
+// must be asynchronous: callbacks must not wait for another callback here.
 class WeaveWorker {
 public:
   explicit WeaveWorker(CephContext* cct);
   ~WeaveWorker();
 
-  // Coalesce the pending scan without postponing its earliest deadline.
+  // Coalesce retries of the same kind without postponing their deadline.
+  // Different kinds keep independent callbacks, even for the same PG.
   // Cancellation cannot recall a running callback; validate PG role/epoch.
-  void schedule(const spg_t& pgid, double delay_seconds,
-                std::function<void()> callback);
+  // Retry after one second; background scan configuration is unrelated.
+  void retry(const spg_t& pgid, WeaveRetryKind kind,
+             std::function<void()> callback);
   void cancel(const spg_t& pgid);
 
   // Cancellation does not release an in-flight job's slot. Its completion owns
@@ -40,8 +45,9 @@ public:
 
 private:
   void stop_worker();
-  using Deadlines = std::multimap<ceph::mono_time, spg_t>;
-  struct Scan {
+  using RetryKey = std::pair<spg_t, WeaveRetryKind>;
+  using Deadlines = std::multimap<ceph::mono_time, RetryKey>;
+  struct PendingRetry {
     Deadlines::iterator deadline;
     std::function<void()> callback;
   };
@@ -58,8 +64,7 @@ private:
   void run();
   bool take_next_locked(std::function<void()>& callback);
   void wait_locked(std::unique_lock<ceph::mutex>& lock, ceph::mono_time now);
-  ceph::mono_time deadline_for(double delay_seconds) const;
-  void publish_locked(spg_t pgid, ceph::mono_time when,
+  void publish_locked(RetryKey key, ceph::mono_time when,
                       std::function<void()> callback,
                       std::function<void()>& discarded);
 
@@ -68,7 +73,7 @@ private:
   ceph::condition_variable cond_;
   bool stopping_ = false;
   Deadlines deadlines_;
-  std::map<spg_t, Scan> scans_;
+  std::map<RetryKey, PendingRetry> retries_;
   std::deque<std::function<void()>> work_;
   std::set<spg_t> active_;
   std::once_flag stopped_;

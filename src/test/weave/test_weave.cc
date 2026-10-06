@@ -11,6 +11,7 @@
 #include "osd/ClassHandler.h"
 #include "osd/weave/detail/WeaveMemberTranslator.h"
 #include "osd/weave/detail/WeaveWorker.h"
+#include "osd/weave/WeavePGHost.h"
 #include "osd/weave/detail/WeaveCandidateIndex.h"
 #include "osd/weave/WeaveECAdapter.h"
 #include "osd/weave/detail/WeaveRequestContext.h"
@@ -901,7 +902,7 @@ TEST(WeaveCatalog, DamagedDiskSnapshotDoesNotPublishPartialMappings) {
   EXPECT_FALSE(catalog.contains(object("new-member")));
 }
 
-TEST(WeaveWorker, NewCandidatesDoNotPostponeAnEarlierPositiveDeadline) {
+TEST(WeaveWorker, RepeatedRetryCoalescesOnlyTheSameKind) {
   WeaveWorker worker(g_ceph_context);
   std::promise<void> entered;
   std::promise<void> release;
@@ -919,13 +920,62 @@ TEST(WeaveWorker, NewCandidatesDoNotPostponeAnEarlierPositiveDeadline) {
   std::promise<void> scanned;
   auto scanned_future = scanned.get_future();
   const spg_t pgid(pg_t(1, 7), shard_id_t(0));
-  worker.schedule(pgid, 0.01, [&] { superseded = true; });
-  worker.schedule(pgid, 60, [&] { scanned.set_value(); });
+  worker.retry(pgid, WeaveRetryKind::kConversion,
+               [&] { superseded = true; });
+  worker.retry(pgid, WeaveRetryKind::kConversion,
+               [&] { scanned.set_value(); });
   release.set_value();
   EXPECT_EQ(scanned_future.wait_for(std::chrono::seconds(5)),
             std::future_status::ready);
   worker.shutdown();
   EXPECT_FALSE(superseded);
+}
+
+TEST(WeaveWorker, DifferentRetryKindsKeepTheirContinuations) {
+  WeaveWorker worker(g_ceph_context);
+  const spg_t pgid(pg_t(1, 7), shard_id_t(0));
+  std::promise<void> materialization, cleanup, conversion;
+  worker.retry(pgid, WeaveRetryKind::kMaterialization,
+               [&] { materialization.set_value(); });
+  worker.retry(pgid, WeaveRetryKind::kCleanup,
+               [&] { cleanup.set_value(); });
+  worker.retry(pgid, WeaveRetryKind::kConversion,
+               [&] { conversion.set_value(); });
+  EXPECT_EQ(materialization.get_future().wait_for(std::chrono::seconds(5)),
+            std::future_status::ready);
+  EXPECT_EQ(cleanup.get_future().wait_for(std::chrono::seconds(5)),
+            std::future_status::ready);
+  EXPECT_EQ(conversion.get_future().wait_for(std::chrono::seconds(5)),
+            std::future_status::ready);
+  worker.shutdown();
+}
+
+TEST(WeaveWorker, CancelDropsEveryRetryKindForOnlyTheRequestedPG) {
+  WeaveWorker worker(g_ceph_context);
+  const spg_t cancelled(pg_t(1, 7), shard_id_t(0));
+  const spg_t survivor(pg_t(2, 7), shard_id_t(0));
+  std::promise<void> entered, release;
+  auto release_future = release.get_future().share();
+  worker.post([&] { entered.set_value(); release_future.wait(); });
+  const auto ready = entered.get_future().wait_for(std::chrono::seconds(5));
+  if (ready != std::future_status::ready) {
+    release.set_value();
+    FAIL() << "retry worker did not start";
+  }
+  std::atomic<unsigned> unexpected{0};
+  for (auto kind : {WeaveRetryKind::kMaterialization, WeaveRetryKind::kCleanup,
+                    WeaveRetryKind::kConversion}) {
+    worker.retry(cancelled, kind, [&] { ++unexpected; });
+  }
+  std::promise<void> survived;
+  worker.retry(survivor, WeaveRetryKind::kConversion,
+               [&] { survived.set_value(); });
+  worker.cancel(cancelled);
+  release.set_value();
+  EXPECT_EQ(survived.get_future().wait_for(std::chrono::seconds(5)),
+            std::future_status::ready);
+  EXPECT_EQ(unexpected, 0u);
+  worker.shutdown();
 }
 
 TEST(WeaveReadSession, AllowsOneDetourAndFallsBackOnMapChange) {

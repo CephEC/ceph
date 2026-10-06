@@ -27,11 +27,12 @@ public:
   std::map<hobject_t, Object> objects;
   std::deque<IO> io;
   std::deque<std::function<void()>> cpu;
-  std::function<void()> wakeup;
+  std::map<WeaveRetryKind, std::function<void()>> retries;
   std::vector<std::string> events;
   std::function<void(Object&)> restore_copy_state;
   epoch_t generation = 1;
   unsigned acquired = 0, released = 0;
+  size_t requeued = 0;
   ceph_tid_t sequence = 0;
   std::set<ceph_tid_t> cancelled;
   bool allow_acquire = true;
@@ -45,7 +46,7 @@ public:
   bufferlist read_metadata;
   int read_route_result = 0;
   unsigned redirects = 0;
-  WeavePolicy settings{true, 1, 0, 1, 1024, 100};
+  WeavePolicy settings{true, 1, 0, 1024, 100};
   void put(const hobject_t& id, const char* bytes) {
     auto& o = objects[id];
     o.data.clear(); o.data.append(bytes);
@@ -87,7 +88,10 @@ public:
     id.nspace = ".ceph-internal-weave";
     return id;
   }
-  void requeue(std::list<OpRequestRef>& requests) override { requests.clear(); }
+  void requeue(std::list<OpRequestRef>& requests) override {
+    requeued += requests.size();
+    requests.clear();
+  }
   void reply_error(const OpRequestRef&, int r) override {
     last_error = r;
     events.push_back("reply_error");
@@ -97,8 +101,10 @@ public:
     ++acquired;
     return std::make_unique<WeaveLease>([this] { ++released; });
   }
-  void schedule(double, std::function<void()> cb) override { wakeup = std::move(cb); }
-  void cancel_wakeup() override { wakeup = {}; }
+  void retry(WeaveRetryKind kind, std::function<void()> cb) override {
+    retries[kind] = std::move(cb);
+  }
+  void cancel_retries() override { retries.clear(); }
   void post(std::function<void()> cb) override { cpu.push_back(std::move(cb)); }
   void serialized(std::function<void()> cb) override { cb(); }
   ceph_tid_t read(const hobject_t& id, version_t version, uint64_t size,
@@ -166,7 +172,13 @@ public:
     return pending;
   }
   void run_cpu() { auto cb = std::move(cpu.front()); cpu.pop_front(); cb(); }
-  void tick() { auto cb = std::move(wakeup); wakeup = {}; if (cb) cb(); }
+  void tick(WeaveRetryKind kind = WeaveRetryKind::kConversion) {
+    auto p = retries.find(kind);
+    if (p == retries.end()) return;
+    auto cb = std::move(p->second);
+    retries.erase(p);
+    cb();
+  }
 };
 
 class WeaveConversion : public ::testing::Test {
@@ -212,7 +224,7 @@ protected:
   }
   void TearDown() override {
     if (job) job->cancel();
-    host.io.clear(); host.cpu.clear(); host.wakeup = {}; job.reset();
+    host.io.clear(); host.cpu.clear(); host.retries.clear(); job.reset();
     EXPECT_EQ(host.acquired, host.released);
   }
 };
@@ -401,7 +413,7 @@ protected:
   void pack() {
     host->settings.background = true;
     for (auto id : {a, b}) controller->on_commit(host->inspect(id).info, true, {});
-    host->tick();
+    controller->scan_candidates();
     host->settings.background = false;
     ASSERT_FALSE(host->io.empty());
   }
@@ -472,7 +484,7 @@ protected:
     host->put(b, "BNEW"); // recreated objects may reuse a user_version
     controller->on_commit(host->inspect(b).info, true, recreate);
     controller->request_cleanup(100, [] {});
-    host->tick(); drain();
+    drain();
     restart(false);
     EXPECT_EQ(host->objects[b].data.to_str(), "BNEW");
     EXPECT_TRUE(host->objects[b].state.exists);
@@ -743,7 +755,7 @@ TEST_F(WeavePackingReads, PublishedReadsCanRedirectWhileSourceCleanupIsRetrying)
   EXPECT_EQ(controller->preprocess_client_op(read), RequestDisposition::kReplied);
   EXPECT_EQ(host->redirects, 1u);
   EXPECT_EQ(message->get_hobj(), a);
-  host->tick(); drain();
+  drain();
 }
 
 TEST_F(WeavePackingReads, UnsupportedAndSnapshotReadsKeepExistingNativeBarrier) {
@@ -782,7 +794,7 @@ TEST(WeavePGController, RevalidatesSourcesBeforePublicationAndCancelsOnReset) {
   controller.initialize();
   controller.on_commit(host.inspect(a).info, true, {});
   controller.on_commit(host.inspect(b).info, true, {});
-  host.tick();
+  controller.scan_candidates();
   ASSERT_EQ(host.io.size(), 1u);
   host.complete(); host.complete();
   host.objects[a].state.info.version = eversion_t(1, 2);
@@ -791,7 +803,7 @@ TEST(WeavePGController, RevalidatesSourcesBeforePublicationAndCancelsOnReset) {
   EXPECT_FALSE(host.objects[v].state.exists);
   EXPECT_TRUE(host.objects[a].state.exists); EXPECT_EQ(host.released, 1u);
   // The restored candidates can run again; a PG reset retires their lease.
-  host.tick();
+  controller.scan_candidates();
   ASSERT_FALSE(host.io.empty());
   controller.on_pg_change(false);
   EXPECT_EQ(host.released, 2u);
@@ -811,7 +823,7 @@ TEST(WeavePGController, BusyFirstCandidateDoesNotStarveColdGroup) {
   controller.initialize();
   for (const auto& [id, object] : host.objects)
     controller.on_commit(object.state.info, true, {});
-  host.tick();
+  controller.scan_candidates();
   ASSERT_EQ(host.io.size(), 1u);
   EXPECT_NE(host.io.front().oid, oid("a-hot"));
   host.complete(); host.complete(); host.run_cpu();
@@ -822,7 +834,29 @@ TEST(WeavePGController, BusyFirstCandidateDoesNotStarveColdGroup) {
   controller.on_pg_change(false);
 }
 
-TEST(WeavePGController, CleanNotificationWakesExistingCandidates) {
+TEST(WeavePGController, ForegroundCommitsOnlyRecordCandidatesForPeriodicScan) {
+  auto owner = std::make_unique<FakeHost>();
+  auto& host = *owner;
+  host.settings.quiet_seconds = 3600;
+  host.put(oid("a"), "AAAA"); host.put(oid("b"), "BBBB");
+  WeavePGController controller(g_ceph_context, std::move(owner), true);
+  controller.initialize();
+  controller.on_commit(host.inspect(oid("a")).info, true, {});
+  controller.on_commit(host.inspect(oid("b")).info, true, {});
+  EXPECT_TRUE(host.retries.empty());
+  EXPECT_TRUE(host.io.empty());
+
+  controller.scan_candidates();
+  EXPECT_TRUE(host.io.empty());
+  EXPECT_TRUE(host.retries.empty());
+  host.settings.quiet_seconds = 0;
+  controller.scan_candidates();
+  ASSERT_EQ(host.io.size(), 1u);
+  controller.on_pg_change(false);
+  host.complete();
+}
+
+TEST(WeavePGController, PeriodicScanPacksAfterCleanWithoutAnotherCommit) {
   auto owner = std::make_unique<FakeHost>();
   auto& host = *owner;
   host.clean_state = false;
@@ -831,11 +865,11 @@ TEST(WeavePGController, CleanNotificationWakesExistingCandidates) {
   controller.initialize();
   controller.on_commit(host.inspect(oid("a")).info, true, {});
   controller.on_commit(host.inspect(oid("b")).info, true, {});
-  EXPECT_FALSE(host.wakeup);
+  EXPECT_TRUE(host.retries.empty());
+  controller.scan_candidates();
+  EXPECT_TRUE(host.io.empty());
   host.clean_state = true;
-  controller.schedule_work(); // PrimaryLogPG::on_clean, without another write
-  ASSERT_TRUE(host.wakeup);
-  host.tick();
+  controller.scan_candidates();
   ASSERT_EQ(host.io.size(), 1u);
   controller.on_pg_change(false);
   host.complete();
@@ -958,6 +992,86 @@ TEST(WeavePGController, ConcurrentDeletesReadProjectedMetadataAndPublishOnCommit
   tracker.on_shutdown();
 }
 
+TEST_F(WeaveDurableRecovery, MaterializationRetryIsIndependentOfScansAndCleanup) {
+  pack(); drain();
+  host->allow_acquire = false;
+  auto write = request(a, CEPH_OSD_OP_WRITEFULL);
+  ASSERT_EQ(controller->preprocess_client_op(write), RequestDisposition::kDeferred);
+  EXPECT_EQ(host->retries.count(WeaveRetryKind::kMaterialization), 1u);
+
+  bool cleanup_finished = false;
+  controller->request_cleanup(100, [&] { cleanup_finished = true; });
+  EXPECT_EQ(host->retries.count(WeaveRetryKind::kCleanup), 1u);
+  host->settings.background = true;
+  controller->scan_candidates();
+  EXPECT_TRUE(host->io.empty());
+  EXPECT_EQ(host->retries.count(WeaveRetryKind::kMaterialization), 1u);
+
+  const auto requeued = host->requeued;
+  host->allow_acquire = true;
+  host->tick(WeaveRetryKind::kMaterialization);
+  EXPECT_EQ(host->requeued, requeued + 1);
+  ASSERT_EQ(controller->preprocess_client_op(write), RequestDisposition::kDeferred);
+  host->tick(WeaveRetryKind::kCleanup); // The running job owns the next continuation.
+  drain();
+  EXPECT_FALSE(controller->is_logical_member(a));
+  EXPECT_EQ(host->requeued, requeued + 2);
+  EXPECT_FALSE(cleanup_finished);
+  host->tick(WeaveRetryKind::kCleanup);
+  EXPECT_TRUE(cleanup_finished);
+}
+
+TEST_F(WeaveDurableRecovery, CleanupRetriesItsOwnPassWithoutCandidateScan) {
+  pack(); drain();
+  host->allow_acquire = false;
+  bool cleanup_finished = false;
+  controller->request_cleanup(100, [&] { cleanup_finished = true; });
+  EXPECT_FALSE(cleanup_finished);
+  EXPECT_EQ(host->retries.count(WeaveRetryKind::kCleanup), 1u);
+  host->allow_acquire = true;
+  controller->scan_candidates();
+  EXPECT_TRUE(host->io.empty());
+  host->tick(WeaveRetryKind::kCleanup);
+  ASSERT_FALSE(host->io.empty());
+  drain();
+  EXPECT_TRUE(cleanup_finished);
+  EXPECT_FALSE(controller->is_logical_member(a));
+  EXPECT_TRUE(host->retries.empty());
+}
+
+TEST(WeaveService, PeriodicScanCoalescesPassesAndObservesChangedInterval) {
+  WeaveService service(g_ceph_context);
+  std::promise<void> entered, release, drained, rescanned;
+  auto release_future = release.get_future().share();
+  unsigned snapshots = 0;
+  auto snapshot = [&]() -> WeaveService::Scan {
+    ++snapshots;
+    return [&] { entered.set_value(); release_future.wait(); };
+  };
+  service.scan_candidates(3600, snapshot);
+  const auto ready = entered.get_future().wait_for(std::chrono::seconds(5));
+  if (ready != std::future_status::ready) {
+    release.set_value();
+    FAIL() << "candidate scan did not start";
+  }
+  service.scan_candidates(0, snapshot);
+  EXPECT_EQ(snapshots, 1u); // An in-flight pass is never duplicated.
+  release.set_value();
+  service.post([&] { drained.set_value(); });
+  ASSERT_EQ(drained.get_future().wait_for(std::chrono::seconds(5)),
+            std::future_status::ready);
+  service.scan_candidates(3600, snapshot);
+  EXPECT_EQ(snapshots, 1u);
+  service.scan_candidates(0, [&]() -> WeaveService::Scan {
+    ++snapshots;
+    return [&] { rescanned.set_value(); };
+  });
+  EXPECT_EQ(snapshots, 2u);
+  EXPECT_EQ(rescanned.get_future().wait_for(std::chrono::seconds(5)),
+            std::future_status::ready);
+  service.shutdown();
+}
+
 TEST(WeaveService, ReclaimPassStaysActiveUntilEveryPGReleasesCompletion) {
   WeaveService service(g_ceph_context);
   using Result = WeaveService::ReclaimResult;
@@ -974,7 +1088,7 @@ TEST(WeaveService, ReclaimPassStaysActiveUntilEveryPGReleasesCompletion) {
   auto first = future.get();
   auto second = first;
   std::promise<void> drained;
-  service.wake_candidates([&] { drained.set_value(); });
+  service.post([&] { drained.set_value(); });
   ASSERT_EQ(drained.get_future().wait_for(std::chrono::seconds(5)), std::future_status::ready);
   first = {};
   EXPECT_EQ(submit({}), Result::kAlreadyRunning);
@@ -1233,7 +1347,7 @@ TEST(WeavePGController, TruncateHistoryBeforePublicationKeepsNativeSources) {
   controller.initialize();
   controller.on_commit(host.inspect(a).info, true, {});
   controller.on_commit(host.inspect(b).info, true, {});
-  host.tick();
+  controller.scan_candidates();
   ASSERT_FALSE(host.io.empty());
   host.complete();
   host.complete();

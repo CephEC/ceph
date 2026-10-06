@@ -1093,6 +1093,7 @@ class OSD : public Dispatcher,
   // The dispatch and PG completions own the pass; no asynchronous completion
   // touches the OSD. Expiration also handles discarded work during shutdown.
   ceph::weave::WeaveService::Dispatch snapshot_weave_reclaim();
+  ceph::weave::WeaveService::Scan snapshot_weave_candidates();
   bool request_weave_reclaim(); // osd_lock held
 
 public:

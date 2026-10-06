@@ -37,7 +37,7 @@ WeavePGController::Impl::Impl(CephContext* cct,
 
 WeavePGController::Impl::~Impl()
 {
-  host_->cancel_wakeup();
+  host_->cancel_retries();
   // Native shutdown cancels active work before the PG can be destroyed.
   ceph_assert(!job_);
   finish_cleanup();
@@ -59,7 +59,6 @@ void WeavePGController::Impl::initialize()
   translator_.activate(geometry.data_shards, geometry.unit);
 
   host_->requeue(waiting_for_recovery_);
-  schedule_work();
 }
 
 bool WeavePGController::Impl::reload_metadata()
@@ -128,7 +127,7 @@ void WeavePGController::Impl::on_pg_change(bool requeue)
   // Invalidate every pending wakeup and the running job before the state it
   // depends on changes.
   ++generation_;
-  host_->cancel_wakeup();
+  host_->cancel_retries();
   cancel_job();
 
   // Per-role state: the cancelled job already released its reservations in
@@ -154,48 +153,6 @@ void WeavePGController::Impl::on_pg_change(bool requeue)
 // Background work
 // ---------------------------------------------------------------------------
 
-void WeavePGController::Impl::schedule_work()
-{
-  configure_candidates();
-
-  // Nothing to do while a job runs, or when no waiter, no cleanup pass and
-  // no admissible candidate is pending.
-  if (job_) return;
-  if (waiting_for_conversion_.empty() && !cleanup_ &&
-      (!can_scan() || candidates_.empty())) {
-    return;
-  }
-
-  // The wakeup holds the owner alive and is dropped by a role change.
-  auto ref = host_->pin();
-  const auto generation = generation_;
-  host_->schedule(
-    host_->policy().scan_seconds,
-    [this, ref = std::move(ref), generation] {
-      if (generation != generation_ || job_) return;
-      run_scheduled_work();
-    });
-}
-
-// A single PG wakeup prevents commit notifications from replacing a pending
-// conversion or cleanup retry with an unrelated candidate scan.
-void WeavePGController::Impl::run_scheduled_work()
-{
-  // Deferred requests are served first: a conversion or cleanup pass must not
-  // start before they have been handed back to the native PG.
-  if (!waiting_for_conversion_.empty()) {
-    host_->requeue(waiting_for_conversion_);
-    schedule_work();
-  } else if (cleanup_) {
-    // A cleanup pass that lost its role, or the clean state, is abandoned
-    // rather than retried forever.
-    if (can_work()) scan_cleanup();
-    else finish_cleanup();
-  } else if (can_scan()) {
-    scan();
-  }
-}
-
 void WeavePGController::Impl::configure_candidates()
 {
   if (!enabled_) return;
@@ -205,9 +162,11 @@ void WeavePGController::Impl::configure_candidates()
                         policy.min_size, policy.max_volume_size);
 }
 
-void WeavePGController::Impl::scan()
+void WeavePGController::Impl::scan_candidates()
 {
-  if (!can_scan() || job_) return;
+  // Packing yields to foreground conversions and an existing cleanup pass.
+  // This scan never resumes either of them; their own continuations do that.
+  if (!can_scan() || job_ || cleanup_ || !waiting_for_conversion_.empty()) return;
   const auto geometry = host_->geometry();
   const auto policy = host_->policy();
   configure_candidates();
@@ -216,15 +175,9 @@ void WeavePGController::Impl::scan()
   for (const auto& oid : stale) {
     candidates_.erase(oid);
   }
-  if (members.empty()) {
-    schedule_work();
-    return;
-  }
+  if (members.empty()) return;
   auto lease = host_->acquire();
-  if (!lease) {
-    schedule_work();
-    return;
-  }
+  if (!lease) return;
   auto volume = plan_volume(members, geometry);
   start_job(std::move(members), std::move(volume), std::move(lease), false);
 }
@@ -286,6 +239,33 @@ WeaveVolumeMeta WeavePGController::Impl::plan_volume(
   return volume;
 }
 
+void WeavePGController::Impl::resume_cleanup()
+{
+  if (!cleanup_ || job_) return;
+  if (!can_work()) {
+    finish_cleanup();
+    return;
+  }
+  // Let delayed client requests return to the native PG before reserving
+  // another Volume for cleanup.
+  if (!waiting_for_conversion_.empty()) {
+    schedule_cleanup_retry();
+    return;
+  }
+  scan_cleanup();
+}
+
+void WeavePGController::Impl::schedule_cleanup_retry()
+{
+  if (!cleanup_ || job_) return;
+  auto ref = host_->pin();
+  const auto generation = generation_;
+  host_->retry(WeaveRetryKind::kCleanup,
+    [this, ref = std::move(ref), generation] {
+      if (generation == generation_) resume_cleanup();
+    });
+}
+
 void WeavePGController::Impl::scan_cleanup()
 {
   while (cleanup_->next < cleanup_->volumes.size()) {
@@ -297,12 +277,14 @@ void WeavePGController::Impl::scan_cleanup()
     }
     // Contention on the source object retries on the next wakeup; a
     // started conversion defers the rest of the pass to its completion.
-    if (!start_deaggregation(metadata)) return;
+    if (!start_deaggregation(metadata)) {
+      schedule_cleanup_retry();
+      return;
+    }
     ++cleanup_->next;
     if (job_) return;
   }
   finish_cleanup();
-  schedule_work();
 }
 
 bool WeavePGController::Impl::volume_needs_reclaim(
@@ -342,8 +324,7 @@ void WeavePGController::Impl::request_cleanup(
   // Reclaim empty containers before allocating copies of surviving members.
   std::partition(cleanup_->volumes.begin(), cleanup_->volumes.end(),
     [](const auto& metadata) { return metadata->members.empty(); });
-  if (cleanup_->volumes.empty()) finish_cleanup();
-  else schedule_work();
+  resume_cleanup();
 }
 
 // ---------------------------------------------------------------------------
@@ -364,17 +345,11 @@ bool WeavePGController::Impl::start_deaggregation(
     return true;
   }
 
-  // A busy Volume is being written natively; wait for the next wakeup.
-  if (object.busy()) {
-    schedule_work();
-    return false;
-  }
+  // The caller owns its retry path: foreground admission or cleanup.
+  if (object.busy()) return false;
 
   auto lease = host_->acquire();
-  if (!lease) {
-    schedule_work();
-    return false;
-  }
+  if (!lease) return false;
 
   auto members = unpack_candidates(volume, object);
   start_job(std::move(members), *volume, std::move(lease), true,
@@ -490,9 +465,14 @@ void WeavePGController::Impl::finish_job(uint64_t identity, bool unpack,
   if (!unpack && result.error) translator_.shutdown();
   initialize();
 
+  const bool had_waiters = !waiting_for_conversion_.empty();
   if (result.error) fail_waiters(result.error);
   else host_->requeue(waiting_for_conversion_);
-  schedule_work();
+
+  // Cleanup continues from this completion. Only yield when client requests
+  // have just been handed back to the PG; scans need no completion wakeup.
+  if (had_waiters && !result.error) schedule_cleanup_retry();
+  else resume_cleanup();
 }
 
 void WeavePGController::Impl::release_reservations(uint64_t identity,
@@ -530,6 +510,20 @@ void WeavePGController::Impl::fail_waiters(int error)
   for (auto& request : waiting) {
     host_->reply_error(request, error);
   }
+}
+
+void WeavePGController::Impl::schedule_materialization_retry()
+{
+  if (job_ || waiting_for_conversion_.empty()) return;
+  auto ref = host_->pin();
+  const auto generation = generation_;
+  host_->retry(WeaveRetryKind::kMaterialization,
+    [this, ref = std::move(ref), generation] {
+      if (generation != generation_ || job_) return;
+      // Retry the original client admission, which rechecks the catalog and
+      // attempts materialization. Do not scan or start unrelated cleanup here.
+      host_->requeue(waiting_for_conversion_);
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -743,7 +737,7 @@ WeavePGController::Impl::defer_for_materialization(
   }
   waiting_for_conversion_.push_back(op);
   op->mark_delayed("waiting for Weave materialization");
-  if (!job_) start_deaggregation(metadata);
+  if (!job_ && !start_deaggregation(metadata)) schedule_materialization_retry();
   return RequestDisposition::kDeferred;
 }
 
@@ -849,7 +843,6 @@ void WeavePGController::Impl::on_commit(const object_info_t& oi, bool exists,
   if (is_private_object(oi.soid)) return;
 
   refresh_candidate(oi, exists);
-  schedule_work();
 }
 
 // Apply only this deletion, not an older full snapshot: later committed
@@ -859,7 +852,6 @@ void WeavePGController::Impl::apply_member_deletion(const object_info_t& oi,
 {
   catalog_.remove_member(oi.soid, member);
   candidates_.erase(member);
-  schedule_work();
 }
 
 void WeavePGController::Impl::refresh_candidate(const object_info_t& oi,

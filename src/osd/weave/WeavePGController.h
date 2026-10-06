@@ -38,7 +38,8 @@ public:
   void initialize();
   void on_recovery_progress();
   void on_pg_change(bool requeue = true);
-  void schedule_work();
+  // Periodic background scan; foreground commits only update candidates.
+  void scan_candidates();
   RequestDisposition prepare_request(OpRequestRef&);
   RequestDisposition preprocess_client_op(OpRequestRef&);
   void on_commit(const object_info_t&, bool exists, const OpRequestRef&);
