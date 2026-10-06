@@ -44,7 +44,7 @@ public:
 
   // Native callbacks.
   void on_commit(const object_info_t&, bool exists, const OpRequestRef&);
-  void request_cleanup(unsigned live_percent, std::function<void()> on_finish);
+  void request_cleanup(unsigned live_percent, WeaveReclaimPass::Ref pass);
   int prepare_member_delete(const OpRequestRef&, WeaveTransaction&);
   void finish_reply(const OpRequestRef&, MOSDOpReply*);
   void finish_request(const OpRequestRef&);
@@ -77,7 +77,7 @@ private:
     unsigned live_percent;
     std::vector<std::shared_ptr<const WeaveVolumeMeta>> volumes;
     size_t next = 0;
-    std::function<void()> on_finish;
+    WeaveReclaimPass::Ref pass;
   };
 
   // Lifecycle.
@@ -96,6 +96,7 @@ private:
   // Cleanup progresses from its request and each conversion completion.
   void resume_cleanup();
   void schedule_cleanup_retry();
+  void on_cleanup_retry(uint64_t generation);
   void scan_cleanup();
   bool volume_needs_reclaim(
     const std::shared_ptr<const WeaveVolumeMeta>&) const;
@@ -122,6 +123,7 @@ private:
   void fail_waiters(int error);
   // A foreground materialization that could not start retries admission.
   void schedule_materialization_retry();
+  void on_materialization_retry(uint64_t generation);
 
   // Request admission. Each predicate reports whether the request must be
   // rejected or deferred; the caller owns the reply.

@@ -263,8 +263,14 @@ void WeavePGController::Impl::schedule_cleanup_retry()
   const auto generation = generation_;
   pg_interface_->retry(WeaveRetryKind::kCleanup,
     [this, ref = std::move(ref), generation] {
-      if (generation == generation_) resume_cleanup();
+      on_cleanup_retry(generation);
     });
+}
+
+void WeavePGController::Impl::on_cleanup_retry(uint64_t generation)
+{
+  if (generation != generation_) return;
+  resume_cleanup();
 }
 
 void WeavePGController::Impl::scan_cleanup()
@@ -297,31 +303,27 @@ bool WeavePGController::Impl::volume_needs_reclaim(
 
 void WeavePGController::Impl::finish_cleanup()
 {
-  if (!cleanup_) return;
-  auto on_finish = std::move(cleanup_->on_finish);
+  // Also releases this PG's reference to the OSD-wide reclaim pass.
   cleanup_.reset();
-  on_finish();
 }
 
 void WeavePGController::Impl::request_cleanup(
-  unsigned live_percent, std::function<void()> on_finish)
+  unsigned live_percent, WeaveReclaimPass::Ref pass)
 {
   if (!enabled_ || !pg_interface_->primary() || !pg_interface_->active() ||
       !pg_interface_->clean() || cleanup_) {
-    on_finish();
     return;
   }
   // A pass can only run against a loaded catalog, so try to load it now.
   initialize();
   if (!can_work()) {
-    on_finish();
     return;
   }
 
   // Snapshot the Volumes once; every later step revalidates them against the
   // live catalog before acting.
   cleanup_.emplace(Cleanup{live_percent, catalog_.list_volumes(), 0,
-                           std::move(on_finish)});
+                           std::move(pass)});
   // Reclaim empty containers before allocating copies of surviving members.
   std::partition(cleanup_->volumes.begin(), cleanup_->volumes.end(),
     [](const auto& metadata) { return metadata->members.empty(); });
@@ -523,11 +525,15 @@ void WeavePGController::Impl::schedule_materialization_retry()
   const auto generation = generation_;
   pg_interface_->retry(WeaveRetryKind::kMaterialization,
     [this, ref = std::move(ref), generation] {
-      if (generation != generation_ || job_) return;
-      // Retry the original client admission, which rechecks the catalog and
-      // attempts materialization. Do not scan or start unrelated cleanup here.
-      pg_interface_->requeue(waiting_for_conversion_);
+      on_materialization_retry(generation);
     });
+}
+
+void WeavePGController::Impl::on_materialization_retry(uint64_t generation)
+{
+  if (generation != generation_ || job_) return;
+  // Client admission rechecks the catalog and retries its own materialization.
+  pg_interface_->requeue(waiting_for_conversion_);
 }
 
 // ---------------------------------------------------------------------------

@@ -6115,11 +6115,12 @@ ceph::weave::WeaveService::Dispatch OSD::snapshot_weave_reclaim()
   ceph_assert(ceph_mutex_is_locked(osd_lock));
   std::vector<PGRef> pgs;
   _get_pgs(&pgs);
-  return [pgs = std::move(pgs)](unsigned live_percent, std::function<void()> done) {
+  return [pgs = std::move(pgs)](unsigned live_percent,
+                               ceph::weave::WeaveReclaimPass::Ref pass) {
     for (const auto& pg : pgs) {
       std::lock_guard<PG> lock(*pg);
       if (!pg->is_deleted() && pg->is_primary() && pg->get_pool().info.is_erasure())
-        static_cast<PrimaryLogPG*>(pg.get())->request_weave_reclaim(live_percent, done);
+        static_cast<PrimaryLogPG*>(pg.get())->request_weave_reclaim(live_percent, pass);
     }
   };
 }

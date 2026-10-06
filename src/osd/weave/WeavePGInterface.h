@@ -46,11 +46,12 @@ using WeaveVolumeAttrs = std::vector<std::pair<hobject_t, ceph::buffer::list>>;
 using WeaveCompletion = std::function<void(int)>;
 
 // Independent continuations: one kind must never replace another's callback.
-// Candidate scans are driven by the OSD's periodic scan, not by these retries.
+// Candidate scans use each PG's periodic timer, independently of these retries.
 enum class WeaveRetryKind { kMaterialization, kCleanup, kConversion };
 
-// Move-only ownership of one conversion slot. Release is thread safe and
-// idempotent; PG reservations are retired by the job's serialized completion.
+// Owned through a unique_ptr and released by the job under the PG lock.
+// The release callback synchronizes access to the OSD-wide slot accounting;
+// this object itself requires serialized reset/destruction.
 class WeaveLease {
 public:
   explicit WeaveLease(std::function<void()> release)
@@ -61,8 +62,8 @@ public:
   WeaveLease& operator=(const WeaveLease&) = delete;
 
   void reset() {
-    // Reset is idempotent and thread safe, so the callback is detached before
-    // it runs: only one caller can ever see it.
+    // Detach before invoking the callback so repeated or reentrant resets
+    // cannot release the slot twice.
     auto release = std::move(release_);
     release_ = {};
 

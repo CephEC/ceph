@@ -1939,9 +1939,9 @@ public:
   void set_dynamic_perf_stats_queries(
       const std::list<OSDPerfMetricQuery> &queries)  override;
   void get_dynamic_perf_stats(DynamicPerfStats *stats)  override;
-  // Caller holds the PG lock; completion also runs under that lock.
+  // Caller holds the PG lock; this PG retains the pass until cleanup ends.
   void request_weave_reclaim(unsigned live_percent,
-                             std::function<void()> on_finish);
+                             ceph::weave::WeaveReclaimPass::Ref pass);
   void refresh_weave_scan_schedule();
   void run_weave_scan(epoch_t epoch,
                       const ceph::weave::WeaveScanSchedule::Ticket& ticket);

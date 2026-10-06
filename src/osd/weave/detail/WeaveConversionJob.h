@@ -60,8 +60,9 @@ private:
   bool current() const;
   bool terminal() const;
   void finish(Result);
-  WeaveCompletion completion(std::function<void(int)>);
-  bool accept_completion(uint64_t sequence);
+  struct IoCompletion;
+  WeaveCompletion make_io_completion(WeaveCompletion);
+  bool accept_io_completion(uint64_t sequence);
   void retry(std::function<void()>);
 
   void submit_member_read(size_t);

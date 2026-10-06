@@ -1816,12 +1816,10 @@ PrimaryLogPG::~PrimaryLogPG()
 }
 
 void PrimaryLogPG::request_weave_reclaim(
-  unsigned live_percent, std::function<void()> on_finish)
+  unsigned live_percent, ceph::weave::WeaveReclaimPass::Ref pass)
 {
   if (m_weave) {
-    m_weave->request_cleanup(live_percent, std::move(on_finish));
-  } else {
-    on_finish();
+    m_weave->request_cleanup(live_percent, std::move(pass));
   }
 }
 

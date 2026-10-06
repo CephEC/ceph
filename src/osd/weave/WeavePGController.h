@@ -6,6 +6,7 @@
 #include <optional>
 
 #include "osd/OpRequest.h"
+#include "WeaveReclaimPass.h"
 
 namespace ceph::weave {
 
@@ -43,7 +44,7 @@ public:
   RequestDisposition prepare_request(OpRequestRef&);
   RequestDisposition preprocess_client_op(OpRequestRef&);
   void on_commit(const object_info_t&, bool exists, const OpRequestRef&);
-  void request_cleanup(unsigned live_percent, std::function<void()> on_finish);
+  void request_cleanup(unsigned live_percent, WeaveReclaimPass::Ref pass);
   int prepare_member_delete(const OpRequestRef&, WeaveTransaction&);
   void finish_reply(const OpRequestRef&, MOSDOpReply*);
   void finish_request(const OpRequestRef&);

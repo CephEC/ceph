@@ -9,14 +9,6 @@
 #include "detail/WeaveReclaimTimer.h"
 #include "detail/WeaveWorker.h"
 
-namespace {
-
-// Empty identity token for the one reclaim pass in flight. It stays weak, so a
-// finished pass never keeps the service alive.
-struct ReclaimPass {};
-
-}  // namespace
-
 namespace ceph::weave {
 
 struct WeaveService::Impl {
@@ -24,25 +16,24 @@ struct WeaveService::Impl {
     : worker_(std::make_shared<WeaveWorker>(cct)) {}
 
   // A pass is observable without taking a lock: request_reclaim() runs under
-  // the OSD lock, but the pass ends on the background worker.
+  // the OSD lock, but PG completions can release the last reference elsewhere.
   bool pass_running() const { return !pass_.expired(); }
 
   void launch_reclaim(std::function<Dispatch()> snapshot, unsigned percent) {
     // Snapshot the dispatcher while the OSD lock is still held.
     auto dispatch = snapshot();
-    auto pass = std::make_shared<ReclaimPass>();
+    auto pass = std::make_shared<WeaveReclaimPass>();
     pass_ = pass;
 
-    // The posted work hands this token to every dispatched PG; the pass stays
-    // observable until all of them have released it.
+    // The dispatch and each PG retain the pass until their work ends.
     worker_->post([dispatch = std::move(dispatch), percent, pass] {
-      dispatch(percent, [pass] {});
+      dispatch(percent, pass);
     });
   }
 
   std::shared_ptr<WeaveWorker> worker_;
   WeaveReclaimTimer timer_;
-  std::weak_ptr<ReclaimPass> pass_;
+  std::weak_ptr<WeaveReclaimPass> pass_;
   std::atomic<bool> stopping_{false};
 };
 
@@ -69,7 +60,7 @@ WeaveService::ReclaimResult WeaveService::request_reclaim(
 
 void WeaveService::tick(int64_t now, bool active, unsigned percent,
                         std::function<Dispatch()> snapshot) {
-  // The timer only fires for an active PG, and only once the configured daily
+  // The timer only fires for an active OSD, and only once the configured daily
   // cleanup time has arrived; request_reclaim() still owns admission.
   if (impl_->stopping_ || !impl_->timer_.due(now) || !active) return;
 
@@ -89,8 +80,8 @@ std::unique_ptr<WeaveLease> WeaveService::acquire(const spg_t& pgid) {
   // lease, and the caller retries on a later wakeup.
   if (impl_->stopping_ || !impl_->worker_->try_acquire(pgid)) return {};
 
-  // Release runs later on the background worker, outside the OSD lock, so the
-  // lease keeps the worker alive instead of the service.
+  // Release runs on the thread finishing the job. Keep the worker alive until
+  // then; its mutex protects the slot independently of the service lifetime.
   return std::make_unique<WeaveLease>([worker = impl_->worker_, pgid] {
     worker->release(pgid);
   });

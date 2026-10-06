@@ -7,6 +7,7 @@
 
 #include "include/common_fwd.h"
 #include "osd/osd_types.h"
+#include "WeaveReclaimPass.h"
 
 namespace ceph::weave {
 
@@ -18,8 +19,8 @@ enum class WeaveRetryKind;
 class WeaveService {
 public:
   enum class ReclaimResult { kAccepted, kAlreadyRunning, kStopping };
-  // The dispatcher invokes one PG action at a time under that PG's lock.
-  using Dispatch = std::function<void(unsigned, std::function<void()>)>;
+  // The dispatcher lends each PG a reference until its cleanup ends.
+  using Dispatch = std::function<void(unsigned, WeaveReclaimPass::Ref)>;
 
   explicit WeaveService(CephContext*);
   ~WeaveService();

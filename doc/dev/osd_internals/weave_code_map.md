@@ -222,7 +222,7 @@ volume_size * 100 <= sum * (padding_percent + 100)      // 128 位宽运算，�
 
 每个 PG 最多有一个待触发或排队中的检查；首次检查随机错开在间隔的 50%～100%，后续按 `osd_weave_scan_interval` 在上次检查结束后重新定时。PG 变化或关闭会取消定时并使已排队的旧任务失效；PG 不存在时任务直接丢弃。修改扫描间隔或后台开关会刷新 PG 定时，其他策略配置及 PG 转为 clean 由下一次检查观察。`scan_interval = 0` 使用 1 秒间隔，避免立即反复入队。候选索引的登记、重启恢复策略保持原样。
 
-资源及转换失败仍使用 1 秒重试，与候选扫描间隔独立。Worker 以 `(pgid, WeaveRetryKind)` 保存回调，区分物化、清理及转换步骤，防止彼此覆盖。重试闭包持有 PG 引用并校验角色代数或任务 epoch；PG 变化取消全部重试。资源释放通知尚未接入，因此上述资源等待保留短周期重试。
+资源及转换失败仍使用 1 秒重试，与候选扫描间隔独立。Worker 以 `(pgid, WeaveRetryKind)` 保存回调，区分物化、清理及转换步骤，防止彼此覆盖。Adapter 的 `LockedPGCallback` 持有 PG 引用，执行时取得 PG 锁；Controller 的 `on_cleanup_retry()` / `on_materialization_retry()` 校验角色代数，转换任务自身校验 epoch。PG 变化取消全部重试。资源释放通知尚未接入，因此上述资源等待保留短周期重试。
 
 ### 3.4 提交与交付顺序
 
@@ -234,6 +234,8 @@ volume_size * 100 <= sum * (padding_percent + 100)      // 128 位宽运算，�
 6. 回到 PG 锁内（`pg_interface_.serialized`）调 `hooks_.validate()`：复核全部成员的预留身份、Catalog、exists、`blocks_pack()`、version、`snap_sequence`、eligible、watcher、clone（`job_is_valid`，`WeavePGControllerImpl.cc:465-484`）。
 7. 写 Volume（`replace=false`）→ `pack_committed` → `hooks_.publish()`（仅 `catalog_.upsert`）→ 逐个删源，带 `assert_version` 防止删掉被改写过的对象，`-ENOENT` 视为已删（`WeaveConversionJob.cc:195-253`）。
 8. `finish_job`：释放预留（失败时把源放回候选）→ `initialize()` **按磁盘强制重载**（打包失败也可能已提交但丢回调）→ 成功 requeue 等待者 / 失败 `fail_waiters`；打包路径失败还要 `translator_.shutdown()` 关闭请求入口（`WeavePGControllerImpl.cc:501-540`）。
+
+I/O 完成分两层：Adapter 的 `make_io_completion()` 用 `C_OnFinisher` 将完成处理转交 Objecter finisher，`PGIoCompletion` 保持 PG 存活并取得 PG 锁；Job 的 `IoCompletion` 保持 job 和读缓冲区存活，校验当前任期及 I/O 序号，然后调用对应的 `on_*_complete()`。业务步骤放在具名方法中，短 lambda 只绑定参数并转发。
 
 一致性要点：**Volume 数据与有效 `volume_meta` 同事务提交即权威**；`publish`/`detach` 只是镜像已提交的磁盘变化，不含可回滚决策；回调丢失由磁盘裁决（台账 D1 的修复）。
 
@@ -259,7 +261,7 @@ volume_size * 100 <= sum * (padding_percent + 100)      // 128 位宽运算，�
 ### 4.3 回收（reclaim）
 
 - 入口：`OSD::tick` 的每日定时器（`WeaveReclaimTimer.h`，严格 `HH:MM` UTC、跨日折叠、回拨不重放，`OSD::tick` `OSD.cc:6129`）与手工命令 `weave cleanup`（`OSD.cc:2544-2557`，注册于 `:3918`）。
-- 单飞：`ReclaimPass` 弱引用 token，一轮未结束第二次请求返回 `already_running`（`WeaveService.cc:22-47,58-78`）；`snapshot()` 在 OSD 锁下取 dispatcher，随后逐个 PG 在自己的 PG 锁下执行（`OSD.cc:6099-6121`）。
+- 单飞：`WeaveService` 用弱引用观察 `WeaveReclaimPass`，排队的 dispatcher 和各 PG 的 `Cleanup` 持有 `WeaveReclaimPass::Ref`。最后一个持有者释放引用即结束本轮；拒绝、取消或关闭时丢弃任务也会释放引用，无需空完成回调。一轮未结束第二次请求返回 `already_running`；`snapshot()` 在 OSD 锁下取 dispatcher，随后逐个 PG 在自己的 PG 锁下执行（`WeaveService::Impl::launch_reclaim`、`OSD::snapshot_weave_reclaim`、`WeavePGController::Impl::finish_cleanup`）。
 - PG 内：请求时对 `catalog_.list_volumes()` 取快照，**空卷排前**（先回收容器再搬数据），每步对活 Catalog 复核；`volume_needs_reclaim`：`members * 100 <= data_shards * live_percent`（`WeavePGControllerImpl.cc:313-375`）。
 - `start_deaggregation`：几何不匹配 → `-EIO` 并 `fail_waiters`；Volume 缺失 → `-ENOENT`；Volume busy 或无租约 → 下次唤醒重试（`:377-409`）。
 
@@ -351,10 +353,10 @@ sequenceDiagram
 | 磁盘权威 | `reload_metadata` 筛选记录，`replace_from_disk` 一次解码并原子 swap；失败不发布部分映射 | `WeavePGControllerImpl.cc::reload_metadata`、`WeaveCatalog.cc::replace_from_disk` |
 | 冲突归属 | 两个磁盘 Volume 声称同一成员 → `-EEXIST` → 控制器 `-EIO` 关闭入口，不按扫描顺序或版本大小猜测 | `WeaveCatalog.cc:184-201`、`:103-121` |
 | 反伪造 | Controller 只采信私有 namespace 的属性；Catalog 要求完整解码且 `volume_oid == source` | `WeavePGControllerImpl.cc::reload_metadata`、`WeaveCatalog.cc::load_from_disk`（I7） |
-| 迟到回执 | `completion()` 用单调 `io_sequence_` 丢弃被取代/重复的回调；`authenticates(tid)` 只认当前 tid | `WeaveConversionJob.cc:34-36,87-101` |
+| 迟到回执 | `make_io_completion()` 构造 `IoCompletion`，用单调 `io_sequence_` 丢弃被取代/重复的回调；`authenticates(tid)` 只认当前 tid | `WeaveConversionJob::make_io_completion`、`WeaveConversionJob::accept_io_completion` |
 | 角色/任期 | 唤醒闭包比对 `generation_`；I/O 用 `pg_interface_.current(epoch_)` 判 `pg_has_reset_since` | `WeavePGControllerImpl.cc:197-211`、`WeavePGAdapter.cc:68-72` |
 | 超时写 | `resolve_volume` 等 Volume `busy()` 释放（已获准事务结束）后才允许重载，绝不把超时当回滚 | `WeaveConversionJob.cc:221-234` |
-| 取消 | `WeaveLease::reset` 幂等线程安全（先摘回调再执行）；`cancel_job` 保留 job 存活到自身 finish hook | `WeavePGInterface.h:32-58`、`WeaveConversionJob.cc:62-85` |
+| 取消 | `WeaveLease::reset` 幂等、可重入（先摘回调再执行），同一租约的访问由调用者串行化；全局槽由 Worker 锁保护。`cancel_job` 保留 job 存活到自身 finish hook | `WeavePGInterface.h::WeaveLease`、`WeaveWorker::release`、`WeaveConversionJob::cancel` |
 | 已发布元数据不可变 | `remove_member` 用**替换**而非原地修改，保住 in-flight reader 的 shard 几何 | `WeaveCatalog.cc:246-262` |
 | 只有一处写 hobj | 翻译是唯一改写 hobj/算子的地方，`finish_request` 是唯一撤销点 | `WeaveMemberTranslator.cc:145-168,257-269` |
 
@@ -428,7 +430,7 @@ bash src/test/weave/concurrent_pack_reads.sh /root/ceph/build /tmp/weave-pack-re
 | D5 必要物化资源 | `start_deaggregation` 遇 Volume busy 或无租约即返回；`submit_member_write`/`submit_volume_remove` 对所有负返回一律 `retry()`，无错误分类与空间准入 | `:377-409`、`WeaveConversionJob.cc:305-340` |
 | D7 下推资源预算 | `execute_data_class` 在 OSD 进程内直接执行插件，无独立内存/时限预算 | `WeaveECAdapter.cc:30-59` |
 | D6 失败打包记录增长 | 随 D1 修复移除内存 `unpublished_or_retired_` 集合，改由磁盘映射裁决 | `:65-101` |
-| D8 清理无结果 | `weave cleanup` 只回 `accepted`/`already_running`，完成回调不携带统计 | `OSD.cc:2544-2557`、`WeaveService.cc:58-78` |
+| D8 清理无结果 | `weave cleanup` 只回 `accepted`/`already_running`，轮次引用不携带统计 | `OSD.cc:2544-2557`、`WeaveService.cc:58-78` |
 
 文档层另有大量集群验收声明（单测数量、22 个崩溃点、4+2 真机场景、收益对照等，见 `weave_d1_recovery.md`、`weave_pack_reads.md`、`weave_issue_register.md`、`weave_benefit_evaluation.md`）。**这些是文档声明，本文未复跑，也不作为代码事实引用。**
 

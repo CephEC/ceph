@@ -9,6 +9,18 @@
 
 namespace ceph::weave {
 
+// The PG adapter delivers this under the PG lock. Holding the job also keeps
+// its I/O buffers alive; the sequence rejects replies from an older attempt.
+struct WeaveConversionJob::IoCompletion {
+  std::shared_ptr<WeaveConversionJob> job;
+  uint64_t sequence;
+  WeaveCompletion callback;
+
+  void operator()(int result) const {
+    if (job->accept_io_completion(sequence)) callback(result);
+  }
+};
+
 WeaveConversionJob::WeaveConversionJob(
   WeavePGInterface& pg_interface, uint64_t identity, uint64_t unit,
   std::vector<WeaveCandidate> members, WeaveVolumeMeta volume,
@@ -83,17 +95,12 @@ void WeaveConversionJob::cancel() {
   if (tid) pg_interface_.cancel_io(tid);
 }
 
-WeaveCompletion WeaveConversionJob::completion(
-  std::function<void(int)> callback) {
-  return [self = shared_from_this(), sequence = ++io_sequence_,
-          callback = std::move(callback)](int r) {
-    if (!self->accept_completion(sequence)) return;
-
-    callback(r);
-  };
+WeaveCompletion WeaveConversionJob::make_io_completion(
+  WeaveCompletion callback) {
+  return IoCompletion{shared_from_this(), ++io_sequence_, std::move(callback)};
 }
 
-bool WeaveConversionJob::accept_completion(uint64_t sequence) {
+bool WeaveConversionJob::accept_io_completion(uint64_t sequence) {
   // Reject replies from cancelled, superseded or timed-out attempts.
   if (!current() || sequence != io_sequence_) return false;
 
@@ -134,7 +141,7 @@ void WeaveConversionJob::start() {
 void WeaveConversionJob::submit_volume_read() {
   stage_ = Stage::kReadingVolume;
   tid_ = pg_interface_.read(volume_.volume_oid, volume_version_, volume_size_,
-    &volume_data_.data, &volume_data_.attrs, completion([this](int r) {
+    &volume_data_.data, &volume_data_.attrs, make_io_completion([this](int r) {
       on_volume_read_complete(r);
     }));
 }
@@ -157,7 +164,7 @@ void WeaveConversionJob::submit_member_read(size_t index) {
 
   // One member per round trip; the next read starts from this reply.
   tid_ = pg_interface_.read(member.oid, member.user_version, member.size,
-    &data_[index].data, &data_[index].attrs, completion([this, index](int r) {
+    &data_[index].data, &data_[index].attrs, make_io_completion([this, index](int r) {
       on_member_read_complete(index, r);
     }));
 }
@@ -235,7 +242,7 @@ void WeaveConversionJob::submit_volume_write() {
 
   pg_interface_.conversion_checkpoint("pack_before_write");
   tid_ = pg_interface_.write(volume_.volume_oid, volume.data, volume.attrs,
-    utime_t(ceph::real_clock::now()), false, completion([this](int r) {
+    utime_t(ceph::real_clock::now()), false, make_io_completion([this](int r) {
       on_volume_write_complete(r);
     }));
 }
@@ -279,7 +286,7 @@ void WeaveConversionJob::submit_member_remove(size_t index) {
 
   pg_interface_.conversion_checkpoint("source_before_remove", index);
   tid_ = pg_interface_.remove(member.oid, member.user_version,
-    completion([this, index](int r) {
+    make_io_completion([this, index](int r) {
       on_member_remove_complete(index, r);
     }));
 }
@@ -364,7 +371,7 @@ void WeaveConversionJob::submit_member_write(size_t index) {
 
   pg_interface_.conversion_checkpoint("member_before_write", index);
   tid_ = pg_interface_.write(member.oid, data_[index].data, data_[index].attrs,
-    member.mtime, true, completion([this, index](int r) {
+    member.mtime, true, make_io_completion([this, index](int r) {
       on_member_write_complete(index, r);
     }));
 }
@@ -387,7 +394,7 @@ void WeaveConversionJob::submit_volume_remove() {
 
   pg_interface_.conversion_checkpoint("volume_before_remove");
   tid_ = pg_interface_.remove(volume_.volume_oid, std::nullopt,
-    completion([this](int r) {
+    make_io_completion([this](int r) {
       on_volume_remove_complete(r);
     }));
 }

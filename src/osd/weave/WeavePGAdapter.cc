@@ -29,6 +29,38 @@ object_locator_t locator(const hobject_t& oid) {
   return result;
 }
 
+// Both queued retries and I/O completions own a PG reference until after their
+// callbacks return. The PG lock is acquired only when they execute.
+class LockedPGCallback {
+public:
+  LockedPGCallback(PGRef pg, std::function<void()> callback)
+    : pg_(std::move(pg)), callback_(std::move(callback)) {}
+
+  void operator()() const {
+    std::lock_guard lock(*pg_);
+    callback_();
+  }
+
+private:
+  PGRef pg_;
+  std::function<void()> callback_;
+};
+
+class PGIoCompletion final : public Context {
+public:
+  PGIoCompletion(PGRef pg, ceph::weave::WeaveCompletion callback)
+    : pg_(std::move(pg)), callback_(std::move(callback)) {}
+
+private:
+  void finish(int result) override {
+    std::lock_guard lock(*pg_);
+    callback_(result);
+  }
+
+  PGRef pg_;
+  ceph::weave::WeaveCompletion callback_;
+};
+
 }  // namespace
 
 // A nested native adapter has exactly the access of PrimaryLogPG. Weave's
@@ -208,12 +240,8 @@ public:
 
   void retry(ceph::weave::WeaveRetryKind kind,
              std::function<void()> callback) override {
-    // owner keeps the PG alive until the wakeup has run under the PG lock.
     osd_.weave_service->retry(pg_.info.pgid, kind,
-      [this, owner = pin(), callback = std::move(callback)] {
-        std::lock_guard lock(pg_);
-        callback();
-      });
+      LockedPGCallback(PGRef(&pg_), std::move(callback)));
   }
 
   void cancel_retries() override { osd_.weave_service->cancel(pg_.info.pgid); }
@@ -252,7 +280,7 @@ public:
 
     return osd_.objecter->read(oid.oid, locator(oid), op, CEPH_NOSNAP, nullptr,
                                CEPH_OSD_FLAG_IGNORE_OVERLAY,
-                               complete(std::move(callback)));
+                               make_io_completion(std::move(callback)));
   }
 
   ceph_tid_t write(const hobject_t& oid, const bufferlist& data,
@@ -260,7 +288,7 @@ public:
                    bool replace,
                    ceph::weave::WeaveCompletion callback) override {
     if (!write_limits().accepts(data.length(), attrs)) {
-      complete(std::move(callback))->complete(-EFBIG);
+      make_io_completion(std::move(callback))->complete(-EFBIG);
       return 0;
     }
     ObjectOperation op;
@@ -289,7 +317,7 @@ public:
       // Keep fault delivery asynchronous, just like an Objecter completion.
       lsubdout(pg_.cct, osd, 10)
         << "Weave source retirement injected EIO for " << oid << dendl;
-      complete(std::move(callback))->complete(-EIO);
+      make_io_completion(std::move(callback))->complete(-EIO);
       return 0;
     }
 
@@ -313,15 +341,12 @@ private:
             conf->osd_max_write_size};
   }
 
-  // Never run an I/O callback inline: bounce it onto the objecter finisher and
-  // reacquire the PG lock before invoking the caller's continuation.
-  Context* complete(ceph::weave::WeaveCompletion callback) {
-    return new C_OnFinisher(new LambdaContext(
-      [this, owner = pin(), callback = std::move(callback)](int r) {
-        // owner keeps the PG alive until this continuation has re-locked it.
-        std::lock_guard lock(pg_);
-        callback(r);
-      }), osd_.get_objecter_finisher(pg_.get_pg_shard()));
+  // Always hop to the Objecter finisher, even for locally rejected I/O.
+  // PGIoCompletion then holds the PG lock while advancing the job.
+  Context* make_io_completion(ceph::weave::WeaveCompletion callback) {
+    return new C_OnFinisher(
+      new PGIoCompletion(PGRef(&pg_), std::move(callback)),
+      osd_.get_objecter_finisher(pg_.get_pg_shard()));
   }
 
   // The primary redirects to another shard; the receiving replica validates
@@ -382,7 +407,7 @@ private:
       mtime, CEPH_OSD_FLAG_IGNORE_OVERLAY |
         (oid.nspace == ceph::weave::kVolumeNamespace
            ? CEPH_OSD_FLAG_ENFORCE_SNAPC : 0),
-      complete(std::move(callback)));
+      make_io_completion(std::move(callback)));
   }
 
   PrimaryLogPG& pg_;

@@ -283,6 +283,22 @@ TEST_F(WeaveConversion, CancelledReadAndDuplicateCallbackCannotAdvanceNewJob) {
   EXPECT_EQ(pg_interface.acquired, 2u); EXPECT_EQ(pg_interface.released, 1u);
   next_lease.reset();
 }
+TEST_F(WeaveConversion, PendingReadKeepsCancelledJobAliveUntilCallbackIsReleased) {
+  create();
+  std::weak_ptr<WeaveConversionJob> pending_job = job;
+  job->cancel();
+  job.reset();
+  EXPECT_FALSE(pending_job.expired());
+
+  // Objecter may still fill the job's read buffers after cancellation.
+  auto late = pg_interface.complete();
+  EXPECT_FALSE(pending_job.expired());
+  EXPECT_TRUE(pg_interface.io.empty());
+  EXPECT_EQ(finishes, 1u);
+  EXPECT_EQ(pg_interface.released, 1u);
+  late.complete = {};
+  EXPECT_TRUE(pending_job.expired());
+}
 TEST_F(WeaveConversion, DuplicateSuccessfulReadCannotReadNextMemberTwice) {
   create(); auto first = pg_interface.complete();
   ASSERT_EQ(pg_interface.io.size(), 1u);
@@ -503,7 +519,7 @@ protected:
     ASSERT_EQ(controller->preprocess_client_op(recreate), RequestDisposition::kNative);
     pg_interface->put(b, "BNEW"); // recreated objects may reuse a user_version
     controller->on_commit(pg_interface->inspect(b).info, true, recreate);
-    controller->request_cleanup(100, [] {});
+    controller->request_cleanup(100, std::make_shared<WeaveReclaimPass>());
     drain();
     restart(false);
     EXPECT_EQ(pg_interface->objects[b].data.to_str(), "BNEW");
@@ -1019,8 +1035,9 @@ TEST_F(WeaveDurableRecovery, MaterializationRetryIsIndependentOfScansAndCleanup)
   ASSERT_EQ(controller->preprocess_client_op(write), RequestDisposition::kDeferred);
   EXPECT_EQ(pg_interface->retries.count(WeaveRetryKind::kMaterialization), 1u);
 
-  bool cleanup_finished = false;
-  controller->request_cleanup(100, [&] { cleanup_finished = true; });
+  auto pass = std::make_shared<WeaveReclaimPass>();
+  std::weak_ptr<WeaveReclaimPass> pending_cleanup = pass;
+  controller->request_cleanup(100, std::move(pass));
   EXPECT_EQ(pg_interface->retries.count(WeaveRetryKind::kCleanup), 1u);
   pg_interface->settings.background = true;
   controller->scan_candidates();
@@ -1036,17 +1053,18 @@ TEST_F(WeaveDurableRecovery, MaterializationRetryIsIndependentOfScansAndCleanup)
   drain();
   EXPECT_FALSE(controller->is_logical_member(a));
   EXPECT_EQ(pg_interface->requeued, requeued + 2);
-  EXPECT_FALSE(cleanup_finished);
+  EXPECT_FALSE(pending_cleanup.expired());
   pg_interface->tick(WeaveRetryKind::kCleanup);
-  EXPECT_TRUE(cleanup_finished);
+  EXPECT_TRUE(pending_cleanup.expired());
 }
 
 TEST_F(WeaveDurableRecovery, CleanupRetriesItsOwnPassWithoutCandidateScan) {
   pack(); drain();
   pg_interface->allow_acquire = false;
-  bool cleanup_finished = false;
-  controller->request_cleanup(100, [&] { cleanup_finished = true; });
-  EXPECT_FALSE(cleanup_finished);
+  auto pass = std::make_shared<WeaveReclaimPass>();
+  std::weak_ptr<WeaveReclaimPass> pending_cleanup = pass;
+  controller->request_cleanup(100, std::move(pass));
+  EXPECT_FALSE(pending_cleanup.expired());
   EXPECT_EQ(pg_interface->retries.count(WeaveRetryKind::kCleanup), 1u);
   pg_interface->allow_acquire = true;
   controller->scan_candidates();
@@ -1054,21 +1072,66 @@ TEST_F(WeaveDurableRecovery, CleanupRetriesItsOwnPassWithoutCandidateScan) {
   pg_interface->tick(WeaveRetryKind::kCleanup);
   ASSERT_FALSE(pg_interface->io.empty());
   drain();
-  EXPECT_TRUE(cleanup_finished);
+  EXPECT_TRUE(pending_cleanup.expired());
   EXPECT_FALSE(controller->is_logical_member(a));
   EXPECT_TRUE(pg_interface->retries.empty());
 }
 
-TEST(WeaveService, ReclaimPassStaysActiveUntilEveryPGReleasesCompletion) {
+TEST_F(WeaveDurableRecovery, RejectedAndEmptyCleanupReleasePassImmediately) {
+  auto rejected = std::make_shared<WeaveReclaimPass>();
+  std::weak_ptr<WeaveReclaimPass> pending_rejected = rejected;
+  pg_interface->primary_role = false;
+  controller->request_cleanup(100, std::move(rejected));
+  EXPECT_TRUE(pending_rejected.expired());
+
+  auto empty = std::make_shared<WeaveReclaimPass>();
+  std::weak_ptr<WeaveReclaimPass> pending_empty = empty;
+  pg_interface->primary_role = true;
+  controller->request_cleanup(100, std::move(empty));
+  EXPECT_TRUE(pending_empty.expired());
+  EXPECT_TRUE(pg_interface->io.empty());
+  EXPECT_TRUE(pg_interface->retries.empty());
+}
+
+TEST_F(WeaveDurableRecovery, PGChangeReleasesCleanupAndRejectsStaleRetry) {
+  pack(); drain();
+  pg_interface->allow_acquire = false;
+  auto pass = std::make_shared<WeaveReclaimPass>();
+  std::weak_ptr<WeaveReclaimPass> pending_cleanup = pass;
+  controller->request_cleanup(100, std::move(pass));
+  ASSERT_FALSE(pending_cleanup.expired());
+  ASSERT_EQ(pg_interface->retries.count(WeaveRetryKind::kCleanup), 1u);
+  auto stale_retry = pg_interface->retries.at(WeaveRetryKind::kCleanup);
+
+  controller->on_pg_change(false);
+  ++pg_interface->generation;
+  EXPECT_TRUE(pending_cleanup.expired());
+
+  // An old queued retry must not advance the new PG generation's pass.
+  auto next = std::make_shared<WeaveReclaimPass>();
+  std::weak_ptr<WeaveReclaimPass> pending_next = next;
+  controller->request_cleanup(100, std::move(next));
+  ASSERT_FALSE(pending_next.expired());
+  pg_interface->allow_acquire = true;
+  stale_retry();
+  EXPECT_TRUE(pg_interface->io.empty());
+  EXPECT_FALSE(pending_next.expired());
+  pg_interface->tick(WeaveRetryKind::kCleanup);
+  ASSERT_FALSE(pg_interface->io.empty());
+  drain();
+  EXPECT_TRUE(pending_next.expired());
+}
+
+TEST(WeaveService, ReclaimPassStaysActiveUntilEveryPGReleasesReference) {
   WeaveService service(g_ceph_context);
   using Result = WeaveService::ReclaimResult;
   auto submit = [&](WeaveService::Dispatch dispatch) {
     return service.request_reclaim(37, [dispatch = std::move(dispatch)] { return dispatch; });
   };
-  std::promise<std::function<void()>> dispatched;
-  EXPECT_EQ(submit([&](unsigned percent, std::function<void()> done) {
+  std::promise<WeaveReclaimPass::Ref> dispatched;
+  EXPECT_EQ(submit([&](unsigned percent, WeaveReclaimPass::Ref pass) {
     EXPECT_EQ(percent, 37u);
-    dispatched.set_value(std::move(done));
+    dispatched.set_value(std::move(pass));
   }), Result::kAccepted);
   auto future = dispatched.get_future();
   ASSERT_EQ(future.wait_for(std::chrono::seconds(5)), std::future_status::ready);
@@ -1077,10 +1140,10 @@ TEST(WeaveService, ReclaimPassStaysActiveUntilEveryPGReleasesCompletion) {
   std::promise<void> drained;
   service.post([&] { drained.set_value(); });
   ASSERT_EQ(drained.get_future().wait_for(std::chrono::seconds(5)), std::future_status::ready);
-  first = {};
+  first.reset();
   EXPECT_EQ(submit({}), Result::kAlreadyRunning);
-  second = {};
-  EXPECT_EQ(submit([](unsigned, std::function<void()>) {}), Result::kAccepted);
+  second.reset();
+  EXPECT_EQ(submit([](unsigned, WeaveReclaimPass::Ref) {}), Result::kAccepted);
   service.shutdown();
   EXPECT_EQ(submit({}), Result::kStopping);
 }
