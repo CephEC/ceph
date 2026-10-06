@@ -56,7 +56,7 @@ class OSD;
 class OSDService;
 namespace ceph::weave {
 class WeavePGController;
-class WeavePGHost;
+class WeavePGInterface;
 }
 class OSDShard;
 class OSDShardPGSlot;

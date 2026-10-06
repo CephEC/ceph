@@ -32,7 +32,7 @@ Volume 就是成员的权威来源；Catalog 是磁盘状态的缓存，Objecter
   清理等待旧读结束，重新排队的请求重新解析路由。物化仍保留整个交接的读屏障。
   并发读取实现与验证见 [weave_pack_reads.md](weave_pack_reads.md)。
   删卷期间 PG 列举也等待，防止 xattr 过滤读取已删除的 Volume。
-- Ceph host 保持原生单对象事务及持久化确认语义。PG reset 后未获准执行的
+- `WeavePGAdapter` 保持原生单对象事务及持久化确认语义。PG reset 后未获准执行的
   旧请求必须经过任务身份校验；发往另一个 primary 的内部请求直接返回
   `-ECANCELED`，不能降级成普通逻辑写入或删除。已经提交的请求由 Ceph 的
   peering/recovery 确定结果，`op_cancel` 不被视为回滚。

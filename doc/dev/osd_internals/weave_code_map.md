@@ -29,7 +29,8 @@ graph TB
     I --> T[WeaveMemberTranslator<br/>逻辑↔物理翻译]
     I --> R[WeaveReadRouter<br/>重定向决策]
     I --> J[WeaveConversionJob<br/>pack/unpack 状态机]
-    H[PrimaryLogPG::WeaveHost<br/>PG 指针只在这里] --> I
+    PIF[WeavePGInterface<br/>PG 状态 / I/O / 调度接口]
+    H[PrimaryLogPG::WeavePGAdapter<br/>PG 指针只在这里] -. 实现 .-> PIF
   end
   subgraph OSD 级
     S[WeaveService<br/>租约/调度/回收单飞] --> SC[WeaveWorker 工作线程]
@@ -39,7 +40,7 @@ graph TB
     P[PGBackend::load_attr_mirror] --> OS[ObjectStore::load_attr_mirror]
     OS --> AM[ceph::os::AttrMirror<br/>PREFIX_VOLUME='V' 行 = PREFIX_OBJ 键]
   end
-  I --> H
+  I --> PIF
   H --> S
   I --> EC[ECBackend::weave: WeaveECAdapter<br/>成员读/类下推]
 ```
@@ -48,8 +49,8 @@ graph TB
 |---|---|---|
 | `WeavePGController.{h,cc}` | 71/119 | 纯转发门面；`RequestDisposition`、`stops_native_processing`（`WeavePGController.h:15-35`） |
 | `detail/WeavePGControllerImpl.{h,cc}` | 177/1018 | 准入策略、目录加载、候选、预留、任务编排、回收 |
-| `WeavePGHost.h` | 135 | PG 端口：`WeavePolicy/WeaveGeometry/WeaveObjectState`、`WeaveLease`、I/O 端口、`WeaveTransaction`；Ceph 不把 PG 指针交给策略层 |
-| `WeaveCephHost.cc` | 386 | `PrimaryLogPG::WeaveHost`，唯一原生适配器 |
+| `WeavePGInterface.h` | 135 | PG 端口：`WeavePolicy/WeaveGeometry/WeaveObjectState`、`WeaveLease`、I/O 端口、`WeaveTransaction`；Ceph 不把 PG 指针交给策略层 |
+| `WeavePGAdapter.cc` | 386 | `PrimaryLogPG::WeavePGAdapter`，唯一原生适配器 |
 | `detail/WeaveConversionJob.{h,cc}` | 94/341 | 打包/物化状态机 |
 | `detail/WeaveCatalog.{h,cc}` | 77/301 | 元数据 v1 编解码 + 双向内存索引，`shared_mutex` |
 | `detail/WeaveMemberTranslator.{h,cc}` | 88/428 | 算子白名单、hobj/xattr/read/CALL 重写、回复还原、逻辑 STAT/版本 |
@@ -179,7 +180,7 @@ header.version = (HAVE_FEATURE(features, WEAVE_READ_REDIRECT) &&
 ```mermaid
 stateDiagram-v2
   [*] --> kReadingMembers: submit_member_read(0) 逐个 assert_version 读源
-  kReadingMembers --> kBuildingVolume: 全部读完 → host.post(CPU)
+  kReadingMembers --> kBuildingVolume: 全部读完 → pg_interface_.post(CPU)
   kBuildingVolume --> kWritingVolume: serialized() 后 validate() 在 PG 锁内复核
   kWritingVolume --> kPublishing: Volume 写提交（数据 + volume_meta 同事务）
   kPublishing --> kRetiringMembers: publish() 仅镜像已提交状态
@@ -221,18 +222,18 @@ volume_size * 100 <= sum * (padding_percent + 100)      // 128 位宽运算，�
 
 ### 3.4 提交与交付顺序
 
-1. `host_->acquire()` 取 OSD 级租约：`osd_weave_max_concurrent` 为全局槽数，每 PG 仅一个槽（`WeaveWorker.cc:66-78`、`WeaveService.cc:91-101`）。
-2. `plan_volume` 分配 Volume oid（`WeaveCephHost.cc:129-140`，本地唯一名：`volume_<osd>_<pgid>_<epoch>_<tid>_<seq>`），并把 shard 顺序**在预留仍在时**固化进元数据。
+1. `pg_interface_->acquire()` 取 OSD 级租约：`osd_weave_max_concurrent` 为全局槽数，每 PG 仅一个槽（`WeaveWorker.cc:66-78`、`WeaveService.cc:91-101`）。
+2. `plan_volume` 分配 Volume oid（`WeavePGAdapter.cc:129-140`，本地唯一名：`volume_<osd>_<pgid>_<epoch>_<tid>_<seq>`），并把 shard 顺序**在预留仍在时**固化进元数据。
 3. `start_job` 先为每个成员写 `reserved_[oid] = identity`，再构造并启动 job（`WeavePGControllerImpl.cc:434-449`）。
 4. 逐个成员 `read(oid, assert_version(user_version), size)`；短读直接失败（`WeaveConversionJob.cc:136-155`）。
-5. CPU 组装（不带 PG 锁，`host_.post`）：`interleave_members` + 成员属性加前缀 + 编码 `volume_meta`（`:157-193`）。
-6. 回到 PG 锁内（`host_.serialized`）调 `hooks_.validate()`：复核全部成员的预留身份、Catalog、exists、`blocks_pack()`、version、`snap_sequence`、eligible、watcher、clone（`job_is_valid`，`WeavePGControllerImpl.cc:465-484`）。
+5. CPU 组装（不带 PG 锁，`pg_interface_.post`）：`interleave_members` + 成员属性加前缀 + 编码 `volume_meta`（`:157-193`）。
+6. 回到 PG 锁内（`pg_interface_.serialized`）调 `hooks_.validate()`：复核全部成员的预留身份、Catalog、exists、`blocks_pack()`、version、`snap_sequence`、eligible、watcher、clone（`job_is_valid`，`WeavePGControllerImpl.cc:465-484`）。
 7. 写 Volume（`replace=false`）→ `pack_committed` → `hooks_.publish()`（仅 `catalog_.upsert`）→ 逐个删源，带 `assert_version` 防止删掉被改写过的对象，`-ENOENT` 视为已删（`WeaveConversionJob.cc:195-253`）。
 8. `finish_job`：释放预留（失败时把源放回候选）→ `initialize()` **按磁盘强制重载**（打包失败也可能已提交但丢回调）→ 成功 requeue 等待者 / 失败 `fail_waiters`；打包路径失败还要 `translator_.shutdown()` 关闭请求入口（`WeavePGControllerImpl.cc:501-540`）。
 
 一致性要点：**Volume 数据与有效 `volume_meta` 同事务提交即权威**；`publish`/`detach` 只是镜像已提交的磁盘变化，不含可回滚决策；回调丢失由磁盘裁决（台账 D1 的修复）。
 
-崩溃注入点（`osd_weave_debug_crash_point`，`<checkpoint>:<index>`）：`pack_before_write`、`pack_committed`、`pack_published`、`source_before_remove`/`source_removed`、`member_before_write`/`member_written`、`volume_before_remove`/`volume_removed`、`volume_detached`（`WeaveCephHost.cc:349-367`）。
+崩溃注入点（`osd_weave_debug_crash_point`，`<checkpoint>:<index>`）：`pack_before_write`、`pack_committed`、`pack_published`、`source_before_remove`/`source_removed`、`member_before_write`/`member_written`、`volume_before_remove`/`volume_removed`、`volume_detached`（`WeavePGAdapter.cc:349-367`）。
 
 ## 4. 反向物化（Unpack）
 
@@ -242,12 +243,12 @@ volume_size * 100 <= sum * (padding_percent + 100)      // 128 位宽运算，�
 
 - `needs_native_transition`：快照访问、写（「纯尾部 DELETE」除外）、cache 操作、算子不在白名单（`:729-741`）。
 - `is_logical_delete`：请求与池 `snap_sequence` 均为 0，末尾算子是 DELETE，且整组算子可翻译 → 直接缩映射，不物化（`:710-727`）。
-- `drain_shadow_before_delete`：逻辑删除前先 `host_->wait_for_available`（unreadable/degraded）并确认没有遗留原生影子，否则延迟（`:743-756`）。
+- `drain_shadow_before_delete`：逻辑删除前先 `pg_interface_->wait_for_available`（unreadable/degraded）并确认没有遗留原生影子，否则延迟（`:743-756`）。
 - `defer_for_materialization`：请求进 `waiting_for_conversion_`，必要时 `start_deaggregation`；删除的读屏障**不**因并发读修复而放宽（`:757-772`）。
 
 ### 4.2 流程
 
-`read(volume, assert_version, size)` → `host_.post(materialize_members)`（CPU）→ `extract_member` 逐成员还原数据与属性 → `host_.serialized` → 逐个 `write(member, replace=true, mtime, assert/copy 版本)`，其中 `copy_version`/`copy_snap_sequence` 把 `user_version` 与原 `snapset.seq` 交还原生路径（`PrimaryLogPG.cc:9197-9202`、`4295-4299`，修 F1）→ 全部成员持久化后才 `remove(volume)` → 删卷提交后 `hooks_.detach()` 撤映射（`WeaveConversionJob.cc:255-340`）。
+`read(volume, assert_version, size)` → `pg_interface_.post(materialize_members)`（CPU）→ `extract_member` 逐成员还原数据与属性 → `pg_interface_.serialized` → 逐个 `write(member, replace=true, mtime, assert/copy 版本)`，其中 `copy_version`/`copy_snap_sequence` 把 `user_version` 与原 `snapset.seq` 交还原生路径（`PrimaryLogPG.cc:9197-9202`、`4295-4299`，修 F1）→ 全部成员持久化后才 `remove(volume)` → 删卷提交后 `hooks_.detach()` 撤映射（`WeaveConversionJob.cc:255-340`）。
 
 **Volume 删除事务是交还原生对象的提交点**：删除确认前不撤映射、不释放预留；空卷（成员为空）走同一路径但直接进入 `submit_volume_remove`（`:112-134`）。
 
@@ -288,15 +289,15 @@ sequenceDiagram
 
 - `eligible`：只读、非写、非 cache、非 PG-op、`snapid == CEPH_NOSNAP`，且不带 `RWORDERED|SKIPRWLOCKS|FLUSH|IGNORE_REDIRECT`（`WeaveReadRouter.cc:9-16`）。
 - `may_redirect`：`message.allows_weave_redirect()` + weave context（含 volume 元数据与原始 oid）（`:18-24`）。
-- `locate_read`（`WeaveCephHost.cc:149-178`）：`osd_weave_redirect_reads` 开、PG active、primary 须 clean、成员序号在 data chunk 范围内、Volume 不是 unreadable、`redirect_supported(target)`（目标 up 且具备 `WEAVE_READ_REDIRECT`+`SERVER_QUINCY`；primary 只能指向同组其他 shard，replica 只能确认目标是自己，`:318-333`）、Volume 存在且不 busy、replica 还要 `can_serve_replica_read`。
-- 通过后先 `translator_.finish_request(op)`（撤销本地翻译）再发 `-EAGAIN` 回复（`WeaveReadRouter.cc:33-46`；`WeaveCephHost.cc:195-205`）。
+- `locate_read`（`WeavePGAdapter.cc:149-178`）：`osd_weave_redirect_reads` 开、PG active、primary 须 clean、成员序号在 data chunk 范围内、Volume 不是 unreadable、`redirect_supported(target)`（目标 up 且具备 `WEAVE_READ_REDIRECT`+`SERVER_QUINCY`；primary 只能指向同组其他 shard，replica 只能确认目标是自己，`:318-333`）、Volume 存在且不 busy、replica 还要 `can_serve_replica_read`。
+- 通过后先 `translator_.finish_request(op)`（撤销本地翻译）再发 `-EAGAIN` 回复（`WeaveReadRouter.cc:33-46`；`WeavePGAdapter.cc:195-205`）。
 
 ### 5.3 副本接受
 
 `accept()` 五步，任一步失败都返回 `-EAGAIN` 且不改动请求（`WeaveReadRouter.cc:84-107`）：
 
 1. `eligible` + `route_is_local`（算子可翻译、同 pool、namespace 为该 Volume 私有 ns）；
-2. `host_.load_read_route` 读本 OSD 的 `_volume_meta` 并解码，`volume_oid` 必须等于路由里的 Volume；
+2. `pg_interface_.load_read_route` 读本 OSD 的 `_volume_meta` 并解码，`volume_oid` 必须等于路由里的 Volume；
 3. 成员必须存在于该元数据；
 4. `assignment_matches`：用**本地** osdmap 重算 `locate_read(volume, member.shard)`，要求 target 与 version 都与路由一致（不信任客户端 extent 标志）；
 5. `translator_.activate(本地几何)` → `set_volume_metadata` → `translate`。
@@ -347,9 +348,9 @@ sequenceDiagram
 | 冲突归属 | 两个磁盘 Volume 声称同一成员 → `-EEXIST` → 控制器 `-EIO` 关闭入口，不按扫描顺序或版本大小猜测 | `WeaveCatalog.cc:184-201`、`:103-121` |
 | 反伪造 | Controller 只采信私有 namespace 的属性；Catalog 要求完整解码且 `volume_oid == source` | `WeavePGControllerImpl.cc::reload_metadata`、`WeaveCatalog.cc::load_from_disk`（I7） |
 | 迟到回执 | `completion()` 用单调 `io_sequence_` 丢弃被取代/重复的回调；`authenticates(tid)` 只认当前 tid | `WeaveConversionJob.cc:34-36,87-101` |
-| 角色/任期 | 唤醒闭包比对 `generation_`；I/O 用 `host_.current(epoch_)` 判 `pg_has_reset_since` | `WeavePGControllerImpl.cc:197-211`、`WeaveCephHost.cc:68-72` |
+| 角色/任期 | 唤醒闭包比对 `generation_`；I/O 用 `pg_interface_.current(epoch_)` 判 `pg_has_reset_since` | `WeavePGControllerImpl.cc:197-211`、`WeavePGAdapter.cc:68-72` |
 | 超时写 | `resolve_volume` 等 Volume `busy()` 释放（已获准事务结束）后才允许重载，绝不把超时当回滚 | `WeaveConversionJob.cc:221-234` |
-| 取消 | `WeaveLease::reset` 幂等线程安全（先摘回调再执行）；`cancel_job` 保留 job 存活到自身 finish hook | `WeavePGHost.h:32-58`、`WeaveConversionJob.cc:62-85` |
+| 取消 | `WeaveLease::reset` 幂等线程安全（先摘回调再执行）；`cancel_job` 保留 job 存活到自身 finish hook | `WeavePGInterface.h:32-58`、`WeaveConversionJob.cc:62-85` |
 | 已发布元数据不可变 | `remove_member` 用**替换**而非原地修改，保住 in-flight reader 的 shard 几何 | `WeaveCatalog.cc:246-262` |
 | 只有一处写 hobj | 翻译是唯一改写 hobj/算子的地方，`finish_request` 是唯一撤销点 | `WeaveMemberTranslator.cc:145-168,257-269` |
 
@@ -394,7 +395,7 @@ sequenceDiagram
 
 | 目标 | 内容 |
 |---|---|
-| `unittest_weave`（`src/test/osd/CMakeLists.txt:127-139`） | 3 个 TU：`test_weave.cc`（候选/目录/适配器/翻译/调度/ReadSession/线上协商）、`test_weave_conversion.cc`（FakeHost 在 `:22` 实现整个 `WeavePGHost`，手动推进 I/O 与 CPU 阶段；`TEST_P(WeaveDurableRecovery, ...)` 以 `Range(0,14)` 参数化提交边界矩阵）、`test_weave_reclaim_timer.cc` |
+| `unittest_weave`（`src/test/osd/CMakeLists.txt:127-139`） | 3 个 TU：`test_weave.cc`（候选/目录/适配器/翻译/调度/ReadSession/线上协商）、`test_weave_conversion.cc`（FakeWeavePG 在 `:22` 实现整个 `WeavePGInterface`，手动推进 I/O 与 CPU 阶段；`TEST_P(WeaveDurableRecovery, ...)` 以 `Range(0,14)` 参数化提交边界矩阵）、`test_weave_reclaim_timer.cc` |
 | `weave_boundaries`（ctest） | `check_boundaries.py` 静态门禁：原生代码不得 include `weave/detail/*`、不得 friend weave 类、公开 weave 头不得 include detail、三个核心 TU 不得依赖原生 PG/OSD/Objecter 头 |
 | `ceph_test_weave_compound` / `ceph_test_weave_regressions` | librados 集成客户端，需隔离运行中的 EC 集群 |
 | `durable_recovery.sh` | 6 OSD BlueStore 4+2、单 PG：按 `osd_weave_debug_crash_point` 崩溃、切 primary、校验快照与全重启 |
@@ -411,13 +412,13 @@ bash src/test/weave/durable_recovery.sh /root/ceph/build /tmp/ceph-weave-d1
 bash src/test/weave/concurrent_pack_reads.sh /root/ceph/build /tmp/weave-pack-reads
 ```
 
-覆盖边界：单测层用 FakeHost 覆盖状态机与提交边界；**跨崩溃持久化、并发读栅栏、重定向回退、降级重建、快照语义、netem 与吞吐只由集群脚本覆盖**；`parquet_scan` 的部分参数校验与 `opencv_thumbnail` 的比例/固定尺寸校验没有单测。
+覆盖边界：单测层用 FakeWeavePG 覆盖状态机与提交边界；**跨崩溃持久化、并发读栅栏、重定向回退、降级重建、快照语义、netem 与吞吐只由集群脚本覆盖**；`parquet_scan` 的部分参数校验与 `opencv_thumbnail` 的比例/固定尺寸校验没有单测。
 
 ## 11. 已知缺口（代码可验证部分）
 
 | 编号 | 代码依据 | 状态 |
 |---|---|---|
-| D2 PG split/merge | `new_volume` 只继承**单个种子成员**的 hash/pool（`WeaveCephHost.cc:129-140`），Catalog 无跨 PG 协调；split 后 Volume 只能跟随一个 hash | 代码可确认；台账记录已在真机复现「已确认写入被旧映射遮蔽」 |
+| D2 PG split/merge | `new_volume` 只继承**单个种子成员**的 hash/pool（`WeavePGAdapter.cc:129-140`），Catalog 无跨 PG 协调；split 后 Volume 只能跟随一个 hash | 代码可确认；台账记录已在真机复现「已确认写入被旧映射遮蔽」 |
 | D3 启停/版本准入 | 无池级持久化特性标志与最低版本准入；`osd_weave_enabled=false` 直接走原生路径，磁盘 Volume 不装载也不拒绝该配置（`PrimaryLogPG.cc:1794-1800`、`WeavePGControllerImpl.cc:46-63`） | 代码可确认 |
 | D4 冷数据再发现 | 候选只由提交事件喂入，`on_pg_change` 直接 `candidates_.clear()`，`initialize` 只装载 Catalog，无原生对象扫描/游标 | `WeavePGControllerImpl.cc:154-186,229-236` |
 | D5 必要物化资源 | `start_deaggregation` 遇 Volume busy 或无租约即返回；`submit_member_write`/`submit_volume_remove` 对所有负返回一律 `retry()`，无错误分类与空间准入 | `:377-409`、`WeaveConversionJob.cc:305-340` |
@@ -430,10 +431,10 @@ bash src/test/weave/concurrent_pack_reads.sh /root/ceph/build /tmp/weave-pack-re
 ## 12. 建议阅读顺序
 
 1. `detail/WeaveLayout.h` → `detail/WeaveCatalog.{h,cc}`：布局与格式。
-2. `WeavePGHost.h` → `WeaveCephHost.cc`：PG 与 weave 的唯一接缝、原生 I/O 封装与故障注入点。
+2. `WeavePGInterface.h` → `WeavePGAdapter.cc`：PG 与 weave 的唯一接缝、原生 I/O 封装与故障注入点。
 3. `detail/WeavePGControllerImpl.cc`：`initialize`/`reload_metadata` → `prepare_request` → `preprocess_client_op` → `scan`/`start_job`/`finish_job` → `request_cleanup`/`start_deaggregation`。
 4. `detail/WeaveConversionJob.cc`：两套状态机与提交顺序。
 5. `detail/WeaveMemberTranslator.cc` + `detail/WeaveReadRouter.cc` + `WeaveECAdapter.cc`：读与类下推全链路。
 6. `src/osdc/WeaveReadSession.h` + `Objecter.cc:2915/2997/3221/3457/4504`：客户端一次性绕行与回退。
 7. `src/os/AttrMirror.{h,cc}` + `BlueStore.cc` 的 5 处调用点：Catalog 的可枚举来源。
-8. `src/test/weave/test_weave_conversion.cc` 的 `FakeHost`：最快的可执行规格说明。
+8. `src/test/weave/test_weave_conversion.cc` 的 `FakeWeavePG`：最快的可执行规格说明。

@@ -31,7 +31,7 @@ public:
             std::function<Dispatch()> snapshot);
   void shutdown();
 
-  // Used by the Ceph PG host, never by packing policy or native OSD callers.
+  // Used by the native PG adapter, never by packing policy or native OSD callers.
   std::unique_ptr<WeaveLease> acquire(const spg_t&);
   void retry(const spg_t&, WeaveRetryKind, std::function<void()>);
   void cancel(const spg_t&);

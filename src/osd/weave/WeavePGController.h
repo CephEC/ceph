@@ -9,7 +9,7 @@
 
 namespace ceph::weave {
 
-class WeavePGHost;
+class WeavePGInterface;
 struct WeaveTransaction;
 
 enum class RequestDisposition {
@@ -32,7 +32,7 @@ class WeavePGController {
 public:
   using XAttrs = std::map<std::string, ceph::buffer::list, std::less<>>;
 
-  WeavePGController(CephContext*, std::unique_ptr<WeavePGHost>, bool);
+  WeavePGController(CephContext*, std::unique_ptr<WeavePGInterface>, bool);
   ~WeavePGController();
 
   void initialize();

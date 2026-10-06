@@ -73,15 +73,16 @@ private:
   std::function<void()> release_;
 };
 
-// Ceph implements this port without exposing PG/ObjectContext pointers.
+// PG state, I/O and scheduling capabilities used by Weave. The native adapter
+// implements this interface without exposing PG/ObjectContext pointers.
 // Unless specified otherwise, calls and completions run under the PG lock.
 // I/O callbacks MUST NOT run inline: the returned tid authenticates the
 // request before it is admitted to the PG. read/write buffers live through
 // completion, including cancelled completions. pin() keeps the owner alive
 // across callbacks.
-class WeavePGHost {
+class WeavePGInterface {
 public:
-  virtual ~WeavePGHost() = default;
+  virtual ~WeavePGInterface() = default;
   virtual std::shared_ptr<void> pin() = 0;
   virtual WeavePolicy policy() const = 0;
   virtual WeaveGeometry geometry() const = 0;
@@ -113,7 +114,7 @@ public:
   virtual void post(std::function<void()>) = 0;
   virtual void serialized(std::function<void()>) = 0;
 
-  // Optional crash-injection seam. Production hosts leave it inactive unless
+  // Optional crash-injection seam. Production adapters leave it inactive unless
   // explicitly configured; checkpoints always run under the PG lock.
   virtual void conversion_checkpoint(const char*, size_t = 0) {}
 
@@ -129,7 +130,7 @@ public:
 };
 
 // Borrowed view of the native, locked transaction. Attribute names/encoding
-// belong to Weave; the host reads projected attrs and commits the native txn.
+// belong to Weave; the adapter reads projected attrs and commits the native txn.
 struct WeaveTransaction {
   std::function<int(const char*, ceph::buffer::list&)> read_attribute;
   std::function<void(const char*, const ceph::buffer::list&)> set_attribute;

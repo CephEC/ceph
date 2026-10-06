@@ -57,7 +57,7 @@
 #include "osd/ClassHandler.h"
 #include "osd/weave/WeaveECAdapter.h"
 #include "osd/weave/WeavePGController.h"
-#include "osd/weave/WeavePGHost.h"
+#include "osd/weave/WeavePGInterface.h"
 #include "osdc/Objecter.h"
 #include "osd/scrubber/PrimaryLogScrub.h"
 #include "osd/scrubber/ScrubStore.h"
@@ -1799,7 +1799,7 @@ PrimaryLogPG::PrimaryLogPG(OSDService *o, OSDMapRef curmap,
     o->store->get_type() == "bluestore";
   m_weave =
     std::make_unique<ceph::weave::WeavePGController>(
-      o->cct, make_weave_host(), weave_enabled);
+      o->cct, make_weave_pg_adapter(), weave_enabled);
   if (weave_enabled) {
     m_weave_scan = std::make_unique<ceph::weave::WeaveScanSchedule>(o->mono_timer);
   }

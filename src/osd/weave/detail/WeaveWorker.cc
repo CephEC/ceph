@@ -9,7 +9,7 @@
 #include "common/ceph_context.h"
 #include "common/config.h"
 #include "include/ceph_assert.h"
-#include "osd/weave/WeavePGHost.h"
+#include "osd/weave/WeavePGInterface.h"
 
 namespace ceph::weave {
 

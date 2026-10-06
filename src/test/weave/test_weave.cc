@@ -11,7 +11,7 @@
 #include "osd/ClassHandler.h"
 #include "osd/weave/detail/WeaveMemberTranslator.h"
 #include "osd/weave/detail/WeaveWorker.h"
-#include "osd/weave/WeavePGHost.h"
+#include "osd/weave/WeavePGInterface.h"
 #include "osd/weave/detail/WeaveCandidateIndex.h"
 #include "osd/weave/WeaveECAdapter.h"
 #include "osd/weave/detail/WeaveRequestContext.h"

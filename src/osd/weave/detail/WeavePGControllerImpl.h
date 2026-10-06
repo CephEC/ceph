@@ -10,7 +10,7 @@
 #include <vector>
 
 #include "osd/weave/WeavePGController.h"
-#include "osd/weave/WeavePGHost.h"
+#include "osd/weave/WeavePGInterface.h"
 
 #include "WeaveCandidateIndex.h"
 #include "WeaveCatalog.h"
@@ -28,7 +28,7 @@ class WeavePGController::Impl {
 public:
   using XAttrs = std::map<std::string, ceph::buffer::list, std::less<>>;
 
-  Impl(CephContext*, std::unique_ptr<WeavePGHost>, bool);
+  Impl(CephContext*, std::unique_ptr<WeavePGInterface>, bool);
   ~Impl();
 
   // Lifecycle and role changes. initialize() is the only place that loads the
@@ -153,7 +153,7 @@ private:
   // Native query surface.
   void drop_private_entries(std::vector<hobject_t>&) const;
 
-  std::unique_ptr<WeavePGHost> host_;
+  std::unique_ptr<WeavePGInterface> pg_interface_;
   bool enabled_;
   // Permanent metadata error, reported to every waiting request.
   int metadata_error_ = 0;

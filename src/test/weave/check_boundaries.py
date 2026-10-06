@@ -27,4 +27,4 @@ for name in ('WeaveConversionJob.cc', 'WeavePGControllerImpl.cc', 'WeaveReadRout
         errors.append(f'{path}: core depends on native PG/OSD/Objecter')
 if errors:
     sys.exit('\n'.join(errors))
-print('Weave public and native-host boundaries verified')
+print('Weave public and native-adapter boundaries verified')

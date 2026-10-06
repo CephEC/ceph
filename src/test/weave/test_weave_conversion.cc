@@ -19,7 +19,7 @@ namespace {
 hobject_t oid(const char* name) {
   return hobject_t(sobject_t(object_t(name), CEPH_NOSNAP));
 }
-class FakeHost final : public WeavePGHost {
+class FakeWeavePG final : public WeavePGInterface {
 public:
   struct Object { WeaveObjectState state; bufferlist data; WeaveAttrs attrs; };
   struct IO { ceph_tid_t tid; std::string kind; hobject_t oid;
@@ -183,7 +183,7 @@ public:
 
 class WeaveConversion : public ::testing::Test {
 protected:
-  FakeHost host;
+  FakeWeavePG pg_interface;
   const hobject_t a = oid("a"), b = oid("b"), v = oid("volume");
   WeaveVolumeMeta volume{v, 2, 4,
     {{a, WeaveMemberMeta{0, 4, {}, 1}}, {b, WeaveMemberMeta{1, 4, {}, 1}}}};
@@ -193,9 +193,9 @@ protected:
   unsigned finishes = 0;
   WeaveConversionJob::Result result{};
   void SetUp() override {
-    host.put(a, "AAAA"); host.put(b, "BBBB");
+    pg_interface.put(a, "AAAA"); pg_interface.put(b, "BBBB");
     for (auto id : {a, b}) {
-      auto state = host.inspect(id);
+      auto state = pg_interface.inspect(id);
       members.push_back({id, 4, state.info.version, 1, {}, {}});
     }
   }
@@ -203,141 +203,141 @@ protected:
     WeaveConversionJob::Hooks hooks{
       [this] { return accept_validation; },
       [this] {
-        EXPECT_TRUE(host.objects[v].state.exists);
-        host.events.push_back("publish");
+        EXPECT_TRUE(pg_interface.objects[v].state.exists);
+        pg_interface.events.push_back("publish");
         published = true;
       },
-      [this] { detached = true; host.events.push_back("detach"); },
+      [this] { detached = true; pg_interface.events.push_back("detach"); },
       [this](auto r) { ++finishes; result = r; }};
-    job = std::make_shared<WeaveConversionJob>(host, 1, 4, members, volume,
-      host.acquire(), std::move(hooks), unpack, 1, 8);
+    job = std::make_shared<WeaveConversionJob>(pg_interface, 1, 4, members, volume,
+      pg_interface.acquire(), std::move(hooks), unpack, 1, 8);
     job->start();
   }
   void ready_to_publish() {
-    create(); host.complete(); host.complete(); host.run_cpu();
+    create(); pg_interface.complete(); pg_interface.complete(); pg_interface.run_cpu();
     ASSERT_EQ(job->stage(), WeaveConversionJob::Stage::kWritingVolume);
   }
   void prepare_unpack() {
-    host.put(v, "AAAABBBB");
-    host.objects[a].state.exists = false; host.objects[b].state.exists = false;
+    pg_interface.put(v, "AAAABBBB");
+    pg_interface.objects[a].state.exists = false; pg_interface.objects[b].state.exists = false;
     create(true);
   }
   void TearDown() override {
     if (job) job->cancel();
-    host.io.clear(); host.cpu.clear(); host.retries.clear(); job.reset();
-    EXPECT_EQ(host.acquired, host.released);
+    pg_interface.io.clear(); pg_interface.cpu.clear(); pg_interface.retries.clear(); job.reset();
+    EXPECT_EQ(pg_interface.acquired, pg_interface.released);
   }
 };
 
 TEST_F(WeaveConversion, PublishesOnlyAfterDurableVolumeAndRetiresSourcesLast) {
   ready_to_publish();
-  EXPECT_FALSE(published); EXPECT_EQ(host.released, 0u);
-  host.complete();
-  EXPECT_TRUE(published); EXPECT_TRUE(host.objects[a].state.exists);
-  host.complete(); host.complete();
+  EXPECT_FALSE(published); EXPECT_EQ(pg_interface.released, 0u);
+  pg_interface.complete();
+  EXPECT_TRUE(published); EXPECT_TRUE(pg_interface.objects[a].state.exists);
+  pg_interface.complete(); pg_interface.complete();
   EXPECT_EQ(job->stage(), WeaveConversionJob::Stage::kCompleted);
-  EXPECT_EQ(finishes, 1u); EXPECT_EQ(host.released, 1u);
-  EXPECT_EQ(host.events, (std::vector<std::string>{"durable:volume", "publish", "removed:a", "removed:b"}));
+  EXPECT_EQ(finishes, 1u); EXPECT_EQ(pg_interface.released, 1u);
+  EXPECT_EQ(pg_interface.events, (std::vector<std::string>{"durable:volume", "publish", "removed:a", "removed:b"}));
 }
 TEST_F(WeaveConversion, ReadFailureRetainsSourcesAndReleasesOnce) {
-  create(); host.complete(-EIO);
+  create(); pg_interface.complete(-EIO);
   EXPECT_EQ(finishes, 1u); EXPECT_TRUE(result.restore_candidates);
-  EXPECT_FALSE(published); EXPECT_TRUE(host.objects[a].state.exists);
-  job->cancel(); EXPECT_EQ(host.released, 1u);
+  EXPECT_FALSE(published); EXPECT_TRUE(pg_interface.objects[a].state.exists);
+  job->cancel(); EXPECT_EQ(pg_interface.released, 1u);
 }
 TEST_F(WeaveConversion, FailedValidationNeverSubmitsMetadataOrRetiresSources) {
   accept_validation = false;
-  create(); host.complete(); host.complete(); host.run_cpu();
-  EXPECT_TRUE(host.io.empty());
-  EXPECT_TRUE(host.objects[a].state.exists); EXPECT_FALSE(host.objects[v].state.exists);
+  create(); pg_interface.complete(); pg_interface.complete(); pg_interface.run_cpu();
+  EXPECT_TRUE(pg_interface.io.empty());
+  EXPECT_TRUE(pg_interface.objects[a].state.exists); EXPECT_FALSE(pg_interface.objects[v].state.exists);
   EXPECT_TRUE(result.restore_candidates); EXPECT_EQ(finishes, 1u);
 }
 TEST_F(WeaveConversion, VolumeWriteFailureNeverPublishes) {
-  ready_to_publish(); host.complete(-EIO);
+  ready_to_publish(); pg_interface.complete(-EIO);
   EXPECT_FALSE(published); EXPECT_EQ(finishes, 1u); EXPECT_TRUE(result.restore_candidates);
 }
 TEST_F(WeaveConversion, CancelledReadAndDuplicateCallbackCannotAdvanceNewJob) {
-  create(); const auto tid = host.io.front().tid;
+  create(); const auto tid = pg_interface.io.front().tid;
   EXPECT_TRUE(job->authenticates(tid));
   job->cancel(); job->cancel();
-  EXPECT_TRUE(host.cancelled.count(tid)); EXPECT_EQ(finishes, 1u);
-  auto next_lease = host.acquire();
-  auto stale = host.complete(); stale.complete(0);
-  EXPECT_TRUE(host.io.empty()); EXPECT_FALSE(published);
-  EXPECT_EQ(host.acquired, 2u); EXPECT_EQ(host.released, 1u);
+  EXPECT_TRUE(pg_interface.cancelled.count(tid)); EXPECT_EQ(finishes, 1u);
+  auto next_lease = pg_interface.acquire();
+  auto stale = pg_interface.complete(); stale.complete(0);
+  EXPECT_TRUE(pg_interface.io.empty()); EXPECT_FALSE(published);
+  EXPECT_EQ(pg_interface.acquired, 2u); EXPECT_EQ(pg_interface.released, 1u);
   next_lease.reset();
 }
 TEST_F(WeaveConversion, DuplicateSuccessfulReadCannotReadNextMemberTwice) {
-  create(); auto first = host.complete();
-  ASSERT_EQ(host.io.size(), 1u);
+  create(); auto first = pg_interface.complete();
+  ASSERT_EQ(pg_interface.io.size(), 1u);
   first.complete(0);
-  EXPECT_EQ(host.io.size(), 1u);
+  EXPECT_EQ(pg_interface.io.size(), 1u);
 }
 TEST_F(WeaveConversion, CancelledCPUWorkCannotSubmitVolume) {
-  create(); host.complete(); host.complete(); job->cancel(); host.run_cpu();
-  EXPECT_TRUE(host.io.empty()); EXPECT_FALSE(published); EXPECT_EQ(finishes, 1u);
+  create(); pg_interface.complete(); pg_interface.complete(); job->cancel(); pg_interface.run_cpu();
+  EXPECT_TRUE(pg_interface.io.empty()); EXPECT_FALSE(published); EXPECT_EQ(finishes, 1u);
 }
 TEST_F(WeaveConversion, CancelledDurableWriteCannotPublish) {
-  ready_to_publish(); job->cancel(); host.complete();
-  EXPECT_TRUE(host.objects[v].state.exists); EXPECT_FALSE(published);
-  EXPECT_TRUE(host.objects[a].state.exists); EXPECT_EQ(finishes, 1u);
+  ready_to_publish(); job->cancel(); pg_interface.complete();
+  EXPECT_TRUE(pg_interface.objects[v].state.exists); EXPECT_FALSE(published);
+  EXPECT_TRUE(pg_interface.objects[a].state.exists); EXPECT_EQ(finishes, 1u);
 }
 TEST_F(WeaveConversion, RetirementFailureKeepsLeaseAndRetries) {
-  ready_to_publish(); host.complete(); host.complete(-EIO);
-  EXPECT_EQ(host.released, 0u); EXPECT_EQ(finishes, 0u);
-  host.tick(); host.complete(); host.complete();
-  EXPECT_EQ(finishes, 1u); EXPECT_EQ(host.released, 1u);
+  ready_to_publish(); pg_interface.complete(); pg_interface.complete(-EIO);
+  EXPECT_EQ(pg_interface.released, 0u); EXPECT_EQ(finishes, 0u);
+  pg_interface.tick(); pg_interface.complete(); pg_interface.complete();
+  EXPECT_EQ(finishes, 1u); EXPECT_EQ(pg_interface.released, 1u);
 }
 TEST_F(WeaveConversion, CancelledRetryCannotRetireSourcesAfterReset) {
-  ready_to_publish(); host.complete(); host.complete(-EIO);
-  job->cancel(); ++host.generation;
-  host.tick();
-  EXPECT_TRUE(host.io.empty()); EXPECT_TRUE(host.objects[a].state.exists);
-  EXPECT_EQ(finishes, 1u); EXPECT_EQ(host.released, 1u);
+  ready_to_publish(); pg_interface.complete(); pg_interface.complete(-EIO);
+  job->cancel(); ++pg_interface.generation;
+  pg_interface.tick();
+  EXPECT_TRUE(pg_interface.io.empty()); EXPECT_TRUE(pg_interface.objects[a].state.exists);
+  EXPECT_EQ(finishes, 1u); EXPECT_EQ(pg_interface.released, 1u);
 }
 TEST_F(WeaveConversion, CancelledRestoreKeepsPublishedMapping) {
-  prepare_unpack(); host.complete(); host.run_cpu(); host.complete();
-  EXPECT_TRUE(host.objects[a].state.exists); EXPECT_FALSE(detached);
-  job->cancel(); host.complete();
-  EXPECT_FALSE(detached); EXPECT_TRUE(host.objects[v].state.exists);
+  prepare_unpack(); pg_interface.complete(); pg_interface.run_cpu(); pg_interface.complete();
+  EXPECT_TRUE(pg_interface.objects[a].state.exists); EXPECT_FALSE(detached);
+  job->cancel(); pg_interface.complete();
+  EXPECT_FALSE(detached); EXPECT_TRUE(pg_interface.objects[v].state.exists);
   EXPECT_EQ(finishes, 1u);
 }
 TEST_F(WeaveConversion, RestoresAllMembersBeforeDetachingMapping) {
-  prepare_unpack(); host.complete(); host.run_cpu();
-  host.complete(); EXPECT_FALSE(detached);
-  host.complete(); EXPECT_FALSE(detached); EXPECT_TRUE(host.objects[v].state.exists);
-  host.complete(); EXPECT_TRUE(detached); EXPECT_FALSE(host.objects[v].state.exists);
-  EXPECT_TRUE(host.objects[a].state.exists); EXPECT_TRUE(host.objects[b].state.exists);
-  EXPECT_EQ(host.objects[a].data.to_str(), "AAAA"); EXPECT_EQ(host.objects[b].data.to_str(), "BBBB");
+  prepare_unpack(); pg_interface.complete(); pg_interface.run_cpu();
+  pg_interface.complete(); EXPECT_FALSE(detached);
+  pg_interface.complete(); EXPECT_FALSE(detached); EXPECT_TRUE(pg_interface.objects[v].state.exists);
+  pg_interface.complete(); EXPECT_TRUE(detached); EXPECT_FALSE(pg_interface.objects[v].state.exists);
+  EXPECT_TRUE(pg_interface.objects[a].state.exists); EXPECT_TRUE(pg_interface.objects[b].state.exists);
+  EXPECT_EQ(pg_interface.objects[a].data.to_str(), "AAAA"); EXPECT_EQ(pg_interface.objects[b].data.to_str(), "BBBB");
   EXPECT_EQ(finishes, 1u);
 }
 TEST_F(WeaveConversion, RestoreFailureKeepsMappingAndRetries) {
-  prepare_unpack(); host.complete(); host.run_cpu(); host.complete(-ENOSPC);
-  EXPECT_FALSE(detached); EXPECT_EQ(host.released, 0u);
-  host.tick(); host.complete(); host.complete(); host.complete();
+  prepare_unpack(); pg_interface.complete(); pg_interface.run_cpu(); pg_interface.complete(-ENOSPC);
+  EXPECT_FALSE(detached); EXPECT_EQ(pg_interface.released, 0u);
+  pg_interface.tick(); pg_interface.complete(); pg_interface.complete(); pg_interface.complete();
   EXPECT_EQ(finishes, 1u);
 }
 TEST_F(WeaveConversion, VolumeReadFailureDoesNotDetach) {
-  prepare_unpack(); host.complete(-EIO);
+  prepare_unpack(); pg_interface.complete(-EIO);
   EXPECT_FALSE(detached); EXPECT_EQ(result.error, -EIO); EXPECT_EQ(finishes, 1u);
 }
 TEST_F(WeaveConversion, ShortVolumeFailsMaterializationWithoutNativeWrites) {
-  prepare_unpack(); host.objects[v].data.clear(); host.objects[v].data.append("A");
-  host.complete(); host.run_cpu();
-  EXPECT_FALSE(detached); EXPECT_TRUE(host.io.empty()); EXPECT_EQ(result.error, -EIO);
+  prepare_unpack(); pg_interface.objects[v].data.clear(); pg_interface.objects[v].data.append("A");
+  pg_interface.complete(); pg_interface.run_cpu();
+  EXPECT_FALSE(detached); EXPECT_TRUE(pg_interface.io.empty()); EXPECT_EQ(result.error, -EIO);
 }
 TEST_F(WeaveConversion, EmptyVolumeDeletionDetachesOnlyAfterCommit) {
-  host.put(v, "AAAABBBB"); members.clear(); volume.members.clear(); create(true);
-  EXPECT_FALSE(detached); host.complete(); EXPECT_TRUE(detached); EXPECT_EQ(finishes, 1u);
+  pg_interface.put(v, "AAAABBBB"); members.clear(); volume.members.clear(); create(true);
+  EXPECT_FALSE(detached); pg_interface.complete(); EXPECT_TRUE(detached); EXPECT_EQ(finishes, 1u);
 }
 
 TEST_F(WeaveConversion, FailedVolumeDeletionKeepsAuthorityUntilDurableRetry) {
-  prepare_unpack(); host.complete(); host.run_cpu();
-  host.complete(); host.complete(); host.complete(-EIO);
+  prepare_unpack(); pg_interface.complete(); pg_interface.run_cpu();
+  pg_interface.complete(); pg_interface.complete(); pg_interface.complete(-EIO);
   EXPECT_FALSE(detached);
-  EXPECT_TRUE(host.objects[v].state.exists);
-  EXPECT_EQ(host.released, 0u);
-  host.tick(); host.complete();
+  EXPECT_TRUE(pg_interface.objects[v].state.exists);
+  EXPECT_EQ(pg_interface.released, 0u);
+  pg_interface.tick(); pg_interface.complete();
   EXPECT_TRUE(detached);
   EXPECT_EQ(finishes, 1u);
 }
@@ -348,17 +348,17 @@ class WeaveDurableRecovery : public ::testing::TestWithParam<unsigned> {
 protected:
   OpTracker tracker{g_ceph_context, false, 1};
   std::unique_ptr<WeavePGController> controller;
-  FakeHost* host = nullptr;
+  FakeWeavePG* pg_interface = nullptr;
   const hobject_t a = oid("a"), b = oid("b");
   hobject_t v;
   std::vector<OpRequestRef> requests;
 
-  void open(std::map<hobject_t, FakeHost::Object> disk = {}) {
-    auto owner = std::make_unique<FakeHost>();
-    host = owner.get();
-    host->objects = std::move(disk);
-    host->settings.background = false;
-    host->restore_copy_state = [this](auto& object) {
+  void open(std::map<hobject_t, FakeWeavePG::Object> disk = {}) {
+    auto owner = std::make_unique<FakeWeavePG>();
+    pg_interface = owner.get();
+    pg_interface->objects = std::move(disk);
+    pg_interface->settings.background = false;
+    pg_interface->restore_copy_state = [this](auto& object) {
       auto op = request(object.state.info.soid, CEPH_OSD_OP_WRITEFULL);
       op->set_background_weave_io();
       const auto version = controller->internal_copy_version(op);
@@ -368,7 +368,7 @@ protected:
       object.state.info.user_version = *version;
       object.state.snap_sequence = *sequence;
     };
-    v = host->new_volume(a);
+    v = pg_interface->new_volume(a);
     controller = std::make_unique<WeavePGController>(
       g_ceph_context, std::move(owner), true);
     controller->initialize();
@@ -376,8 +376,8 @@ protected:
   void SetUp() override {
     open();
     for (auto id : {a, b}) {
-      host->put(id, id == a ? "AAAA" : "BBBB");
-      auto& object = host->objects[id];
+      pg_interface->put(id, id == a ? "AAAA" : "BBBB");
+      auto& object = pg_interface->objects[id];
       object.state.info.user_version = 7;
       object.state.info.version = eversion_t(1, 7);
       object.state.info.mtime = utime_t(123, 456);
@@ -400,33 +400,33 @@ protected:
     return op;
   }
   void step() {
-    if (!host->io.empty()) host->complete();
-    else if (!host->cpu.empty()) host->run_cpu();
+    if (!pg_interface->io.empty()) pg_interface->complete();
+    else if (!pg_interface->cpu.empty()) pg_interface->run_cpu();
     else FAIL() << "no pending conversion step";
   }
   void drain() {
     unsigned limit = 32;
-    while ((!host->io.empty() || !host->cpu.empty()) && limit--) step();
-    ASSERT_TRUE(host->io.empty());
-    ASSERT_TRUE(host->cpu.empty());
+    while ((!pg_interface->io.empty() || !pg_interface->cpu.empty()) && limit--) step();
+    ASSERT_TRUE(pg_interface->io.empty());
+    ASSERT_TRUE(pg_interface->cpu.empty());
   }
   void pack() {
-    host->settings.background = true;
-    for (auto id : {a, b}) controller->on_commit(host->inspect(id).info, true, {});
+    pg_interface->settings.background = true;
+    for (auto id : {a, b}) controller->on_commit(pg_interface->inspect(id).info, true, {});
     controller->scan_candidates();
-    host->settings.background = false;
-    ASSERT_FALSE(host->io.empty());
+    pg_interface->settings.background = false;
+    ASSERT_FALSE(pg_interface->io.empty());
   }
   void restart(bool pending_commits, bool rebuild = true) {
     for (const auto& op : requests) controller->finish_request(op);
     controller->on_pg_change(false);
-    ++host->generation;
-    if (!host->io.empty()) host->complete(pending_commits ? 0 : -ECANCELED);
-    while (!host->cpu.empty()) host->run_cpu();
-    ASSERT_TRUE(host->io.empty());
-    EXPECT_EQ(host->acquired, host->released);
+    ++pg_interface->generation;
+    if (!pg_interface->io.empty()) pg_interface->complete(pending_commits ? 0 : -ECANCELED);
+    while (!pg_interface->cpu.empty()) pg_interface->run_cpu();
+    ASSERT_TRUE(pg_interface->io.empty());
+    EXPECT_EQ(pg_interface->acquired, pg_interface->released);
     if (rebuild) {
-      auto disk = std::move(host->objects);
+      auto disk = std::move(pg_interface->objects);
       controller.reset();
       open(std::move(disk));
     } else {
@@ -437,7 +437,7 @@ protected:
     auto op = request(id, CEPH_OSD_OP_READ);
     ASSERT_EQ(controller->prepare_request(op), RequestDisposition::kNative);
     const auto disposition = controller->preprocess_client_op(op);
-    const auto& object = host->objects[op->get_req<MOSDOp>()->get_hobj()];
+    const auto& object = pg_interface->objects[op->get_req<MOSDOp>()->get_hobj()];
     ASSERT_TRUE(object.state.exists);
     EXPECT_EQ(controller->logical_user_version(op, object.state.info.user_version), 7u);
     if (disposition == RequestDisposition::kTranslated) {
@@ -466,29 +466,29 @@ protected:
       ASSERT_EQ(controller->preprocess_client_op(write), RequestDisposition::kNative);
     } else ASSERT_EQ(disposition, RequestDisposition::kNative);
     // The acknowledged new version must survive another complete reconstruction.
-    host->put(a, "NEW!");
-    host->objects[a].state.info.user_version = 8;
-    controller->on_commit(host->inspect(a).info, true, write);
+    pg_interface->put(a, "NEW!");
+    pg_interface->objects[a].state.info.user_version = 8;
+    controller->on_commit(pg_interface->inspect(a).info, true, write);
     auto remove = request(b, CEPH_OSD_OP_DELETE);
     ASSERT_EQ(controller->preprocess_client_op(remove), RequestDisposition::kNative);
-    host->objects[b].state.exists = false;
-    controller->on_commit(host->inspect(b).info, false, remove);
+    pg_interface->objects[b].state.exists = false;
+    controller->on_commit(pg_interface->inspect(b).info, false, remove);
     restart(false);
     EXPECT_FALSE(controller->is_logical_member(a));
-    EXPECT_EQ(host->objects[a].data.to_str(), "NEW!");
-    EXPECT_EQ(host->objects[a].state.info.user_version, 8u);
+    EXPECT_EQ(pg_interface->objects[a].data.to_str(), "NEW!");
+    EXPECT_EQ(pg_interface->objects[a].state.info.user_version, 8u);
     EXPECT_FALSE(controller->is_logical_member(b));
-    EXPECT_FALSE(host->objects[b].state.exists);
+    EXPECT_FALSE(pg_interface->objects[b].state.exists);
     auto recreate = request(b, CEPH_OSD_OP_WRITEFULL);
     ASSERT_EQ(controller->preprocess_client_op(recreate), RequestDisposition::kNative);
-    host->put(b, "BNEW"); // recreated objects may reuse a user_version
-    controller->on_commit(host->inspect(b).info, true, recreate);
+    pg_interface->put(b, "BNEW"); // recreated objects may reuse a user_version
+    controller->on_commit(pg_interface->inspect(b).info, true, recreate);
     controller->request_cleanup(100, [] {});
     drain();
     restart(false);
-    EXPECT_EQ(host->objects[b].data.to_str(), "BNEW");
-    EXPECT_TRUE(host->objects[b].state.exists);
-    EXPECT_EQ(host->objects[a].data.to_str(), "NEW!");
+    EXPECT_EQ(pg_interface->objects[b].data.to_str(), "BNEW");
+    EXPECT_TRUE(pg_interface->objects[b].state.exists);
+    EXPECT_EQ(pg_interface->objects[a].data.to_str(), "NEW!");
   }
   void TearDown() override {
     if (controller) {
@@ -532,7 +532,7 @@ TEST_F(WeaveDurableRecovery, ResetReloadHonorsCommittedVolumeEvenWithoutPublicat
 
 TEST_F(WeaveDurableRecovery, TimedOutCommittedVolumeWriteReloadsAuthority) {
   pack(); step(); step(); step();
-  auto pending = std::move(host->io.front()); host->io.pop_front();
+  auto pending = std::move(pg_interface->io.front()); pg_interface->io.pop_front();
   ASSERT_EQ(pending.apply(0), 0);
   pending.complete(-ETIMEDOUT);
   EXPECT_TRUE(controller->is_logical_member(a));
@@ -542,16 +542,16 @@ TEST_F(WeaveDurableRecovery, TimedOutCommittedVolumeWriteReloadsAuthority) {
 
 TEST_F(WeaveDurableRecovery, TimedOutWriteWaitsForAdmittedTransactionBeforeReload) {
   pack(); step(); step(); step();
-  auto pending = std::move(host->io.front()); host->io.pop_front();
-  host->objects[v].state.access = WeaveObjectState::Access::kBusy;
+  auto pending = std::move(pg_interface->io.front()); pg_interface->io.pop_front();
+  pg_interface->objects[v].state.access = WeaveObjectState::Access::kBusy;
   pending.complete(-ETIMEDOUT);
-  EXPECT_EQ(host->released, 0u);
+  EXPECT_EQ(pg_interface->released, 0u);
   auto write = request(a, CEPH_OSD_OP_WRITEFULL);
   EXPECT_EQ(controller->preprocess_client_op(write), RequestDisposition::kDeferred);
   ASSERT_EQ(pending.apply(0), 0);
-  host->objects[v].state.access = WeaveObjectState::Access::kIdle;
-  host->tick();
-  EXPECT_EQ(host->released, 1u);
+  pg_interface->objects[v].state.access = WeaveObjectState::Access::kIdle;
+  pg_interface->tick();
+  EXPECT_EQ(pg_interface->released, 1u);
   EXPECT_TRUE(controller->is_logical_member(a));
   expect_original(a); expect_original(b);
   mutate_after_recovery();
@@ -560,34 +560,34 @@ TEST_F(WeaveDurableRecovery, TimedOutWriteWaitsForAdmittedTransactionBeforeReloa
 TEST_F(WeaveDurableRecovery, ConflictingOwnersCloseRequestAdmissionUntilDiskIsRepaired) {
   pack(); drain();
   auto other = v; other.oid = object_t("other-volume");
-  auto duplicate = host->objects[v];
+  auto duplicate = pg_interface->objects[v];
   WeaveVolumeMeta metadata;
   auto p = duplicate.attrs.at("volume_meta").cbegin(); decode(metadata, p);
   metadata.volume_oid = other;
   duplicate.attrs["volume_meta"].clear();
   encode(metadata, duplicate.attrs["volume_meta"]);
-  host->objects[other] = std::move(duplicate);
+  pg_interface->objects[other] = std::move(duplicate);
   restart(false);
   auto read = request(a, CEPH_OSD_OP_READ);
   EXPECT_EQ(controller->prepare_request(read), RequestDisposition::kRejected);
-  EXPECT_EQ(host->last_error, -EIO);
-  host->objects[other].state.exists = false;
+  EXPECT_EQ(pg_interface->last_error, -EIO);
+  pg_interface->objects[other].state.exists = false;
   controller->initialize();
   expect_original(a);
 }
 
 TEST_F(WeaveDurableRecovery, SourceSnapshotChangeBeforeCommitNeverPersistsMapping) {
   pack(); step(); step();
-  host->objects[a].state.snap_sequence = 5;
+  pg_interface->objects[a].state.snap_sequence = 5;
   step();
-  EXPECT_TRUE(host->io.empty());
-  EXPECT_FALSE(host->objects[v].state.exists);
+  EXPECT_TRUE(pg_interface->io.empty());
+  EXPECT_FALSE(pg_interface->objects[v].state.exists);
   EXPECT_FALSE(controller->is_logical_member(a));
 }
 
 TEST_F(WeaveDurableRecovery, OldPhysicalRequestsCannotDeleteOrOverwriteRecreatedMembers) {
   pack(); step(); step(); step(); step();
-  const auto old_tid = host->io.front().tid;
+  const auto old_tid = pg_interface->io.front().tid;
   restart(false);
   mutate_after_recovery();
   for (const auto source : {0, 1}) {
@@ -599,11 +599,11 @@ TEST_F(WeaveDurableRecovery, OldPhysicalRequestsCannotDeleteOrOverwriteRecreated
       message->set_tid(old_tid);
       message->ops[0].op.flags = 1u << 29;
       EXPECT_EQ(controller->prepare_request(op), RequestDisposition::kRejected);
-      EXPECT_EQ(host->last_error, -ECANCELED);
+      EXPECT_EQ(pg_interface->last_error, -ECANCELED);
     }
   }
-  EXPECT_TRUE(host->objects[b].state.exists);
-  EXPECT_EQ(host->objects[b].data.to_str(), "BNEW");
+  EXPECT_TRUE(pg_interface->objects[b].state.exists);
+  EXPECT_EQ(pg_interface->objects[b].data.to_str(), "BNEW");
 }
 
 TEST_F(WeaveDurableRecovery, ReservationsHoldReadsWritesDeletesAndSnapshotsThroughRetirement) {
@@ -620,7 +620,7 @@ TEST_F(WeaveDurableRecovery, ReservationsHoldReadsWritesDeletesAndSnapshotsThrou
   auto read = request(snap, CEPH_OSD_OP_READ);
   EXPECT_EQ(controller->preprocess_client_op(read), RequestDisposition::kDeferred);
   // Commit deletion without delivering the reply: reservations must still hold.
-  auto pending = std::move(host->io.front()); host->io.pop_front();
+  auto pending = std::move(pg_interface->io.front()); pg_interface->io.pop_front();
   ASSERT_EQ(pending.apply(0), 0);
   auto late = request(a, CEPH_OSD_OP_READ);
   EXPECT_EQ(controller->preprocess_client_op(late), RequestDisposition::kDeferred);
@@ -645,7 +645,7 @@ TEST_F(WeavePackingReads, ReadsSucceedAcrossEveryPackStage) {
 
 TEST_F(WeavePackingReads, DurableVolumeBeforeCallbackStillReadsNative) {
   pack(); step(); step(); step();
-  auto pending = std::move(host->io.front()); host->io.pop_front();
+  auto pending = std::move(pg_interface->io.front()); pg_interface->io.pop_front();
   ASSERT_EQ(pending.apply(0), 0);
   ASSERT_FALSE(controller->is_logical_member(a));
   expect_original(a); expect_original(b);
@@ -658,37 +658,37 @@ TEST_F(WeavePackingReads, DurableVolumeBeforeCallbackStillReadsNative) {
 TEST_F(WeavePackingReads, CleanupFailureDoesNotBlockReadsButMutationsStayFenced) {
   pack(); step(); step(); step(); step();
   for (int retry = 0; retry < 4; ++retry) {
-    host->complete(-EIO);
+    pg_interface->complete(-EIO);
     expect_original(a); expect_original(b);
     for (auto opcode : {CEPH_OSD_OP_WRITEFULL, CEPH_OSD_OP_DELETE, CEPH_OSD_OP_SETXATTR}) {
       auto op = request(a, opcode);
       EXPECT_EQ(controller->preprocess_client_op(op), RequestDisposition::kDeferred);
     }
-    EXPECT_EQ(host->released, 0u);
-    host->tick();
+    EXPECT_EQ(pg_interface->released, 0u);
+    pg_interface->tick();
   }
   drain();
 }
 
 TEST_F(WeavePackingReads, FailedVolumeWriteLeavesNativeReadable) {
   pack(); step(); step(); step();
-  host->complete(-EIO);
+  pg_interface->complete(-EIO);
   EXPECT_FALSE(controller->is_logical_member(a));
   expect_original(a); expect_original(b);
 }
 
 TEST_F(WeavePackingReads, TimeoutResolutionKeepsNativeReadsAvailable) {
   pack(); step(); step(); step();
-  auto pending = std::move(host->io.front()); host->io.pop_front();
-  host->objects[v].state.access = WeaveObjectState::Access::kBusy;
+  auto pending = std::move(pg_interface->io.front()); pg_interface->io.pop_front();
+  pg_interface->objects[v].state.access = WeaveObjectState::Access::kBusy;
   pending.complete(-ETIMEDOUT);
   expect_original(a); expect_original(b);
   ASSERT_EQ(pending.apply(0), 0);
   expect_original(a); expect_original(b);
   auto write = request(a, CEPH_OSD_OP_WRITEFULL);
   EXPECT_EQ(controller->preprocess_client_op(write), RequestDisposition::kDeferred);
-  host->objects[v].state.access = WeaveObjectState::Access::kIdle;
-  host->tick();
+  pg_interface->objects[v].state.access = WeaveObjectState::Access::kIdle;
+  pg_interface->tick();
   ASSERT_TRUE(controller->is_logical_member(a));
   expect_original(a); expect_original(b);
 }
@@ -706,26 +706,26 @@ TEST_F(WeavePackingReads, NativeRequestRequeuedAfterPublicationUsesVolume) {
 }
 
 TEST_F(WeavePackingReads, SharedReadersDoNotPreventSelectionOrPublication) {
-  host->objects[a].state.access = WeaveObjectState::Access::kReading;
-  host->objects[b].state.access = WeaveObjectState::Access::kReading;
+  pg_interface->objects[a].state.access = WeaveObjectState::Access::kReading;
+  pg_interface->objects[b].state.access = WeaveObjectState::Access::kReading;
   pack();
   expect_original(a); expect_original(b);
   step(); step(); step(); step();
   EXPECT_TRUE(controller->is_logical_member(a));
   expect_original(a); expect_original(b);
-  host->objects[a].state.access = WeaveObjectState::Access::kIdle;
-  host->objects[b].state.access = WeaveObjectState::Access::kIdle;
+  pg_interface->objects[a].state.access = WeaveObjectState::Access::kIdle;
+  pg_interface->objects[b].state.access = WeaveObjectState::Access::kIdle;
   drain();
 }
 
 TEST_F(WeavePackingReads, NativeConflictBeforeCommitStillCancelsPacking) {
   pack(); step(); step();
-  host->objects[a].state.access = WeaveObjectState::Access::kBusy;
+  pg_interface->objects[a].state.access = WeaveObjectState::Access::kBusy;
   step();
-  EXPECT_TRUE(host->io.empty());
+  EXPECT_TRUE(pg_interface->io.empty());
   EXPECT_FALSE(controller->is_logical_member(a));
-  EXPECT_FALSE(host->objects[v].state.exists);
-  host->objects[a].state.access = WeaveObjectState::Access::kIdle;
+  EXPECT_FALSE(pg_interface->objects[v].state.exists);
+  pg_interface->objects[a].state.access = WeaveObjectState::Access::kIdle;
   expect_original(a);
 }
 
@@ -747,13 +747,13 @@ TEST_F(WeavePackingReads, OrderedAndMixedRequestsRemainFenced) {
 
 TEST_F(WeavePackingReads, PublishedReadsCanRedirectWhileSourceCleanupIsRetrying) {
   pack(); step(); step(); step(); step();
-  host->complete(-EIO);
-  host->read_route = WeaveReadRoute{v, pg_shard_t(1, shard_id_t(0)), 1, eversion_t(1, 1)};
+  pg_interface->complete(-EIO);
+  pg_interface->read_route = WeaveReadRoute{v, pg_shard_t(1, shard_id_t(0)), 1, eversion_t(1, 1)};
   auto read = request(a, CEPH_OSD_OP_READ);
   auto* message = static_cast<MOSDOp*>(read->get_nonconst_req());
   message->allow_weave_redirect(true);
   EXPECT_EQ(controller->preprocess_client_op(read), RequestDisposition::kReplied);
-  EXPECT_EQ(host->redirects, 1u);
+  EXPECT_EQ(pg_interface->redirects, 1u);
   EXPECT_EQ(message->get_hobj(), a);
   drain();
 }
@@ -786,103 +786,103 @@ TEST(WeavePackingLocks, OldReadersHoldDeletionAndWakeQueuedWork) {
 }
 
 TEST(WeavePGController, RevalidatesSourcesBeforePublicationAndCancelsOnReset) {
-  auto owner = std::make_unique<FakeHost>();
-  auto& host = *owner;
-  const auto a = oid("a"), b = oid("b"), v = host.new_volume(a);
-  host.put(a, "AAAA"); host.put(b, "BBBB");
+  auto owner = std::make_unique<FakeWeavePG>();
+  auto& pg_interface = *owner;
+  const auto a = oid("a"), b = oid("b"), v = pg_interface.new_volume(a);
+  pg_interface.put(a, "AAAA"); pg_interface.put(b, "BBBB");
   WeavePGController controller(g_ceph_context, std::move(owner), true);
   controller.initialize();
-  controller.on_commit(host.inspect(a).info, true, {});
-  controller.on_commit(host.inspect(b).info, true, {});
+  controller.on_commit(pg_interface.inspect(a).info, true, {});
+  controller.on_commit(pg_interface.inspect(b).info, true, {});
   controller.scan_candidates();
-  ASSERT_EQ(host.io.size(), 1u);
-  host.complete(); host.complete();
-  host.objects[a].state.info.version = eversion_t(1, 2);
-  host.run_cpu();
-  EXPECT_TRUE(host.io.empty());
-  EXPECT_FALSE(host.objects[v].state.exists);
-  EXPECT_TRUE(host.objects[a].state.exists); EXPECT_EQ(host.released, 1u);
+  ASSERT_EQ(pg_interface.io.size(), 1u);
+  pg_interface.complete(); pg_interface.complete();
+  pg_interface.objects[a].state.info.version = eversion_t(1, 2);
+  pg_interface.run_cpu();
+  EXPECT_TRUE(pg_interface.io.empty());
+  EXPECT_FALSE(pg_interface.objects[v].state.exists);
+  EXPECT_TRUE(pg_interface.objects[a].state.exists); EXPECT_EQ(pg_interface.released, 1u);
   // The restored candidates can run again; a PG reset retires their lease.
   controller.scan_candidates();
-  ASSERT_FALSE(host.io.empty());
+  ASSERT_FALSE(pg_interface.io.empty());
   controller.on_pg_change(false);
-  EXPECT_EQ(host.released, 2u);
-  host.complete();
-  EXPECT_TRUE(host.io.empty());
+  EXPECT_EQ(pg_interface.released, 2u);
+  pg_interface.complete();
+  EXPECT_TRUE(pg_interface.io.empty());
 }
 
 TEST(WeavePGController, BusyFirstCandidateDoesNotStarveColdGroup) {
-  auto owner = std::make_unique<FakeHost>();
-  auto& host = *owner;
+  auto owner = std::make_unique<FakeWeavePG>();
+  auto& pg_interface = *owner;
   // Size ordering puts the hot object first, independent of hobject hashes.
-  host.put(oid("a-hot"), "HHHHH");
-  host.put(oid("b-cold"), "BBBB");
-  host.put(oid("c-cold"), "CCCC");
-  host.objects[oid("a-hot")].state.access = WeaveObjectState::Access::kBusy;
+  pg_interface.put(oid("a-hot"), "HHHHH");
+  pg_interface.put(oid("b-cold"), "BBBB");
+  pg_interface.put(oid("c-cold"), "CCCC");
+  pg_interface.objects[oid("a-hot")].state.access = WeaveObjectState::Access::kBusy;
   WeavePGController controller(g_ceph_context, std::move(owner), true);
   controller.initialize();
-  for (const auto& [id, object] : host.objects)
+  for (const auto& [id, object] : pg_interface.objects)
     controller.on_commit(object.state.info, true, {});
   controller.scan_candidates();
-  ASSERT_EQ(host.io.size(), 1u);
-  EXPECT_NE(host.io.front().oid, oid("a-hot"));
-  host.complete(); host.complete(); host.run_cpu();
-  host.complete(); host.complete(); host.complete();
-  EXPECT_TRUE(host.objects[oid("a-hot")].state.exists);
-  EXPECT_FALSE(host.objects[oid("b-cold")].state.exists);
-  EXPECT_FALSE(host.objects[oid("c-cold")].state.exists);
+  ASSERT_EQ(pg_interface.io.size(), 1u);
+  EXPECT_NE(pg_interface.io.front().oid, oid("a-hot"));
+  pg_interface.complete(); pg_interface.complete(); pg_interface.run_cpu();
+  pg_interface.complete(); pg_interface.complete(); pg_interface.complete();
+  EXPECT_TRUE(pg_interface.objects[oid("a-hot")].state.exists);
+  EXPECT_FALSE(pg_interface.objects[oid("b-cold")].state.exists);
+  EXPECT_FALSE(pg_interface.objects[oid("c-cold")].state.exists);
   controller.on_pg_change(false);
 }
 
 TEST(WeavePGController, ForegroundCommitsOnlyRecordCandidatesForPeriodicScan) {
-  auto owner = std::make_unique<FakeHost>();
-  auto& host = *owner;
-  host.settings.quiet_seconds = 3600;
-  host.put(oid("a"), "AAAA"); host.put(oid("b"), "BBBB");
+  auto owner = std::make_unique<FakeWeavePG>();
+  auto& pg_interface = *owner;
+  pg_interface.settings.quiet_seconds = 3600;
+  pg_interface.put(oid("a"), "AAAA"); pg_interface.put(oid("b"), "BBBB");
   WeavePGController controller(g_ceph_context, std::move(owner), true);
   controller.initialize();
-  controller.on_commit(host.inspect(oid("a")).info, true, {});
-  controller.on_commit(host.inspect(oid("b")).info, true, {});
-  EXPECT_TRUE(host.retries.empty());
-  EXPECT_TRUE(host.io.empty());
+  controller.on_commit(pg_interface.inspect(oid("a")).info, true, {});
+  controller.on_commit(pg_interface.inspect(oid("b")).info, true, {});
+  EXPECT_TRUE(pg_interface.retries.empty());
+  EXPECT_TRUE(pg_interface.io.empty());
 
   controller.scan_candidates();
-  EXPECT_TRUE(host.io.empty());
-  EXPECT_TRUE(host.retries.empty());
-  host.settings.quiet_seconds = 0;
+  EXPECT_TRUE(pg_interface.io.empty());
+  EXPECT_TRUE(pg_interface.retries.empty());
+  pg_interface.settings.quiet_seconds = 0;
   controller.scan_candidates();
-  ASSERT_EQ(host.io.size(), 1u);
+  ASSERT_EQ(pg_interface.io.size(), 1u);
   controller.on_pg_change(false);
-  host.complete();
+  pg_interface.complete();
 }
 
 TEST(WeavePGController, PeriodicScanPacksAfterCleanWithoutAnotherCommit) {
-  auto owner = std::make_unique<FakeHost>();
-  auto& host = *owner;
-  host.clean_state = false;
-  host.put(oid("a"), "AAAA"); host.put(oid("b"), "BBBB");
+  auto owner = std::make_unique<FakeWeavePG>();
+  auto& pg_interface = *owner;
+  pg_interface.clean_state = false;
+  pg_interface.put(oid("a"), "AAAA"); pg_interface.put(oid("b"), "BBBB");
   WeavePGController controller(g_ceph_context, std::move(owner), true);
   controller.initialize();
-  controller.on_commit(host.inspect(oid("a")).info, true, {});
-  controller.on_commit(host.inspect(oid("b")).info, true, {});
-  EXPECT_TRUE(host.retries.empty());
+  controller.on_commit(pg_interface.inspect(oid("a")).info, true, {});
+  controller.on_commit(pg_interface.inspect(oid("b")).info, true, {});
+  EXPECT_TRUE(pg_interface.retries.empty());
   controller.scan_candidates();
-  EXPECT_TRUE(host.io.empty());
-  host.clean_state = true;
+  EXPECT_TRUE(pg_interface.io.empty());
+  pg_interface.clean_state = true;
   controller.scan_candidates();
-  ASSERT_EQ(host.io.size(), 1u);
+  ASSERT_EQ(pg_interface.io.size(), 1u);
   controller.on_pg_change(false);
-  host.complete();
+  pg_interface.complete();
 }
 
 TEST(WeavePGController, ListingUsesCurrentMemberAttributesAndDeletionIdentity) {
-  auto owner = std::make_unique<FakeHost>();
-  auto& host = *owner;
-  const auto a = oid("a"), b = oid("b"), v = host.new_volume(a);
-  host.put(v, "AAAABBBB");
+  auto owner = std::make_unique<FakeWeavePG>();
+  auto& pg_interface = *owner;
+  const auto a = oid("a"), b = oid("b"), v = pg_interface.new_volume(a);
+  pg_interface.put(v, "AAAABBBB");
   WeaveVolumeMeta layout{v, 2, 4,
     {{a, WeaveMemberMeta{0, 4, {}, 1}}, {b, WeaveMemberMeta{1, 4, {}, 1}}}};
-  encode(layout, host.objects[v].attrs["volume_meta"]);
+  encode(layout, pg_interface.objects[v].attrs["volume_meta"]);
   WeavePGController controller(g_ceph_context, std::move(owner), true);
   controller.initialize();
   EXPECT_TRUE(controller.is_logical_member(a));
@@ -891,7 +891,7 @@ TEST(WeavePGController, ListingUsesCurrentMemberAttributesAndDeletionIdentity) {
   EXPECT_EQ(controller.listing_attribute(oid("native"), "_tag"),
             std::make_pair(oid("native"), std::string("_tag")));
   layout.members.erase(a);
-  auto& encoded = host.objects[v].attrs["volume_meta"];
+  auto& encoded = pg_interface.objects[v].attrs["volume_meta"];
   encoded.clear(); encode(layout, encoded);
   controller.on_recovery_progress();
   EXPECT_FALSE(controller.is_logical_member(a));
@@ -902,13 +902,13 @@ TEST(WeavePGController, ListingUsesCurrentMemberAttributesAndDeletionIdentity) {
 
 TEST(WeavePGController, SnapshotAccessAndSnapshotDeleteMaterializeBeforeNativeLookup) {
   for (const bool snapshot_read : {true, false}) {
-    auto owner = std::make_unique<FakeHost>();
-    auto& host = *owner;
-    const auto a = oid("a"), v = host.new_volume(a);
-    host.put(v, "AAAA");
-    host.pool_snap_sequence = 7;
+    auto owner = std::make_unique<FakeWeavePG>();
+    auto& pg_interface = *owner;
+    const auto a = oid("a"), v = pg_interface.new_volume(a);
+    pg_interface.put(v, "AAAA");
+    pg_interface.pool_snap_sequence = 7;
     WeaveVolumeMeta layout{v, 2, 4, {{a, WeaveMemberMeta{0, 4, {}, 1, 3}}}};
-    encode(layout, host.objects[v].attrs["volume_meta"]);
+    encode(layout, pg_interface.objects[v].attrs["volume_meta"]);
     WeavePGController controller(g_ceph_context, std::move(owner), true);
     controller.initialize();
     OpTracker tracker(g_ceph_context, false, 1);
@@ -923,10 +923,10 @@ TEST(WeavePGController, SnapshotAccessAndSnapshotDeleteMaterializeBeforeNativeLo
     ASSERT_EQ(op->maybe_init_op_info(OSDMap()), 0);
     EXPECT_EQ(controller.preprocess_client_op(op), RequestDisposition::kDeferred);
     EXPECT_EQ(message->get_hobj(), target);
-    ASSERT_EQ(host.io.size(), 1u);
-    EXPECT_EQ(host.io.front().oid, v);
+    ASSERT_EQ(pg_interface.io.size(), 1u);
+    EXPECT_EQ(pg_interface.io.front().oid, v);
     controller.on_pg_change(false);
-    host.complete(); op.reset(); tracker.on_shutdown();
+    pg_interface.complete(); op.reset(); tracker.on_shutdown();
   }
 }
 
@@ -942,13 +942,13 @@ TEST_F(WeaveConversion, MaterializationRetainsOriginalSnapshotSequence) {
 }
 
 TEST(WeavePGController, ConcurrentDeletesReadProjectedMetadataAndPublishOnCommit) {
-  auto owner = std::make_unique<FakeHost>();
-  auto& host = *owner;
-  const auto a = oid("a"), b = oid("b"), v = host.new_volume(a);
-  host.put(v, "AAAABBBB");
+  auto owner = std::make_unique<FakeWeavePG>();
+  auto& pg_interface = *owner;
+  const auto a = oid("a"), b = oid("b"), v = pg_interface.new_volume(a);
+  pg_interface.put(v, "AAAABBBB");
   WeaveVolumeMeta layout{v, 2, 4,
     {{a, WeaveMemberMeta{0, 4, {}, 1}}, {b, WeaveMemberMeta{1, 4, {}, 1}}}};
-  encode(layout, host.objects[v].attrs["volume_meta"]);
+  encode(layout, pg_interface.objects[v].attrs["volume_meta"]);
   WeavePGController controller(g_ceph_context, std::move(owner), true);
   controller.initialize();
   OpTracker tracker(g_ceph_context, false, 1);
@@ -964,7 +964,7 @@ TEST(WeavePGController, ConcurrentDeletesReadProjectedMetadataAndPublishOnCommit
   auto second = request(b, CEPH_OSD_OP_DELETE);
   ASSERT_EQ(controller.preprocess_client_op(first), RequestDisposition::kTranslated);
   ASSERT_EQ(controller.preprocess_client_op(second), RequestDisposition::kTranslated);
-  auto projected = host.objects[v].attrs["volume_meta"];
+  auto projected = pg_interface.objects[v].attrs["volume_meta"];
   WeaveTransaction txn{
     [&](const char* key, bufferlist& out) { EXPECT_STREQ(key, "_volume_meta"); out = projected; return 0; },
     [&](const char* key, const bufferlist& value) { EXPECT_STREQ(key, "_volume_meta"); projected = value; }};
@@ -976,13 +976,13 @@ TEST(WeavePGController, ConcurrentDeletesReadProjectedMetadataAndPublishOnCommit
   auto before_commit = request(a, CEPH_OSD_OP_STAT);
   EXPECT_EQ(controller.preprocess_client_op(before_commit), RequestDisposition::kTranslated);
   controller.finish_request(before_commit);
-  controller.on_commit(host.inspect(v).info, true, first);
+  controller.on_commit(pg_interface.inspect(v).info, true, first);
   auto after_first = request(a, CEPH_OSD_OP_STAT);
   EXPECT_EQ(controller.preprocess_client_op(after_first), RequestDisposition::kNative);
   auto still_second = request(b, CEPH_OSD_OP_STAT);
   EXPECT_EQ(controller.preprocess_client_op(still_second), RequestDisposition::kTranslated);
   controller.finish_request(still_second);
-  controller.on_commit(host.inspect(v).info, true, second);
+  controller.on_commit(pg_interface.inspect(v).info, true, second);
   auto after_second = request(b, CEPH_OSD_OP_STAT);
   EXPECT_EQ(controller.preprocess_client_op(after_second), RequestDisposition::kNative);
   controller.finish_request(first); controller.finish_request(second);
@@ -994,49 +994,49 @@ TEST(WeavePGController, ConcurrentDeletesReadProjectedMetadataAndPublishOnCommit
 
 TEST_F(WeaveDurableRecovery, MaterializationRetryIsIndependentOfScansAndCleanup) {
   pack(); drain();
-  host->allow_acquire = false;
+  pg_interface->allow_acquire = false;
   auto write = request(a, CEPH_OSD_OP_WRITEFULL);
   ASSERT_EQ(controller->preprocess_client_op(write), RequestDisposition::kDeferred);
-  EXPECT_EQ(host->retries.count(WeaveRetryKind::kMaterialization), 1u);
+  EXPECT_EQ(pg_interface->retries.count(WeaveRetryKind::kMaterialization), 1u);
 
   bool cleanup_finished = false;
   controller->request_cleanup(100, [&] { cleanup_finished = true; });
-  EXPECT_EQ(host->retries.count(WeaveRetryKind::kCleanup), 1u);
-  host->settings.background = true;
+  EXPECT_EQ(pg_interface->retries.count(WeaveRetryKind::kCleanup), 1u);
+  pg_interface->settings.background = true;
   controller->scan_candidates();
-  EXPECT_TRUE(host->io.empty());
-  EXPECT_EQ(host->retries.count(WeaveRetryKind::kMaterialization), 1u);
+  EXPECT_TRUE(pg_interface->io.empty());
+  EXPECT_EQ(pg_interface->retries.count(WeaveRetryKind::kMaterialization), 1u);
 
-  const auto requeued = host->requeued;
-  host->allow_acquire = true;
-  host->tick(WeaveRetryKind::kMaterialization);
-  EXPECT_EQ(host->requeued, requeued + 1);
+  const auto requeued = pg_interface->requeued;
+  pg_interface->allow_acquire = true;
+  pg_interface->tick(WeaveRetryKind::kMaterialization);
+  EXPECT_EQ(pg_interface->requeued, requeued + 1);
   ASSERT_EQ(controller->preprocess_client_op(write), RequestDisposition::kDeferred);
-  host->tick(WeaveRetryKind::kCleanup); // The running job owns the next continuation.
+  pg_interface->tick(WeaveRetryKind::kCleanup); // The running job owns the next continuation.
   drain();
   EXPECT_FALSE(controller->is_logical_member(a));
-  EXPECT_EQ(host->requeued, requeued + 2);
+  EXPECT_EQ(pg_interface->requeued, requeued + 2);
   EXPECT_FALSE(cleanup_finished);
-  host->tick(WeaveRetryKind::kCleanup);
+  pg_interface->tick(WeaveRetryKind::kCleanup);
   EXPECT_TRUE(cleanup_finished);
 }
 
 TEST_F(WeaveDurableRecovery, CleanupRetriesItsOwnPassWithoutCandidateScan) {
   pack(); drain();
-  host->allow_acquire = false;
+  pg_interface->allow_acquire = false;
   bool cleanup_finished = false;
   controller->request_cleanup(100, [&] { cleanup_finished = true; });
   EXPECT_FALSE(cleanup_finished);
-  EXPECT_EQ(host->retries.count(WeaveRetryKind::kCleanup), 1u);
-  host->allow_acquire = true;
+  EXPECT_EQ(pg_interface->retries.count(WeaveRetryKind::kCleanup), 1u);
+  pg_interface->allow_acquire = true;
   controller->scan_candidates();
-  EXPECT_TRUE(host->io.empty());
-  host->tick(WeaveRetryKind::kCleanup);
-  ASSERT_FALSE(host->io.empty());
+  EXPECT_TRUE(pg_interface->io.empty());
+  pg_interface->tick(WeaveRetryKind::kCleanup);
+  ASSERT_FALSE(pg_interface->io.empty());
   drain();
   EXPECT_TRUE(cleanup_finished);
   EXPECT_FALSE(controller->is_logical_member(a));
-  EXPECT_TRUE(host->retries.empty());
+  EXPECT_TRUE(pg_interface->retries.empty());
 }
 
 TEST(WeaveService, ReclaimPassStaysActiveUntilEveryPGReleasesCompletion) {
@@ -1083,10 +1083,10 @@ TEST(WeaveService, ConversionLeaseCanOnlyReleaseItsSlotOnce) {
 namespace {
 class WeaveReadRouterTest : public ::testing::Test {
 protected:
-  FakeHost host;
+  FakeWeavePG pg_interface;
   WeaveCatalog catalog;
   WeaveMemberTranslator translator{g_ceph_context, catalog};
-  WeaveReadRouter router{host, translator};
+  WeaveReadRouter router{pg_interface, translator};
   OpTracker tracker{g_ceph_context, false, 1};
   hobject_t a = oid("a"), b = oid("b"), v = oid("volume");
   WeaveVolumeMeta metadata;
@@ -1096,8 +1096,8 @@ protected:
     metadata = {v, 2, 4, {{a, {0, 3, {}, 11}}, {b, {1, 4, {}, 12}}}};
     catalog.upsert(metadata);
     translator.activate(2, 4);
-    host.read_route = WeaveReadRoute{v, pg_shard_t(1, shard_id_t(0)), 7, eversion_t(7, 9)};
-    encode(metadata, host.read_metadata);
+    pg_interface.read_route = WeaveReadRoute{v, pg_shard_t(1, shard_id_t(0)), 7, eversion_t(7, 9)};
+    encode(metadata, pg_interface.read_metadata);
     auto* m = new MOSDOp(0, 17, a, spg_t(), 7, CEPH_OSD_FLAG_READ, CEPH_FEATURES_SUPPORTED_DEFAULT);
     m->allow_weave_redirect(true);
     m->read(1, 8);
@@ -1116,8 +1116,8 @@ TEST_F(WeaveReadRouterTest, RedirectRestoresOriginalRequestAndReplicaRetranslate
   ASSERT_TRUE(router.redirect(op));
   EXPECT_EQ(message()->get_hobj(), a);
   EXPECT_EQ(message()->ops.front().op.extent.length, 8u);
-  EXPECT_EQ(host.redirects, 1u);
-  message()->set_weave_read_route(*host.read_route);
+  EXPECT_EQ(pg_interface.redirects, 1u);
+  message()->set_weave_read_route(*pg_interface.read_route);
   catalog.clear(); // replicas do not need the primary's catalog
   ASSERT_EQ(router.accept(op), 0);
   EXPECT_EQ(message()->get_hobj(), v);
@@ -1127,27 +1127,27 @@ TEST_F(WeaveReadRouterTest, RedirectRestoresOriginalRequestAndReplicaRetranslate
 }
 
 TEST_F(WeaveReadRouterTest, RejectsStaleRouteRemovedMemberAndWrongTarget) {
-  message()->set_weave_read_route(*host.read_route);
-  host.read_route_result = -EAGAIN;
+  message()->set_weave_read_route(*pg_interface.read_route);
+  pg_interface.read_route_result = -EAGAIN;
   EXPECT_EQ(router.accept(op), -EAGAIN);
-  host.read_route_result = 0;
-  host.read_route->target = pg_shard_t(2, shard_id_t(1));
+  pg_interface.read_route_result = 0;
+  pg_interface.read_route->target = pg_shard_t(2, shard_id_t(1));
   EXPECT_EQ(router.accept(op), -EAGAIN);
-  host.read_route->target = pg_shard_t(1, shard_id_t(0));
+  pg_interface.read_route->target = pg_shard_t(1, shard_id_t(0));
   metadata.members.erase(a);
-  host.read_metadata.clear(); encode(metadata, host.read_metadata);
+  pg_interface.read_metadata.clear(); encode(metadata, pg_interface.read_metadata);
   EXPECT_EQ(router.accept(op), -EAGAIN);
   EXPECT_EQ(message()->get_hobj(), a);
   EXPECT_FALSE(op->is_weave_member_op());
 }
 
 TEST_F(WeaveReadRouterTest, RejectsMalformedMetadataAndUnrelatedPhysicalObject) {
-  message()->set_weave_read_route(*host.read_route);
-  host.read_metadata.clear(); host.read_metadata.append("broken");
+  message()->set_weave_read_route(*pg_interface.read_route);
+  pg_interface.read_metadata.clear(); pg_interface.read_metadata.append("broken");
   EXPECT_EQ(router.accept(op), -EAGAIN);
-  host.read_metadata.clear(); encode(metadata, host.read_metadata);
-  host.read_route->volume.nspace.clear();
-  message()->set_weave_read_route(*host.read_route);
+  pg_interface.read_metadata.clear(); encode(metadata, pg_interface.read_metadata);
+  pg_interface.read_route->volume.nspace.clear();
+  message()->set_weave_read_route(*pg_interface.read_route);
   EXPECT_EQ(router.accept(op), -EAGAIN);
 }
 
@@ -1155,21 +1155,21 @@ TEST_F(WeaveReadRouterTest, FallbackDoesNotRedirectAgain) {
   message()->allow_weave_redirect(false);
   ASSERT_EQ(translator.preprocess(op), 0);
   EXPECT_FALSE(router.redirect(op));
-  EXPECT_EQ(host.redirects, 0u);
+  EXPECT_EQ(pg_interface.redirects, 0u);
 }
 } // namespace
 
 TEST(WeavePGController, ReplicaPromotionReloadsCatalogAfterServingDirectReads) {
-  auto owner = std::make_unique<FakeHost>();
-  auto& host = *owner;
-  host.primary_role = false;
+  auto owner = std::make_unique<FakeWeavePG>();
+  auto& pg_interface = *owner;
+  pg_interface.primary_role = false;
   auto a = oid("a"), v = oid("volume");
   v.nspace = ".ceph-internal-weave";
   WeaveVolumeMeta metadata{v, 2, 4, {{a, {0, 3, {}, 11}}}};
-  host.put(v, "AAAABBBB");
-  encode(metadata, host.objects[v].attrs["volume_meta"]);
-  encode(metadata, host.read_metadata);
-  host.read_route = WeaveReadRoute{v, pg_shard_t(1, shard_id_t(0)), 7, eversion_t(7, 9)};
+  pg_interface.put(v, "AAAABBBB");
+  encode(metadata, pg_interface.objects[v].attrs["volume_meta"]);
+  encode(metadata, pg_interface.read_metadata);
+  pg_interface.read_route = WeaveReadRoute{v, pg_shard_t(1, shard_id_t(0)), 7, eversion_t(7, 9)};
   WeavePGController controller(g_ceph_context, std::move(owner), true);
   OpTracker tracker(g_ceph_context, false, 1);
   auto request = [&] {
@@ -1180,11 +1180,11 @@ TEST(WeavePGController, ReplicaPromotionReloadsCatalogAfterServingDirectReads) {
     return op;
   };
   auto direct = request();
-  static_cast<MOSDOp*>(direct->get_nonconst_req())->set_weave_read_route(*host.read_route);
+  static_cast<MOSDOp*>(direct->get_nonconst_req())->set_weave_read_route(*pg_interface.read_route);
   EXPECT_EQ(controller.preprocess_client_op(direct), RequestDisposition::kTranslated);
   controller.finish_request(direct);
   controller.on_pg_change(false);
-  host.primary_role = true;
+  pg_interface.primary_role = true;
   controller.initialize();
   auto primary = request();
   EXPECT_EQ(controller.preprocess_client_op(primary), RequestDisposition::kTranslated);
@@ -1195,14 +1195,14 @@ TEST(WeavePGController, ReplicaPromotionReloadsCatalogAfterServingDirectReads) {
 }
 
 TEST(WeavePGController, RequeuedMembersRetainLogicalCapabilities) {
-  auto owner = std::make_unique<FakeHost>();
-  auto& host = *owner;
+  auto owner = std::make_unique<FakeWeavePG>();
+  auto& pg_interface = *owner;
   auto a = oid("allowed-member"), v = oid("volume");
   a.nspace = "user";
   v.nspace = ".ceph-internal-weave";
   WeaveVolumeMeta metadata{v, 2, 4, {{a, {0, 3, {}, 11}}}};
-  host.put(v, "AAAABBBB");
-  encode(metadata, host.objects[v].attrs["volume_meta"]);
+  pg_interface.put(v, "AAAABBBB");
+  encode(metadata, pg_interface.objects[v].attrs["volume_meta"]);
   WeavePGController controller(g_ceph_context, std::move(owner), true);
   controller.initialize();
   OSDCap caps;
@@ -1232,14 +1232,14 @@ TEST(WeavePGController, RequeuedMembersRetainLogicalCapabilities) {
 }
 
 TEST(WeavePGController, FailedCatalogLoadRejectsRequestsUntilReloadSucceeds) {
-  auto owner = std::make_unique<FakeHost>();
-  auto& host = *owner;
+  auto owner = std::make_unique<FakeWeavePG>();
+  auto& pg_interface = *owner;
   auto a = oid("a"), v = oid("volume");
   v.nspace = ".ceph-internal-weave";
   WeaveVolumeMeta metadata{v, 2, 4, {{a, {0, 3, {}, 11}}}};
-  host.put(v, "AAAABBBB");
-  encode(metadata, host.objects[v].attrs["volume_meta"]);
-  host.metadata_result = -EIO;
+  pg_interface.put(v, "AAAABBBB");
+  encode(metadata, pg_interface.objects[v].attrs["volume_meta"]);
+  pg_interface.metadata_result = -EIO;
   WeavePGController controller(g_ceph_context, std::move(owner), true);
   controller.initialize();
   OpTracker tracker(g_ceph_context, false, 1);
@@ -1249,8 +1249,8 @@ TEST(WeavePGController, FailedCatalogLoadRejectsRequestsUntilReloadSucceeds) {
   auto op = tracker.create_request<OpRequest, Message*>(message);
   ASSERT_EQ(op->maybe_init_op_info(OSDMap()), 0);
   EXPECT_EQ(controller.prepare_request(op), RequestDisposition::kRejected);
-  EXPECT_EQ(host.last_error, -EIO);
-  host.metadata_result = 0;
+  EXPECT_EQ(pg_interface.last_error, -EIO);
+  pg_interface.metadata_result = 0;
   controller.initialize();
   EXPECT_EQ(controller.prepare_request(op), RequestDisposition::kNative);
   EXPECT_EQ(controller.preprocess_client_op(op), RequestDisposition::kTranslated);
@@ -1262,9 +1262,9 @@ TEST(WeavePGController, FailedCatalogLoadRejectsRequestsUntilReloadSucceeds) {
 }
 
 TEST(WeavePGController, MissingCatalogDefersReadsWritesAndListingUntilRecovery) {
-  auto owner = std::make_unique<FakeHost>();
-  auto& host = *owner;
-  host.missing = true;
+  auto owner = std::make_unique<FakeWeavePG>();
+  auto& pg_interface = *owner;
+  pg_interface.missing = true;
   auto a = oid("a"), v = oid("volume");
   v.nspace = ".ceph-internal-weave";
   WeavePGController controller(g_ceph_context, std::move(owner), true);
@@ -1282,14 +1282,14 @@ TEST(WeavePGController, MissingCatalogDefersReadsWritesAndListingUntilRecovery) 
     EXPECT_EQ(controller.prepare_request(op), RequestDisposition::kDeferred);
     requests.push_back(std::move(op));
   }
-  host.put(v, "AAAABBBB");
+  pg_interface.put(v, "AAAABBBB");
   WeaveVolumeMeta metadata{v, 2, 4, {{a, {0, 3, {}, 11}}}};
-  encode(metadata, host.objects[v].attrs["volume_meta"]);
-  host.missing = false;
-  host.metadata_result = -EIO;
+  encode(metadata, pg_interface.objects[v].attrs["volume_meta"]);
+  pg_interface.missing = false;
+  pg_interface.metadata_result = -EIO;
   controller.on_recovery_progress();
-  EXPECT_EQ(host.last_error, -EIO);
-  host.metadata_result = 0;
+  EXPECT_EQ(pg_interface.last_error, -EIO);
+  pg_interface.metadata_result = 0;
   controller.initialize();
   EXPECT_EQ(controller.prepare_request(requests.front()), RequestDisposition::kNative);
   EXPECT_EQ(controller.preprocess_client_op(requests.front()), RequestDisposition::kTranslated);
@@ -1305,27 +1305,27 @@ TEST(WeavePGController, MissingCatalogDefersReadsWritesAndListingUntilRecovery) 
 }
 
 TEST(WeavePGController, TruncateHistoryBeforePublicationKeepsNativeSources) {
-  auto owner = std::make_unique<FakeHost>();
-  auto& host = *owner;
+  auto owner = std::make_unique<FakeWeavePG>();
+  auto& pg_interface = *owner;
   auto a = oid("a"), b = oid("b");
-  host.put(a, "AAAA");
-  host.put(b, "BBBB");
+  pg_interface.put(a, "AAAA");
+  pg_interface.put(b, "BBBB");
   WeavePGController controller(g_ceph_context, std::move(owner), true);
   controller.initialize();
-  controller.on_commit(host.inspect(a).info, true, {});
-  controller.on_commit(host.inspect(b).info, true, {});
+  controller.on_commit(pg_interface.inspect(a).info, true, {});
+  controller.on_commit(pg_interface.inspect(b).info, true, {});
   controller.scan_candidates();
-  ASSERT_FALSE(host.io.empty());
-  host.complete();
-  host.complete();
-  host.objects[a].state.info.truncate_seq = 1;
-  host.objects[a].state.info.truncate_size = 4;
-  host.run_cpu();
-  while (!host.io.empty()) host.complete();
-  EXPECT_TRUE(host.inspect(a).exists);
-  EXPECT_TRUE(host.inspect(b).exists);
-  EXPECT_EQ(host.objects[a].data.to_str(), "AAAA");
-  EXPECT_EQ(host.objects[b].data.to_str(), "BBBB");
+  ASSERT_FALSE(pg_interface.io.empty());
+  pg_interface.complete();
+  pg_interface.complete();
+  pg_interface.objects[a].state.info.truncate_seq = 1;
+  pg_interface.objects[a].state.info.truncate_size = 4;
+  pg_interface.run_cpu();
+  while (!pg_interface.io.empty()) pg_interface.complete();
+  EXPECT_TRUE(pg_interface.inspect(a).exists);
+  EXPECT_TRUE(pg_interface.inspect(b).exists);
+  EXPECT_EQ(pg_interface.objects[a].data.to_str(), "AAAA");
+  EXPECT_EQ(pg_interface.objects[b].data.to_str(), "BBBB");
   OpTracker tracker(g_ceph_context, false, 1);
   auto* message = new MOSDOp(0, 17, a, spg_t(), 7, CEPH_OSD_FLAG_READ,
                             CEPH_FEATURES_SUPPORTED_DEFAULT);
@@ -1340,14 +1340,14 @@ TEST(WeavePGController, TruncateHistoryBeforePublicationKeepsNativeSources) {
 }
 
 TEST(WeavePGController, UserVolumeAttributeCannotPublishMemberMapping) {
-  auto owner = std::make_unique<FakeHost>();
-  auto& host = *owner;
+  auto owner = std::make_unique<FakeWeavePG>();
+  auto& pg_interface = *owner;
   auto forged = oid("ordinary"), logical = oid("claimed-member"), volume = oid("victim");
   volume.nspace = ".ceph-internal-weave";
-  host.put(forged, "user-data");
-  host.put(volume, "PRIVATE!");
+  pg_interface.put(forged, "user-data");
+  pg_interface.put(volume, "PRIVATE!");
   WeaveVolumeMeta metadata{volume, 2, 4, {{logical, {0, 4, {}, 11}}}};
-  encode(metadata, host.objects[forged].attrs["volume_meta"]);
+  encode(metadata, pg_interface.objects[forged].attrs["volume_meta"]);
   WeavePGController controller(g_ceph_context, std::move(owner), true);
   controller.initialize();
   OpTracker tracker(g_ceph_context, false, 1);
@@ -1371,17 +1371,17 @@ TEST(WeavePGController, UserVolumeAttributeCannotPublishMemberMapping) {
 TEST(WeavePGController, CorruptPrivateMetadataFailsClosedAndCanBeReloaded) {
   for (bool wrong_source : {false, true}) {
     SCOPED_TRACE(wrong_source);
-    auto owner = std::make_unique<FakeHost>();
-    auto& host = *owner;
-    auto logical = oid("a"), volume = host.new_volume(logical);
-    host.put(volume, "AAAABBBB");
+    auto owner = std::make_unique<FakeWeavePG>();
+    auto& pg_interface = *owner;
+    auto logical = oid("a"), volume = pg_interface.new_volume(logical);
+    pg_interface.put(volume, "AAAABBBB");
     WeaveVolumeMeta metadata{volume, 2, 4, {{logical, {0, 4, {}, 11}}}};
     if (wrong_source) {
       metadata.volume_oid.oid.name = "different-volume";
-      encode(metadata, host.objects[volume].attrs["volume_meta"]);
+      encode(metadata, pg_interface.objects[volume].attrs["volume_meta"]);
       metadata.volume_oid = volume;
     } else {
-      host.objects[volume].attrs["volume_meta"].append("broken");
+      pg_interface.objects[volume].attrs["volume_meta"].append("broken");
     }
     WeavePGController controller(g_ceph_context, std::move(owner), true);
     controller.initialize();
@@ -1392,8 +1392,8 @@ TEST(WeavePGController, CorruptPrivateMetadataFailsClosedAndCanBeReloaded) {
     auto op = tracker.create_request<OpRequest, Message*>(message);
     ASSERT_EQ(op->maybe_init_op_info(OSDMap()), 0);
     EXPECT_EQ(controller.prepare_request(op), RequestDisposition::kRejected);
-    EXPECT_EQ(host.last_error, -EIO);
-    auto& encoded = host.objects[volume].attrs["volume_meta"];
+    EXPECT_EQ(pg_interface.last_error, -EIO);
+    auto& encoded = pg_interface.objects[volume].attrs["volume_meta"];
     encoded.clear();
     encode(metadata, encoded);
     controller.initialize();

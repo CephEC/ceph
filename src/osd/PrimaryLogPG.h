@@ -1951,8 +1951,8 @@ private:
 
   // PG lifecycle and request hooks stay here; aggregation state and policy
   // live in weave, not in the native transaction engine.
-  class WeaveHost;
-  std::unique_ptr<ceph::weave::WeavePGHost> make_weave_host();
+  class WeavePGAdapter;
+  std::unique_ptr<ceph::weave::WeavePGInterface> make_weave_pg_adapter();
   std::unique_ptr<ceph::weave::WeavePGController> m_weave;
   std::unique_ptr<ceph::weave::WeaveScanSchedule> m_weave_scan;
   void schedule_next_weave_scan(bool stagger_start = false);

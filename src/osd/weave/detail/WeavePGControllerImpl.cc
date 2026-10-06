@@ -30,14 +30,14 @@ void sort_and_deduplicate(std::vector<hobject_t>& entries)
 // Lifecycle
 // ---------------------------------------------------------------------------
 
-WeavePGController::Impl::Impl(CephContext* cct,
-                              std::unique_ptr<WeavePGHost> host, bool enabled)
-  : host_(std::move(host)), enabled_(enabled), translator_(cct, catalog_),
-    reads_(*host_, translator_) {}
+WeavePGController::Impl::Impl(
+  CephContext* cct, std::unique_ptr<WeavePGInterface> pg_interface, bool enabled)
+  : pg_interface_(std::move(pg_interface)), enabled_(enabled),
+    translator_(cct, catalog_), reads_(*pg_interface_, translator_) {}
 
 WeavePGController::Impl::~Impl()
 {
-  host_->cancel_retries();
+  pg_interface_->cancel_retries();
   // Native shutdown cancels active work before the PG can be destroyed.
   ceph_assert(!job_);
   finish_cleanup();
@@ -45,8 +45,8 @@ WeavePGController::Impl::~Impl()
 
 void WeavePGController::Impl::initialize()
 {
-  if (!enabled_ || translator_.initialized() || !host_->primary() ||
-      !host_->active() || host_->has_missing()) {
+  if (!enabled_ || translator_.initialized() || !pg_interface_->primary() ||
+      !pg_interface_->active() || pg_interface_->has_missing()) {
     return;
   }
   if (!reload_metadata()) {
@@ -55,17 +55,17 @@ void WeavePGController::Impl::initialize()
   }
   // Geometry is only trusted once the PG is active and complete; activate()
   // revalidates it for the member translator.
-  const auto geometry = host_->geometry();
+  const auto geometry = pg_interface_->geometry();
   translator_.activate(geometry.data_shards, geometry.unit);
 
-  host_->requeue(waiting_for_recovery_);
+  pg_interface_->requeue(waiting_for_recovery_);
 }
 
 bool WeavePGController::Impl::reload_metadata()
 {
   if (!enabled_ || job_) return false;
   WeaveVolumeAttrs stored;
-  metadata_error_ = host_->load_metadata(stored);
+  metadata_error_ = pg_interface_->load_metadata(stored);
   if (metadata_error_ < 0) {
     translator_.shutdown();
     return false;
@@ -95,27 +95,27 @@ void WeavePGController::Impl::fail_recovery_waiters()
   if (metadata_error_ >= 0) return;
 
   for (const auto& op : waiting_for_recovery_) {
-    host_->reply_error(op, metadata_error_);
+    pg_interface_->reply_error(op, metadata_error_);
   }
   waiting_for_recovery_.clear();
 }
 
 bool WeavePGController::Impl::can_work() const
 {
-  return enabled_ && translator_.initialized() && host_->primary() &&
-    host_->active() && host_->clean();
+  return enabled_ && translator_.initialized() && pg_interface_->primary() &&
+    pg_interface_->active() && pg_interface_->clean();
 }
 
 bool WeavePGController::Impl::can_scan() const
 {
-  return can_work() && host_->policy().background;
+  return can_work() && pg_interface_->policy().background;
 }
 
 void WeavePGController::Impl::on_recovery_progress()
 {
-  if (!enabled_ || !host_->primary()) return;
+  if (!enabled_ || !pg_interface_->primary()) return;
   // on_local_recover runs before submitting the recovery transaction.
-  // initialize waits for the host's missing/applied barrier before reloading.
+  // initialize waits for the PG's missing/applied barrier before reloading.
   translator_.shutdown();
   initialize();
 }
@@ -127,7 +127,7 @@ void WeavePGController::Impl::on_pg_change(bool requeue)
   // Invalidate every pending wakeup and the running job before the state it
   // depends on changes.
   ++generation_;
-  host_->cancel_retries();
+  pg_interface_->cancel_retries();
   cancel_job();
 
   // Per-role state: the cancelled job already released its reservations in
@@ -141,8 +141,8 @@ void WeavePGController::Impl::on_pg_change(bool requeue)
   finish_cleanup();
 
   if (requeue) {
-    host_->requeue(waiting_for_conversion_);
-    host_->requeue(waiting_for_recovery_);
+    pg_interface_->requeue(waiting_for_conversion_);
+    pg_interface_->requeue(waiting_for_recovery_);
   } else {
     waiting_for_conversion_.clear();
     waiting_for_recovery_.clear();
@@ -156,8 +156,8 @@ void WeavePGController::Impl::on_pg_change(bool requeue)
 void WeavePGController::Impl::configure_candidates()
 {
   if (!enabled_) return;
-  const auto geometry = host_->geometry();
-  const auto policy = host_->policy();
+  const auto geometry = pg_interface_->geometry();
+  const auto policy = pg_interface_->policy();
   candidates_.configure(geometry.data_shards, geometry.unit,
                         policy.min_size, policy.max_volume_size);
 }
@@ -167,8 +167,8 @@ void WeavePGController::Impl::scan_candidates()
   // Packing yields to foreground conversions and an existing cleanup pass.
   // This scan never resumes either of them; their own continuations do that.
   if (!can_scan() || job_ || cleanup_ || !waiting_for_conversion_.empty()) return;
-  const auto geometry = host_->geometry();
-  const auto policy = host_->policy();
+  const auto geometry = pg_interface_->geometry();
+  const auto policy = pg_interface_->policy();
   configure_candidates();
   std::vector<hobject_t> stale;
   auto members = select_packable(geometry, policy, stale);
@@ -176,7 +176,7 @@ void WeavePGController::Impl::scan_candidates()
     candidates_.erase(oid);
   }
   if (members.empty()) return;
-  auto lease = host_->acquire();
+  auto lease = pg_interface_->acquire();
   if (!lease) return;
   auto volume = plan_volume(members, geometry);
   start_job(std::move(members), std::move(volume), std::move(lease), false);
@@ -197,7 +197,7 @@ std::vector<WeaveCandidate> WeavePGController::Impl::select_packable(
 bool WeavePGController::Impl::candidate_available(
   const WeaveCandidate& member, std::vector<hobject_t>& stale)
 {
-  const auto object = host_->inspect(member.oid);
+  const auto object = pg_interface_->inspect(member.oid);
   // Anything the candidate index no longer describes exactly is
   // dropped here, so the next commit can reconsider it.
   if (catalog_.lookup(member.oid) ||
@@ -224,7 +224,7 @@ WeaveVolumeMeta WeavePGController::Impl::plan_volume(
   }
   const auto slot =
     ((largest + geometry.unit - 1) / geometry.unit) * geometry.unit;
-  WeaveVolumeMeta volume{host_->new_volume(members.front().oid),
+  WeaveVolumeMeta volume{pg_interface_->new_volume(members.front().oid),
                          geometry.data_shards, slot, {}};
 
   // Shard order is the selection order; it is captured now, while the members
@@ -233,7 +233,7 @@ WeaveVolumeMeta WeavePGController::Impl::plan_volume(
     const auto& member = members[i];
     volume.members.emplace(member.oid, WeaveMemberMeta{
       static_cast<uint8_t>(i), member.size, member.mtime, member.user_version,
-      host_->inspect(member.oid).snap_sequence});
+      pg_interface_->inspect(member.oid).snap_sequence});
     candidates_.erase(member.oid);
   }
   return volume;
@@ -258,9 +258,9 @@ void WeavePGController::Impl::resume_cleanup()
 void WeavePGController::Impl::schedule_cleanup_retry()
 {
   if (!cleanup_ || job_) return;
-  auto ref = host_->pin();
+  auto ref = pg_interface_->pin();
   const auto generation = generation_;
-  host_->retry(WeaveRetryKind::kCleanup,
+  pg_interface_->retry(WeaveRetryKind::kCleanup,
     [this, ref = std::move(ref), generation] {
       if (generation == generation_) resume_cleanup();
     });
@@ -305,8 +305,8 @@ void WeavePGController::Impl::finish_cleanup()
 void WeavePGController::Impl::request_cleanup(
   unsigned live_percent, std::function<void()> on_finish)
 {
-  if (!enabled_ || !host_->primary() || !host_->active() ||
-      !host_->clean() || cleanup_) {
+  if (!enabled_ || !pg_interface_->primary() || !pg_interface_->active() ||
+      !pg_interface_->clean() || cleanup_) {
     on_finish();
     return;
   }
@@ -339,7 +339,7 @@ bool WeavePGController::Impl::start_deaggregation(
     return true;
   }
   // A missing Volume is not a retryable condition: the mapping is broken.
-  const auto object = host_->inspect(volume->volume_oid);
+  const auto object = pg_interface_->inspect(volume->volume_oid);
   if (!object.exists) {
     fail_waiters(-ENOENT);
     return true;
@@ -348,7 +348,7 @@ bool WeavePGController::Impl::start_deaggregation(
   // The caller owns its retry path: foreground admission or cleanup.
   if (object.busy()) return false;
 
-  auto lease = host_->acquire();
+  auto lease = pg_interface_->acquire();
   if (!lease) return false;
 
   auto members = unpack_candidates(volume, object);
@@ -362,7 +362,7 @@ bool WeavePGController::Impl::start_deaggregation(
 bool WeavePGController::Impl::geometry_matches(
   const std::shared_ptr<const WeaveVolumeMeta>& volume) const
 {
-  const auto geometry = host_->geometry();
+  const auto geometry = pg_interface_->geometry();
   return geometry.data_shards && volume->data_shards == geometry.data_shards &&
     geometry.unit && volume->slot_size % geometry.unit == 0;
 }
@@ -393,8 +393,8 @@ void WeavePGController::Impl::start_job(std::vector<WeaveCandidate> members,
     reserved_[member.oid] = identity;
   }
 
-  job_ = std::make_shared<WeaveConversionJob>(*host_, identity,
-    host_->geometry().unit, std::move(members), std::move(volume),
+  job_ = std::make_shared<WeaveConversionJob>(*pg_interface_, identity,
+    pg_interface_->geometry().unit, std::move(members), std::move(volume),
     std::move(lease), make_job_hooks(identity, unpack), unpack, version, size);
   job_->start();
 }
@@ -419,7 +419,7 @@ bool WeavePGController::Impl::job_is_valid(uint64_t identity) const
   if (!job_ || job_->identity() != identity) return false;
 
   for (const auto& member : job_->members()) {
-    const auto object = host_->inspect(member.oid);
+    const auto object = pg_interface_->inspect(member.oid);
     const auto reservation = reserved_.find(member.oid);
     if (reservation == reserved_.end() || reservation->second != identity ||
         catalog_.lookup(member.oid) || !object.exists || object.blocks_pack() ||
@@ -467,7 +467,7 @@ void WeavePGController::Impl::finish_job(uint64_t identity, bool unpack,
 
   const bool had_waiters = !waiting_for_conversion_.empty();
   if (result.error) fail_waiters(result.error);
-  else host_->requeue(waiting_for_conversion_);
+  else pg_interface_->requeue(waiting_for_conversion_);
 
   // Cleanup continues from this completion. Only yield when client requests
   // have just been handed back to the PG; scans need no completion wakeup.
@@ -488,7 +488,7 @@ void WeavePGController::Impl::release_reservations(uint64_t identity,
     // candidates again.
     if (!restore_candidates) continue;
 
-    const auto object = host_->inspect(member.oid);
+    const auto object = pg_interface_->inspect(member.oid);
     if (object.exists && !catalog_.lookup(member.oid)) {
       candidates_.upsert(object.info, ceph::mono_clock::now());
     }
@@ -508,21 +508,21 @@ void WeavePGController::Impl::fail_waiters(int error)
   auto waiting = std::move(waiting_for_conversion_);
   waiting_for_conversion_.clear();
   for (auto& request : waiting) {
-    host_->reply_error(request, error);
+    pg_interface_->reply_error(request, error);
   }
 }
 
 void WeavePGController::Impl::schedule_materialization_retry()
 {
   if (job_ || waiting_for_conversion_.empty()) return;
-  auto ref = host_->pin();
+  auto ref = pg_interface_->pin();
   const auto generation = generation_;
-  host_->retry(WeaveRetryKind::kMaterialization,
+  pg_interface_->retry(WeaveRetryKind::kMaterialization,
     [this, ref = std::move(ref), generation] {
       if (generation != generation_ || job_) return;
       // Retry the original client admission, which rechecks the catalog and
       // attempts materialization. Do not scan or start unrelated cleanup here.
-      host_->requeue(waiting_for_conversion_);
+      pg_interface_->requeue(waiting_for_conversion_);
     });
 }
 
@@ -532,7 +532,7 @@ void WeavePGController::Impl::schedule_materialization_retry()
 
 RequestDisposition WeavePGController::Impl::reject(OpRequestRef& op, int error)
 {
-  host_->reply_error(op, error);
+  pg_interface_->reply_error(op, error);
   return RequestDisposition::kRejected;
 }
 
@@ -574,14 +574,14 @@ bool WeavePGController::Impl::private_object_access_denied(
 std::optional<RequestDisposition>
 WeavePGController::Impl::defer_for_metadata_recovery(OpRequestRef& op)
 {
-  if (op->is_background_weave_io() || !host_->primary() ||
-      (translator_.initialized() && !host_->has_missing())) {
+  if (op->is_background_weave_io() || !pg_interface_->primary() ||
+      (translator_.initialized() && !pg_interface_->has_missing())) {
     return std::nullopt;
   }
   // Either this OSD cannot describe the objects yet (missing map entries) or
   // the last load failed permanently.
   translator_.shutdown();
-  if (metadata_error_ < 0 && !host_->has_missing()) {
+  if (metadata_error_ < 0 && !pg_interface_->has_missing()) {
     return reject(op, metadata_error_);
   }
 
@@ -615,7 +615,7 @@ RequestDisposition WeavePGController::Impl::prepare_request(OpRequestRef& op)
   translator_.finish_request(op);
 
   const bool local_source = message->get_source().is_osd() &&
-    message->get_source().num() == host_->osd_id();
+    message->get_source().num() == pg_interface_->osd_id();
   // Classify the request before anything else looks at its target.
   bool internal = false;
   if (const int unsupported = consume_internal_ops(*message, internal)) {
@@ -683,7 +683,7 @@ bool WeavePGController::Impl::is_logical_delete(
 {
   // A snapshot context, on the request or in the pool, means the native
   // copy-on-write path has to run before the mapping shrinks.
-  if (!metadata || snapshot || host_->snap_sequence() != 0 ||
+  if (!metadata || snapshot || pg_interface_->snap_sequence() != 0 ||
       message.get_snap_seq() != 0) {
     return false;
   }
@@ -717,10 +717,10 @@ WeavePGController::Impl::drain_shadow_before_delete(
 {
   if (!logical_delete || op->is_weave_member_op()) return std::nullopt;
   const auto& oid = message.get_hobj();
-  if (host_->wait_for_available(oid, op)) {
+  if (pg_interface_->wait_for_available(oid, op)) {
     return RequestDisposition::kDeferred;
   }
-  needs_native = needs_native || host_->inspect(oid).exists;
+  needs_native = needs_native || pg_interface_->inspect(oid).exists;
   return std::nullopt;
 }
 
@@ -732,7 +732,7 @@ WeavePGController::Impl::defer_for_materialization(
   if (!metadata || !needs_native || op->is_weave_member_op()) {
     return std::nullopt;
   }
-  if (host_->wait_for_available(metadata->volume_oid, op)) {
+  if (pg_interface_->wait_for_available(metadata->volume_oid, op)) {
     return RequestDisposition::kDeferred;
   }
   waiting_for_conversion_.push_back(op);
@@ -768,7 +768,7 @@ RequestDisposition WeavePGController::Impl::preprocess_client_op(
   // a member operation to translate, not a logical request to route.
   auto* message = static_cast<MOSDOp*>(op->get_nonconst_req());
   if (message->get_weave_read_route()) return accept_routed_read(op);
-  if (!host_->primary()) return RequestDisposition::kNative;
+  if (!pg_interface_->primary()) return RequestDisposition::kNative;
 
   const bool snapshot = message->get_hobj().snap != CEPH_NOSNAP;
   const auto head = message->get_hobj().get_head();
@@ -822,7 +822,7 @@ void WeavePGController::Impl::on_commit(const object_info_t& oi, bool exists,
                                         const OpRequestRef& op)
 {
   // Physical writes of the Volume itself are not logical commits.
-  if (!enabled_ || !host_->primary() ||
+  if (!enabled_ || !pg_interface_->primary() ||
       (op && op->is_background_weave_io())) {
     return;
   }

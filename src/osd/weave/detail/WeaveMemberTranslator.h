@@ -17,7 +17,7 @@ class WeaveRequestContext;
 
 /**
  * Ceph-facing logical member requests. No PG, Objecter, scheduler or write jobs:
- * the host port owns native placement and durability, while this class owns
+ * the PG interface supplies native placement and durability, while this class owns
  * every logical-to-physical translation and the matching reply rewrite.
  */
 class WeaveMemberTranslator {

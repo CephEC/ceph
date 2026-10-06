@@ -4,18 +4,19 @@
 #include <memory>
 
 #include "WeaveMemberTranslator.h"
-#include "osd/weave/WeavePGHost.h"
+#include "osd/weave/WeavePGInterface.h"
 
 namespace ceph::weave {
 
 /**
- * Owns server-side routing policy. The host supplies native placement and
- * durability checks; the member translator owns all logical-to-physical translation.
+ * Owns server-side routing policy. The PG interface supplies native placement
+ * and durability checks; the member translator owns logical-to-physical translation.
  */
 class WeaveReadRouter {
 public:
-  WeaveReadRouter(WeavePGHost& host, WeaveMemberTranslator& translator)
-    : host_(host), translator_(translator) {}
+  WeaveReadRouter(WeavePGInterface& pg_interface,
+                  WeaveMemberTranslator& translator)
+    : pg_interface_(pg_interface), translator_(translator) {}
   bool redirect(const OpRequestRef&);
   int accept(OpRequestRef&);
 
@@ -28,7 +29,7 @@ private:
     const WeaveReadRoute&);
   bool assignment_matches(const WeaveReadRoute&, const WeaveMemberMeta&) const;
 
-  WeavePGHost& host_;
+  WeavePGInterface& pg_interface_;
   WeaveMemberTranslator& translator_;
 };
 

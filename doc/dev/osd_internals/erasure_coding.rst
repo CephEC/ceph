@@ -116,13 +116,13 @@ Native integration has three entry points:
 * ``WeaveECAdapter`` handles member read coordinates, reconstruction and data
   classes. Native EC code does not encode Weave's private extent flags.
 
-``WeavePGHost`` is the capability interface implemented by a native
-``PrimaryLogPG::WeaveHost`` adapter. It returns object-state values and provides
+``WeavePGInterface`` is the capability interface implemented by a native
+``PrimaryLogPG::WeavePGAdapter``. It returns object-state values and provides
 versioned I/O, deferred callbacks, scheduling and request requeueing. Core Weave
-code has no PG/ObjectContext pointer and no native friendship. Host I/O callbacks
-must not run inline: their returned transaction ID authenticates internal I/O
-before it enters the PG. Completions are dispatched under the PG lock, with PG
-references retaining their owner across asynchronous work.
+code has no PG/ObjectContext pointer and no native friendship. Adapter I/O
+callbacks must not run inline: their returned transaction ID authenticates
+internal I/O before it enters the PG. Completions are dispatched under the PG
+lock, with PG references retaining their owner across asynchronous work.
 
 Implementation classes live in ``src/osd/weave/detail``:
 
@@ -149,7 +149,7 @@ concurrent deletes from overwriting one another with older full mappings.
 
 The ``weave_boundaries`` test checks public-header dependencies and native
 includes. ``OpRequest.cc`` is the sole native include exception for allocating
-and destroying the private request context. Deterministic fake-host tests cover
+and destroying the private request context. Deterministic ``FakeWeavePG`` tests cover
 conversion failure, cancellation, stale completions, publication ordering and
 projected member deletion without creating a live PG or Objecter.
 

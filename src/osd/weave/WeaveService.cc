@@ -5,7 +5,7 @@
 #include <memory>
 #include <utility>
 
-#include "WeavePGHost.h"
+#include "WeavePGInterface.h"
 #include "detail/WeaveReclaimTimer.h"
 #include "detail/WeaveWorker.h"
 

@@ -21,7 +21,7 @@ set(osd_srcs
   weave/WeavePGController.cc
   weave/detail/WeavePGControllerImpl.cc
   weave/detail/WeaveConversionJob.cc
-  weave/WeaveCephHost.cc
+  weave/WeavePGAdapter.cc
   weave/WeaveService.cc
   weave/detail/WeaveCatalog.cc
   PG.cc

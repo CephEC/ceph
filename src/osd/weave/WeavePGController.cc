@@ -6,8 +6,8 @@
 namespace ceph::weave {
 
 WeavePGController::WeavePGController(
-  CephContext* cct, std::unique_ptr<WeavePGHost> host, bool enabled)
-  : impl_(std::make_unique<Impl>(cct, std::move(host), enabled)) {}
+  CephContext* cct, std::unique_ptr<WeavePGInterface> pg_interface, bool enabled)
+  : impl_(std::make_unique<Impl>(cct, std::move(pg_interface), enabled)) {}
 
 WeavePGController::~WeavePGController() = default;
 

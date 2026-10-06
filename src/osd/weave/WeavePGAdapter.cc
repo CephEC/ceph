@@ -1,7 +1,7 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
 #include <sstream>
 
-#include "WeavePGHost.h"
+#include "WeavePGInterface.h"
 #include "WeaveService.h"
 #include "common/Finisher.h"
 #include "detail/WeaveLayout.h"
@@ -34,9 +34,9 @@ object_locator_t locator(const hobject_t& oid) {
 // A nested native adapter has exactly the access of PrimaryLogPG. Weave's
 // policy and state machine never receive this PG pointer or its object
 // contexts.
-class PrimaryLogPG::WeaveHost final : public ceph::weave::WeavePGHost {
+class PrimaryLogPG::WeavePGAdapter final : public ceph::weave::WeavePGInterface {
 public:
-  WeaveHost(PrimaryLogPG& pg, OSDService& osd) : pg_(pg), osd_(osd) {}
+  WeavePGAdapter(PrimaryLogPG& pg, OSDService& osd) : pg_(pg), osd_(osd) {}
 
   std::shared_ptr<void> pin() override { return std::make_shared<PGRef>(&pg_); }
 
@@ -390,6 +390,6 @@ private:
   uint64_t sequence_ = 0;
 };
 
-std::unique_ptr<ceph::weave::WeavePGHost> PrimaryLogPG::make_weave_host() {
-  return std::make_unique<WeaveHost>(*this, *osd);
+std::unique_ptr<ceph::weave::WeavePGInterface> PrimaryLogPG::make_weave_pg_adapter() {
+  return std::make_unique<WeavePGAdapter>(*this, *osd);
 }

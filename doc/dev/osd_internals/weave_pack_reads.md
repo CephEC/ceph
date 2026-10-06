@@ -25,7 +25,7 @@ PG 锁，也不把来源清理的错误重试传递给新读。
 
 ## 类的职责
 
-- `WeavePGHost` 只暴露对象访问状态；Ceph host 将原生锁归类为 `Idle`、
+- `WeavePGInterface` 只暴露对象访问状态；`WeavePGAdapter` 将原生锁归类为 `Idle`、
   `Reading`、`Busy`。`Reading` 必须只有共享读者，且没有原生等待者或其他
   阻塞。写锁、排队和其他阻塞继续阻止打包；未完成写事务仍算忙，不能把超时
   后的事务当作回滚。

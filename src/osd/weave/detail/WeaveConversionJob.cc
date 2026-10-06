@@ -10,12 +10,13 @@
 namespace ceph::weave {
 
 WeaveConversionJob::WeaveConversionJob(
-  WeavePGHost& host, uint64_t identity, uint64_t unit,
+  WeavePGInterface& pg_interface, uint64_t identity, uint64_t unit,
   std::vector<WeaveCandidate> members, WeaveVolumeMeta volume,
   std::unique_ptr<WeaveLease> lease, Hooks hooks, bool unpack,
   version_t version, uint64_t size)
-  : host_(host), owner_(host.pin()), identity_(identity), epoch_(host.epoch()),
-    unit_(unit), members_(std::move(members)), volume_(std::move(volume)),
+  : pg_interface_(pg_interface), owner_(pg_interface.pin()), identity_(identity),
+    epoch_(pg_interface.epoch()), unit_(unit), members_(std::move(members)),
+    volume_(std::move(volume)),
     data_(members_.size()), state_(PackState{}), lease_(std::move(lease)),
     hooks_(std::move(hooks)) {
   if (unpack) state_ = UnpackState{{}, version, size};
@@ -28,7 +29,7 @@ bool WeaveConversionJob::terminal() const {
 }
 
 bool WeaveConversionJob::current() const {
-  return !terminal() && host_.current(epoch_);
+  return !terminal() && pg_interface_.current(epoch_);
 }
 
 bool WeaveConversionJob::authenticates(ceph_tid_t tid) const {
@@ -81,7 +82,7 @@ void WeaveConversionJob::cancel() {
   finish({false, 0, true});
 
   // finish() cleared tid_, so cancel with the value captured above.
-  if (tid) host_.cancel_io(tid);
+  if (tid) pg_interface_.cancel_io(tid);
 }
 
 WeaveCompletion WeaveConversionJob::completion(
@@ -106,7 +107,7 @@ bool WeaveConversionJob::accept_completion(uint64_t sequence) {
 
 void WeaveConversionJob::retry(std::function<void()> callback) {
   // Retry this job's failed step, independently of scans and cleanup retries.
-  host_.retry(WeaveRetryKind::kConversion,
+  pg_interface_.retry(WeaveRetryKind::kConversion,
     [self = shared_from_this(), callback = std::move(callback)] {
       if (self->current()) callback();
     });
@@ -130,7 +131,7 @@ void WeaveConversionJob::start() {
 void WeaveConversionJob::submit_volume_read() {
   auto& unpack = std::get<UnpackState>(state_);
   stage_ = Stage::kReadingVolume;
-  tid_ = host_.read(volume_.volume_oid, unpack.version, unpack.size,
+  tid_ = pg_interface_.read(volume_.volume_oid, unpack.version, unpack.size,
     &unpack.volume.data, &unpack.volume.attrs, completion([this](int r) {
       on_volume_read_complete(r);
     }));
@@ -144,7 +145,7 @@ void WeaveConversionJob::on_volume_read_complete(int r) {
 
   stage_ = Stage::kMaterializing;
   // materialize_members() is CPU work, so it is posted outside the lock.
-  host_.post([self = shared_from_this()] { self->materialize_members(); });
+  pg_interface_.post([self = shared_from_this()] { self->materialize_members(); });
 }
 
 // Enters kReadingMembers, one member per round trip.
@@ -153,7 +154,7 @@ void WeaveConversionJob::submit_member_read(size_t index) {
   const auto& member = members_[index];
 
   // One member per round trip; the next read starts from this reply.
-  tid_ = host_.read(member.oid, member.user_version, member.size,
+  tid_ = pg_interface_.read(member.oid, member.user_version, member.size,
     &data_[index].data, &data_[index].attrs, completion([this, index](int r) {
       on_member_read_complete(index, r);
     }));
@@ -169,7 +170,7 @@ void WeaveConversionJob::on_member_read_complete(size_t index, int r) {
   if (index + 1 < members_.size()) submit_member_read(index + 1);
   else {
     stage_ = Stage::kBuildingVolume;
-    host_.post([self = shared_from_this()] { self->build_volume(); });
+    pg_interface_.post([self = shared_from_this()] { self->build_volume(); });
   }
 }
 
@@ -180,7 +181,7 @@ void WeaveConversionJob::build_volume() {
   const bool valid = compose_volume(pack);
 
   // Submit only under the PG lock, and only while the epoch is still ours.
-  host_.serialized([self = shared_from_this(), valid] {
+  pg_interface_.serialized([self = shared_from_this(), valid] {
     self->on_volume_build_complete(valid);
   });
 }
@@ -231,8 +232,8 @@ void WeaveConversionJob::submit_volume_write() {
   auto& volume = std::get<PackState>(state_).volume;
   stage_ = Stage::kWritingVolume;
 
-  host_.conversion_checkpoint("pack_before_write");
-  tid_ = host_.write(volume_.volume_oid, volume.data, volume.attrs,
+  pg_interface_.conversion_checkpoint("pack_before_write");
+  tid_ = pg_interface_.write(volume_.volume_oid, volume.data, volume.attrs,
     utime_t(ceph::real_clock::now()), false, completion([this](int r) {
       on_volume_write_complete(r);
     }));
@@ -244,12 +245,12 @@ void WeaveConversionJob::on_volume_write_complete(int r) {
     return;
   }
 
-  host_.conversion_checkpoint("pack_committed");
+  pg_interface_.conversion_checkpoint("pack_committed");
   stage_ = Stage::kPublishing;
   // Data and volume_meta were committed in one object transaction. A
   // cancelled callback cannot undo that authority; reload uses the disk.
   hooks_.publish();
-  host_.conversion_checkpoint("pack_published");
+  pg_interface_.conversion_checkpoint("pack_published");
 
   // Sources are only removed once the packed volume can be reloaded.
   submit_member_remove(0);
@@ -262,7 +263,7 @@ void WeaveConversionJob::resolve_volume(int error) {
   // Objecter timeouts can lose a successful write's reply. The old tid is no
   // longer admitted; wait for any already admitted transaction to release its
   // native lock before the controller reloads the authoritative disk metadata.
-  if (host_.inspect(volume_.volume_oid).busy()) {
+  if (pg_interface_.inspect(volume_.volume_oid).busy()) {
     retry([this, error] { resolve_volume(error); });
     return;
   }
@@ -275,8 +276,8 @@ void WeaveConversionJob::submit_member_remove(size_t index) {
   stage_ = Stage::kRetiringMembers;
   const auto& member = members_[index];
 
-  host_.conversion_checkpoint("source_before_remove", index);
-  tid_ = host_.remove(member.oid, member.user_version,
+  pg_interface_.conversion_checkpoint("source_before_remove", index);
+  tid_ = pg_interface_.remove(member.oid, member.user_version,
     completion([this, index](int r) {
       on_member_remove_complete(index, r);
     }));
@@ -289,7 +290,7 @@ void WeaveConversionJob::on_member_remove_complete(size_t index, int r) {
     return;
   }
 
-  host_.conversion_checkpoint("source_removed", index);
+  pg_interface_.conversion_checkpoint("source_removed", index);
   if (index + 1 < members_.size()) submit_member_remove(index + 1);
   else finish({false});
 }
@@ -297,14 +298,14 @@ void WeaveConversionJob::on_member_remove_complete(size_t index, int r) {
 // Runs the kMaterializing CPU phase, then submits the restored members.
 void WeaveConversionJob::materialize_members() {
   const auto& volume = std::get<UnpackState>(state_).volume;
-  // Restore every member from the packed volume before touching host state.
+  // Restore every member from the packed volume before touching PG state.
   bool valid = true;
   for (size_t i = 0; i < members_.size() && valid; ++i) {
     valid = extract_member(i, volume);
   }
 
   // Writing restored members requires the PG lock.
-  host_.serialized([self = shared_from_this(), valid] {
+  pg_interface_.serialized([self = shared_from_this(), valid] {
     self->on_members_materialization_complete(valid);
   });
 }
@@ -360,8 +361,8 @@ void WeaveConversionJob::submit_member_write(size_t index) {
   stage_ = Stage::kWritingMembers;
   const auto& member = members_[index];
 
-  host_.conversion_checkpoint("member_before_write", index);
-  tid_ = host_.write(member.oid, data_[index].data, data_[index].attrs,
+  pg_interface_.conversion_checkpoint("member_before_write", index);
+  tid_ = pg_interface_.write(member.oid, data_[index].data, data_[index].attrs,
     member.mtime, true, completion([this, index](int r) {
       on_member_write_complete(index, r);
     }));
@@ -373,7 +374,7 @@ void WeaveConversionJob::on_member_write_complete(size_t index, int r) {
     return;
   }
 
-  host_.conversion_checkpoint("member_written", index);
+  pg_interface_.conversion_checkpoint("member_written", index);
   // Every member must be back natively before the volume is retired.
   if (index + 1 < members_.size()) submit_member_write(index + 1);
   else submit_volume_remove();
@@ -383,8 +384,8 @@ void WeaveConversionJob::on_member_write_complete(size_t index, int r) {
 void WeaveConversionJob::submit_volume_remove() {
   stage_ = Stage::kRetiringVolume;
 
-  host_.conversion_checkpoint("volume_before_remove");
-  tid_ = host_.remove(volume_.volume_oid, std::nullopt,
+  pg_interface_.conversion_checkpoint("volume_before_remove");
+  tid_ = pg_interface_.remove(volume_.volume_oid, std::nullopt,
     completion([this](int r) {
       on_volume_remove_complete(r);
     }));
@@ -397,12 +398,12 @@ void WeaveConversionJob::on_volume_remove_complete(int r) {
     return;
   }
 
-  host_.conversion_checkpoint("volume_removed");
+  pg_interface_.conversion_checkpoint("volume_removed");
   // Until the Volume deletion commits, native copies remain shadows and the
   // mapping remains authoritative, including after a reset or restart.
   stage_ = Stage::kDetaching;
   hooks_.detach();
-  host_.conversion_checkpoint("volume_detached");
+  pg_interface_.conversion_checkpoint("volume_detached");
 
   finish({true});
 }

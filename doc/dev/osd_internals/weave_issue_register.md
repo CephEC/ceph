@@ -13,7 +13,7 @@
 | 标记 | 含义 |
 | --- | --- |
 | 已修复／已验证 | 产品代码已改，存在相应单元或真实集群验证；具体范围逐项注明 |
-| 模型复现／未修复 | 使用当前产品实现及 FakeHost，或原生 PG 哈希函数，观察到缺口；没有将其称作真实 OSD 故障注入 |
+| 模型复现／未修复 | 使用当前产品实现及 FakeWeavePG，或原生 PG 哈希函数，观察到缺口；没有将其称作真实 OSD 故障注入 |
 | 静态确认／未修复 | 代码可以确认缺少机制；对运行后果的推断单独说明 |
 | 待验证 | 尚无充分运行证据；不据此宣称已经发生故障 |
 
@@ -51,7 +51,7 @@
 - **触发：**primary 的本地 Volume 尚未恢复，或恢复已更新 missing 但事务尚未应用。
 - **根因：**只看当前索引或 missing 集合，可能在物理元数据可读前开放逻辑读、写、列举。
 - **方案：**本地 missing 与 `active_pushes` 共同形成屏障；恢复事务应用后重新加载并唤醒等待请求。
-- **代码：**[WeaveCephHost.cc](../../../src/osd/weave/WeaveCephHost.cc) 的 `has_missing`；Controller 恢复入口；[PrimaryLogPG.cc](../../../src/osd/PrimaryLogPG.cc) 的 `_applied_recovered_object`／replica 回调。
+- **代码：**[WeavePGAdapter.cc](../../../src/osd/weave/WeavePGAdapter.cc) 的 `has_missing`；Controller 恢复入口；[PrimaryLogPG.cc](../../../src/osd/PrimaryLogPG.cc) 的 `_applied_recovered_object`／replica 回调。
 - **证据：**单元测试；历史真实集群中陈旧 primary 恢复时读／写／列举等待，恢复后完成且删除不复活。
 
 ### I5 — 在途异步 CALL 在 PG 重置时留下上下文和锁
@@ -108,7 +108,7 @@
 
 - **触发／根因：**Catalog 只有 head 映射，原生来源被删除；快照身份直接走原生查找会得到 ENOENT。物化时使用最新 snapc 还会错误地把对象视为快照之后创建。
 - **修复：**快照按 head 解析并物化；v1 元数据保存源 `snapset.seq`，恢复时沿用；有快照历史的删除走物化及原生 COW；私有 Volume 不生成新的池快照 clone。
-- **代码：**[WeaveCatalog.h](../../../src/osd/weave/detail/WeaveCatalog.h)／[WeaveCatalog.cc](../../../src/osd/weave/detail/WeaveCatalog.cc)、Controller、ConversionJob、WeaveCephHost、PrimaryLogPG 的 snapc 接点。
+- **代码：**[WeaveCatalog.h](../../../src/osd/weave/detail/WeaveCatalog.h)／[WeaveCatalog.cc](../../../src/osd/weave/detail/WeaveCatalog.cc)、Controller、ConversionJob、WeavePGAdapter、PrimaryLogPG 的 snapc 接点。
 - **证据：**池快照和 self-managed 两套真实测试，覆盖创建前不存在、聚合前后快照、全量／局部覆盖、删除、同名重建、字节及元数据、全 OSD 重启。
 - **格式代价：**`ENCODE_START(1,1)`，只解码这一种布局：其他 `struct_v` 的属性按损坏拒绝，没有兼容分支，也不再有“以 Volume 快照序号兜底”的降级行为。不能回退到不认这一布局的 OSD。（该布局最初编号 v4：`c33178db7ed` 写 4、读 `[2,4]`，其中 v2/v3 走 `decode_legacy_member` 兼容解码；这些 legacy 路径已在工作区移除，2026-09-26 编码与解码统一为 1。）
 - **未覆盖保证：**任意物化崩溃点、混合版本准入和资源耗尽下的快照读取可用性，分别见 D1、D3、D5。
@@ -189,7 +189,7 @@ Volume 使用一个成员的 hash，分组只保证“现在同 PG”，没有�
 
 测试未运行 mgr；使用 `DaemonServer::_adjust_pgs` 相同的 `pg_num_actual` MON 命令和 `pgp_num_actual` 推进原生分裂／合并，每阶段以新客户端观测。该结果不代替 autoscaler、转换进行中、稀疏卷等其余矩阵。证据位于 `build/weave-design-audit/2026-09-16/`。
 
-代码：[WeaveCephHost.cc](../../../src/osd/weave/WeaveCephHost.cc) 的 `new_volume`；Controller 的 `scan`；[OSD.cc](../../../src/osd/OSD.cc) 的 `split_pgs`。当前没有 Weave 专用的 split 前物化协调或 pool 层准入阻止。合并同样需要清理控制器旧状态，不能用底层索引范围正确代替整体证明。
+代码：[WeavePGAdapter.cc](../../../src/osd/weave/WeavePGAdapter.cc) 的 `new_volume`；Controller 的 `scan`；[OSD.cc](../../../src/osd/OSD.cc) 的 `split_pgs`。当前没有 Weave 专用的 split 前物化协调或 pool 层准入阻止。合并同样需要清理控制器旧状态，不能用底层索引范围正确代替整体证明。
 
 **待设计方案：**初期可对包含 Weave 数据的池硬性禁止改变 `pg_num`；完整方案需要在 split 生效前持久化协调物化／重分组或设计跨 PG 映射。仅在文档中要求固定 PG 不构成实现上的保护。
 
@@ -251,7 +251,7 @@ v1 编解码限制只会在读取格式时暴露不兼容；目前没有对应�
 
 **例子：**同一组对象因持续读错误反复尝试打包，每次都没有成功生成卷，却持续留下新的“未发布卷”记录。F5 的 4096 候选上限约束不到这个集合。
 
-代码：[WeavePGControllerImpl.cc](../../../src/osd/weave/detail/WeavePGControllerImpl.cc) 的 `scan`、`start_job`／`hooks.finish`；[WeaveConversionJob.cc](../../../src/osd/weave/detail/WeaveConversionJob.cc) 的 `submit_member_read`、`build_volume`；WeaveCephHost 的 `new_volume`。
+代码：[WeavePGControllerImpl.cc](../../../src/osd/weave/detail/WeavePGControllerImpl.cc) 的 `scan`、`start_job`／`hooks.finish`；[WeaveConversionJob.cc](../../../src/osd/weave/detail/WeaveConversionJob.cc) 的 `submit_member_read`、`build_volume`；WeavePGAdapter 的 `new_volume`。
 
 **修复：**采用 D1 的元数据提交协议，移除该集合；提交后丢回调的卷作为有效卷加载，不能作为失败垃圾删除。
 
@@ -301,7 +301,7 @@ build/weave-design-audit/2026-09-14/
   results.log
 ```
 
-四个 probe 使用当时实现及已有 FakeHost，分别记录 D1、D4、D3 和 D2。运行方式：
+四个 probe 使用当时实现及已有 FakeWeavePG，分别记录 D1、D4、D3 和 D2。运行方式：
 
 ```sh
 build/weave-design-audit/2026-09-14/design_probes \

@@ -5,7 +5,7 @@
 
 #include "WeaveCandidateIndex.h"
 #include "WeaveCatalog.h"
-#include "osd/weave/WeavePGHost.h"
+#include "osd/weave/WeavePGInterface.h"
 
 namespace ceph::weave {
 
@@ -34,7 +34,7 @@ public:
     std::function<void(Result)> finish;
   };
 
-  WeaveConversionJob(WeavePGHost&, uint64_t identity, uint64_t unit,
+  WeaveConversionJob(WeavePGInterface&, uint64_t identity, uint64_t unit,
                     std::vector<WeaveCandidate>, WeaveVolumeMeta,
                     std::unique_ptr<WeaveLease>, Hooks, bool unpack,
                     version_t volume_version = 0, uint64_t volume_size = 0);
@@ -88,7 +88,7 @@ private:
   void submit_volume_remove();
   void on_volume_remove_complete(int);
 
-  WeavePGHost& host_;
+  WeavePGInterface& pg_interface_;
   std::shared_ptr<void> owner_;
   const uint64_t identity_;
   const epoch_t epoch_;
