@@ -183,6 +183,8 @@ public:
 
 class WeaveConversion : public ::testing::Test {
 protected:
+  using Mode = WeaveConversionJob::Mode;
+
   FakeWeavePG pg_interface;
   const hobject_t a = oid("a"), b = oid("b"), v = oid("volume");
   WeaveVolumeMeta volume{v, 2, 4,
@@ -199,7 +201,7 @@ protected:
       members.push_back({id, 4, state.info.version, 1, {}, {}});
     }
   }
-  void create(bool unpack = false) {
+  void create(Mode mode = Mode::kPack) {
     WeaveConversionJob::Hooks hooks{
       [this] { return accept_validation; },
       [this] {
@@ -210,7 +212,7 @@ protected:
       [this] { detached = true; pg_interface.events.push_back("detach"); },
       [this](auto r) { ++finishes; result = r; }};
     job = std::make_shared<WeaveConversionJob>(pg_interface, 1, 4, members, volume,
-      pg_interface.acquire(), std::move(hooks), unpack, 1, 8);
+      pg_interface.acquire(), std::move(hooks), mode, 1, 8);
     job->start();
   }
   void ready_to_publish() {
@@ -220,7 +222,7 @@ protected:
   void prepare_unpack() {
     pg_interface.put(v, "AAAABBBB");
     pg_interface.objects[a].state.exists = false; pg_interface.objects[b].state.exists = false;
-    create(true);
+    create(Mode::kUnpack);
   }
   void TearDown() override {
     if (job) job->cancel();
@@ -238,6 +240,20 @@ TEST_F(WeaveConversion, PublishesOnlyAfterDurableVolumeAndRetiresSourcesLast) {
   EXPECT_EQ(job->stage(), WeaveConversionJob::Stage::kCompleted);
   EXPECT_EQ(finishes, 1u); EXPECT_EQ(pg_interface.released, 1u);
   EXPECT_EQ(pg_interface.events, (std::vector<std::string>{"durable:volume", "publish", "removed:a", "removed:b"}));
+}
+TEST_F(WeaveConversion, PackModeReadsMemberWithNonemptyMembers) {
+  create(Mode::kPack);
+  ASSERT_EQ(pg_interface.io.size(), 1u);
+  EXPECT_EQ(pg_interface.io.front().kind, "read");
+  EXPECT_EQ(pg_interface.io.front().oid, a);
+  EXPECT_FALSE(job->copy_version(a));
+}
+TEST_F(WeaveConversion, UnpackModeReadsVolumeWithNonemptyMembers) {
+  prepare_unpack();
+  ASSERT_EQ(pg_interface.io.size(), 1u);
+  EXPECT_EQ(pg_interface.io.front().kind, "read");
+  EXPECT_EQ(pg_interface.io.front().oid, v);
+  EXPECT_EQ(job->copy_version(a), std::optional<version_t>(1));
 }
 TEST_F(WeaveConversion, ReadFailureRetainsSourcesAndReleasesOnce) {
   create(); pg_interface.complete(-EIO);
@@ -327,7 +343,11 @@ TEST_F(WeaveConversion, ShortVolumeFailsMaterializationWithoutNativeWrites) {
   EXPECT_FALSE(detached); EXPECT_TRUE(pg_interface.io.empty()); EXPECT_EQ(result.error, -EIO);
 }
 TEST_F(WeaveConversion, EmptyVolumeDeletionDetachesOnlyAfterCommit) {
-  pg_interface.put(v, "AAAABBBB"); members.clear(); volume.members.clear(); create(true);
+  pg_interface.put(v, "AAAABBBB"); members.clear(); volume.members.clear();
+  create(Mode::kUnpack);
+  ASSERT_EQ(pg_interface.io.size(), 1u);
+  EXPECT_EQ(pg_interface.io.front().kind, "remove");
+  EXPECT_EQ(pg_interface.io.front().oid, v);
   EXPECT_FALSE(detached); pg_interface.complete(); EXPECT_TRUE(detached); EXPECT_EQ(finishes, 1u);
 }
 

@@ -108,13 +108,14 @@ private:
     const std::shared_ptr<const WeaveVolumeMeta>&,
     const WeaveObjectState&) const;
   void start_job(std::vector<WeaveCandidate>, WeaveVolumeMeta,
-                 std::unique_ptr<WeaveLease>, bool, version_t = 0,
-                 uint64_t = 0);
-  WeaveConversionJob::Hooks make_job_hooks(uint64_t identity, bool unpack);
+                 std::unique_ptr<WeaveLease>, WeaveConversionJob::Mode,
+                 version_t = 0, uint64_t = 0);
+  WeaveConversionJob::Hooks make_job_hooks(uint64_t identity,
+                                          WeaveConversionJob::Mode mode);
   bool job_is_valid(uint64_t identity) const;
   void publish_job(uint64_t identity);
   void detach_job(uint64_t identity);
-  void finish_job(uint64_t identity, bool unpack,
+  void finish_job(uint64_t identity, WeaveConversionJob::Mode mode,
                   WeaveConversionJob::Result result);
   void release_reservations(uint64_t identity, bool restore_candidates);
   void cancel_job();

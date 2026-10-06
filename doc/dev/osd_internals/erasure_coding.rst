@@ -134,7 +134,9 @@ Implementation classes live in ``src/osd/weave/detail``:
   it cannot publish or remove mappings. ``WeaveRequestContext`` retains the
   logical request and its pinned metadata for retry/reply handling.
 * ``WeaveConversionJob`` owns the packing/unpacking state machine, payloads and
-  one conversion lease. Packing and unpacking have distinct state alternatives.
+  one conversion lease. An immutable ``Mode::kPack`` or ``Mode::kUnpack`` selects
+  the conversion direction; ``Stage`` tracks execution progress. Both directions
+  carry members. An empty unpack volume skips restoration and goes to deletion.
   Completion and cancellation share a single terminal transition. PG generation
   and per-I/O sequence checks reject stale or duplicate completions. Controller
   reservations are tagged with job identities, so an old task cannot release a

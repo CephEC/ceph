@@ -179,7 +179,8 @@ void WeavePGController::Impl::scan_candidates()
   auto lease = pg_interface_->acquire();
   if (!lease) return;
   auto volume = plan_volume(members, geometry);
-  start_job(std::move(members), std::move(volume), std::move(lease), false);
+  start_job(std::move(members), std::move(volume), std::move(lease),
+            WeaveConversionJob::Mode::kPack);
 }
 
 std::vector<WeaveCandidate> WeavePGController::Impl::select_packable(
@@ -352,7 +353,8 @@ bool WeavePGController::Impl::start_deaggregation(
   if (!lease) return false;
 
   auto members = unpack_candidates(volume, object);
-  start_job(std::move(members), *volume, std::move(lease), true,
+  start_job(std::move(members), *volume, std::move(lease),
+            WeaveConversionJob::Mode::kUnpack,
             object.info.user_version, object.info.size);
   return true;
 }
@@ -383,8 +385,8 @@ std::vector<WeaveCandidate> WeavePGController::Impl::unpack_candidates(
 }
 
 void WeavePGController::Impl::start_job(std::vector<WeaveCandidate> members,
-  WeaveVolumeMeta volume, std::unique_ptr<WeaveLease> lease, bool unpack,
-  version_t version, uint64_t size)
+  WeaveVolumeMeta volume, std::unique_ptr<WeaveLease> lease,
+  WeaveConversionJob::Mode mode, version_t version, uint64_t size)
 {
   // Reserve every source under this identity before the job can run any
   // validation, so no later request can mutate them.
@@ -395,19 +397,19 @@ void WeavePGController::Impl::start_job(std::vector<WeaveCandidate> members,
 
   job_ = std::make_shared<WeaveConversionJob>(*pg_interface_, identity,
     pg_interface_->geometry().unit, std::move(members), std::move(volume),
-    std::move(lease), make_job_hooks(identity, unpack), unpack, version, size);
+    std::move(lease), make_job_hooks(identity, mode), mode, version, size);
   job_->start();
 }
 
 WeaveConversionJob::Hooks WeavePGController::Impl::make_job_hooks(
-  uint64_t identity, bool unpack)
+  uint64_t identity, WeaveConversionJob::Mode mode)
 {
   return WeaveConversionJob::Hooks{
     [this, identity] { return job_is_valid(identity); },
     [this, identity] { publish_job(identity); },
     [this, identity] { detach_job(identity); },
-    [this, identity, unpack](WeaveConversionJob::Result result) {
-      finish_job(identity, unpack, result);
+    [this, identity, mode](WeaveConversionJob::Result result) {
+      finish_job(identity, mode, result);
     }};
 }
 
@@ -449,8 +451,8 @@ void WeavePGController::Impl::detach_job(uint64_t identity)
   catalog_.remove_volume(job_->volume().volume_oid);
 }
 
-void WeavePGController::Impl::finish_job(uint64_t identity, bool unpack,
-                                         WeaveConversionJob::Result result)
+void WeavePGController::Impl::finish_job(uint64_t identity,
+  WeaveConversionJob::Mode mode, WeaveConversionJob::Result result)
 {
   if (!job_ || job_->identity() != identity) return;
   release_reservations(identity, result.restore_candidates);
@@ -462,7 +464,9 @@ void WeavePGController::Impl::finish_job(uint64_t identity, bool unpack,
 
   // A failed Volume write may have committed before its reply was lost.
   // Resolve ownership before any waiter or new candidate can mutate a source.
-  if (!unpack && result.error) translator_.shutdown();
+  if (mode == WeaveConversionJob::Mode::kPack && result.error) {
+    translator_.shutdown();
+  }
   initialize();
 
   const bool had_waiters = !waiting_for_conversion_.empty();

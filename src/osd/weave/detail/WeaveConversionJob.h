@@ -1,8 +1,6 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
 #pragma once
 
-#include <variant>
-
 #include "WeaveCandidateIndex.h"
 #include "WeaveCatalog.h"
 #include "osd/weave/WeavePGInterface.h"
@@ -12,6 +10,9 @@ namespace ceph::weave {
 class WeaveConversionJob
   : public std::enable_shared_from_this<WeaveConversionJob> {
 public:
+  // Fixed for the lifetime of a job; Stage tracks its execution progress.
+  enum class Mode { kPack, kUnpack };
+
   enum class Stage {
     kReady, kReadingMembers, kBuildingVolume, kWritingVolume, kResolvingVolume,
     kPublishing, kRetiringMembers, kReadingVolume, kMaterializing,
@@ -36,7 +37,7 @@ public:
 
   WeaveConversionJob(WeavePGInterface&, uint64_t identity, uint64_t unit,
                     std::vector<WeaveCandidate>, WeaveVolumeMeta,
-                    std::unique_ptr<WeaveLease>, Hooks, bool unpack,
+                    std::unique_ptr<WeaveLease>, Hooks, Mode mode,
                     version_t volume_version = 0, uint64_t volume_size = 0);
   ~WeaveConversionJob();
 
@@ -44,8 +45,9 @@ public:
   void cancel();
 
   uint64_t identity() const { return identity_; }
+  Mode mode() const { return mode_; }
   Stage stage() const { return stage_; }
-  bool packing() const { return std::holds_alternative<PackState>(state_); }
+  bool packing() const { return mode_ == Mode::kPack; }
   bool authenticates(ceph_tid_t tid) const;
   std::optional<version_t> copy_version(const hobject_t&) const;
   std::optional<snapid_t> copy_snap_sequence(const hobject_t&) const;
@@ -54,8 +56,6 @@ public:
 
 private:
   struct ObjectData { ceph::buffer::list data; WeaveAttrs attrs; };
-  struct PackState { ObjectData volume; };
-  struct UnpackState { ObjectData volume; version_t version; uint64_t size; };
 
   bool current() const;
   bool terminal() const;
@@ -70,7 +70,7 @@ private:
   void on_member_read_complete(size_t, int);
   void build_volume();
   void on_volume_build_complete(bool valid);
-  bool compose_volume(PackState&);
+  bool compose_volume();
   void collect_member_attrs(WeaveAttrs&) const;
   void submit_volume_write();
   void on_volume_write_complete(int);
@@ -93,10 +93,14 @@ private:
   const uint64_t identity_;
   const epoch_t epoch_;
   const uint64_t unit_;
+  const Mode mode_;
   const std::vector<WeaveCandidate> members_;
   const WeaveVolumeMeta volume_;
+  // Source volume identity/length used when unpacking.
+  const version_t volume_version_;
+  const uint64_t volume_size_;
   std::vector<ObjectData> data_;
-  std::variant<PackState, UnpackState> state_;
+  ObjectData volume_data_;
   std::unique_ptr<WeaveLease> lease_;
   Hooks hooks_;
   Stage stage_ = Stage::kReady;

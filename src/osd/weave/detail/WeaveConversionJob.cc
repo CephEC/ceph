@@ -12,15 +12,13 @@ namespace ceph::weave {
 WeaveConversionJob::WeaveConversionJob(
   WeavePGInterface& pg_interface, uint64_t identity, uint64_t unit,
   std::vector<WeaveCandidate> members, WeaveVolumeMeta volume,
-  std::unique_ptr<WeaveLease> lease, Hooks hooks, bool unpack,
+  std::unique_ptr<WeaveLease> lease, Hooks hooks, Mode mode,
   version_t version, uint64_t size)
   : pg_interface_(pg_interface), owner_(pg_interface.pin()), identity_(identity),
-    epoch_(pg_interface.epoch()), unit_(unit), members_(std::move(members)),
-    volume_(std::move(volume)),
-    data_(members_.size()), state_(PackState{}), lease_(std::move(lease)),
-    hooks_(std::move(hooks)) {
-  if (unpack) state_ = UnpackState{{}, version, size};
-}
+    epoch_(pg_interface.epoch()), unit_(unit), mode_(mode),
+    members_(std::move(members)), volume_(std::move(volume)),
+    volume_version_(version), volume_size_(size), data_(members_.size()),
+    lease_(std::move(lease)), hooks_(std::move(hooks)) {}
 
 WeaveConversionJob::~WeaveConversionJob() = default;
 
@@ -40,7 +38,7 @@ std::optional<version_t> WeaveConversionJob::copy_version(
   const hobject_t& oid) const {
   // Only an unpack job rewrites its members, and each must keep the
   // user_version it carried while packed.
-  if (!current() || !std::holds_alternative<UnpackState>(state_)) {
+  if (!current() || mode_ != Mode::kUnpack) {
     return std::nullopt;
   }
 
@@ -113,26 +111,30 @@ void WeaveConversionJob::retry(std::function<void()> callback) {
     });
 }
 
-// Enters kReadingVolume (unpack) or kReadingMembers (pack).
+// Mode selects the direction; empty unpack volumes skip restoration.
 void WeaveConversionJob::start() {
   ceph_assert(stage_ == Stage::kReady);
 
-  if (packing()) {
+  switch (mode_) {
+  case Mode::kPack:
     ceph_assert(!members_.empty());
     submit_member_read(0);
-  } else if (members_.empty()) {
-    // A volume with no members has nothing left to restore.
-    submit_volume_remove();
-  } else {
-    submit_volume_read();
+    break;
+  case Mode::kUnpack:
+    if (members_.empty()) {
+      // A volume with no members has nothing left to restore.
+      submit_volume_remove();
+    } else {
+      submit_volume_read();
+    }
+    break;
   }
 }
 
 void WeaveConversionJob::submit_volume_read() {
-  auto& unpack = std::get<UnpackState>(state_);
   stage_ = Stage::kReadingVolume;
-  tid_ = pg_interface_.read(volume_.volume_oid, unpack.version, unpack.size,
-    &unpack.volume.data, &unpack.volume.attrs, completion([this](int r) {
+  tid_ = pg_interface_.read(volume_.volume_oid, volume_version_, volume_size_,
+    &volume_data_.data, &volume_data_.attrs, completion([this](int r) {
       on_volume_read_complete(r);
     }));
 }
@@ -177,8 +179,7 @@ void WeaveConversionJob::on_member_read_complete(size_t index, int r) {
 // Runs the kBuildingVolume CPU phase, then submits under the PG lock.
 void WeaveConversionJob::build_volume() {
   // CPU work owns its buffers and never touches PG state without serialized().
-  auto& pack = std::get<PackState>(state_);
-  const bool valid = compose_volume(pack);
+  const bool valid = compose_volume();
 
   // Submit only under the PG lock, and only while the epoch is still ours.
   pg_interface_.serialized([self = shared_from_this(), valid] {
@@ -195,11 +196,11 @@ void WeaveConversionJob::on_volume_build_complete(bool valid) {
   submit_volume_write();
 }
 
-bool WeaveConversionJob::compose_volume(PackState& pack) {
+bool WeaveConversionJob::compose_volume() {
   std::vector<bufferlist> input;
   for (const auto& member : data_) input.push_back(member.data);
 
-  auto& volume = pack.volume;
+  auto& volume = volume_data_;
   // The interleave refuses a member that cannot fit its computed slot.
   const bool valid = interleave_members(
     input, unit_, volume_.slot_size, volume.data);
@@ -229,7 +230,7 @@ void WeaveConversionJob::submit_volume_write() {
     return;
   }
 
-  auto& volume = std::get<PackState>(state_).volume;
+  auto& volume = volume_data_;
   stage_ = Stage::kWritingVolume;
 
   pg_interface_.conversion_checkpoint("pack_before_write");
@@ -297,7 +298,7 @@ void WeaveConversionJob::on_member_remove_complete(size_t index, int r) {
 
 // Runs the kMaterializing CPU phase, then submits the restored members.
 void WeaveConversionJob::materialize_members() {
-  const auto& volume = std::get<UnpackState>(state_).volume;
+  const auto& volume = volume_data_;
   // Restore every member from the packed volume before touching PG state.
   bool valid = true;
   for (size_t i = 0; i < members_.size() && valid; ++i) {

@@ -177,6 +177,10 @@ header.version = (HAVE_FEATURE(features, WEAVE_READ_REDIRECT) &&
 
 ## 3. 打包（Pack）
 
+`WeaveConversionJob::Mode` 在构造时明确指定 `kPack` 或 `kUnpack`，并在任务
+生命周期内保持不变；`Stage` 只记录执行进度。两个方向都使用 `members`，
+不按成员数量推断方向；空成员的解包任务直接删除 Volume。
+
 ```mermaid
 stateDiagram-v2
   [*] --> kReadingMembers: submit_member_read(0) 逐个 assert_version 读源

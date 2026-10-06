@@ -29,8 +29,9 @@ PG 锁，也不把来源清理的错误重试传递给新读。
   `Reading`、`Busy`。`Reading` 必须只有共享读者，且没有原生等待者或其他
   阻塞。写锁、排队和其他阻塞继续阻止打包；未完成写事务仍算忙，不能把超时
   后的事务当作回滚。
-- `WeaveConversionJob::packing()` 表达转换方向，不向 Controller 暴露其内部
-  variant。Job 的 I/O 顺序和持久化交接保持不变。
+- `WeaveConversionJob` 用固定的 `Mode::kPack / Mode::kUnpack` 表达转换方向，
+  `packing()` 查询该枚举，`Stage` 表达执行进度。`members` 是否为空只影响
+  解包时是否跳过数据恢复、直接删除空卷。Job 的 I/O 顺序和持久化交接保持不变。
 - Controller 集中判断打包读准入，并在选组和提交复核时允许共享读者。只有
   可直接服务的普通 head 只读请求放行；复合读写、缓存操作、要求写顺序、跳过
   原生锁、快照及需要物化的操作保持原屏障。清理失败时写和删除仍不能绕过预留。
