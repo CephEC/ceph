@@ -19,6 +19,7 @@
 #include <errno.h>
 
 #include <charconv>
+#include <cmath>
 #include <sstream>
 #include <utility>
 
@@ -36,6 +37,7 @@
 #include "common/perf_counters.h"
 #include "common/scrub_types.h"
 #include "include/compat.h"
+#include "include/random.h"
 #include "json_spirit/json_spirit_reader.h"
 #include "json_spirit/json_spirit_value.h"
 #include "messages/MCommandReply.h"
@@ -1798,6 +1800,9 @@ PrimaryLogPG::PrimaryLogPG(OSDService *o, OSDMapRef curmap,
   m_weave =
     std::make_unique<ceph::weave::WeavePGController>(
       o->cct, make_weave_host(), weave_enabled);
+  if (weave_enabled) {
+    m_weave_scan = std::make_unique<ceph::weave::WeaveScanSchedule>(o->mono_timer);
+  }
   m_scrubber = make_unique<PrimaryLogScrub>(this);
   dout(5) << "init primaryLogPG weave_enabled = " << weave_enabled
           << " conf->osd_weave_enabled = " << o->cct->_conf->osd_weave_enabled
@@ -1820,9 +1825,44 @@ void PrimaryLogPG::request_weave_reclaim(
   }
 }
 
-void PrimaryLogPG::scan_weave_candidates()
+void PrimaryLogPG::cancel_weave_scan()
 {
-  if (m_weave) m_weave->scan_candidates();
+  if (m_weave_scan) m_weave_scan->cancel();
+}
+
+void PrimaryLogPG::refresh_weave_scan_schedule()
+{
+  cancel_weave_scan();
+  schedule_next_weave_scan(true);
+}
+
+void PrimaryLogPG::schedule_next_weave_scan(bool stagger_start)
+{
+  if (!m_weave_scan || osd->is_stopping() || recovery_state.is_deleting() ||
+      !is_primary() || !is_active() || !cct->_conf->osd_weave_background_enabled) {
+    return;
+  }
+  const double interval = cct->_conf->osd_weave_scan_interval;
+  if (!std::isfinite(interval) || interval < 0) return;
+
+  // Preserve the old zero-interval rate (about one tick), without a busy loop.
+  double delay = interval > 0 ? interval : 1.0;
+  if (stagger_start) delay *= ceph::util::generate_random_number(0.5, 1.0);
+  m_weave_scan->schedule(ceph::make_timespan(delay),
+    [service = osd, pgid = info.pgid, epoch = get_osdmap_epoch()](auto ticket) {
+      service->queue_weave_scan(pgid, epoch, std::move(ticket));
+    });
+}
+
+void PrimaryLogPG::run_weave_scan(
+  epoch_t epoch, const ceph::weave::WeaveScanSchedule::Ticket& ticket)
+{
+  if (!m_weave_scan || !m_weave_scan->begin_scan(ticket)) return;
+  if (osd->is_stopping() || recovery_state.is_deleting() ||
+      pg_has_reset_since(epoch) || !is_primary() || !is_active()) return;
+
+  m_weave->scan_candidates();
+  schedule_next_weave_scan();
 }
 
 void PrimaryLogPG::get_src_oloc(const object_t& oid, const object_locator_t& oloc, object_locator_t& src_oloc)
@@ -13153,6 +13193,7 @@ void PrimaryLogPG::clear_cache()
 void PrimaryLogPG::on_shutdown()
 {
   dout(10) << __func__ << dendl;
+  cancel_weave_scan();
   if (m_weave) m_weave->on_pg_change(false);
 
   if (recovery_queued) {
@@ -13259,11 +13300,13 @@ void PrimaryLogPG::on_activate_complete()
 
   hit_set_setup();
   agent_setup();
+  refresh_weave_scan_schedule();
 }
 
 void PrimaryLogPG::on_change(ObjectStore::Transaction &t)
 {
   dout(10) << __func__ << dendl;
+  cancel_weave_scan();
 
   if (hit_set && hit_set->insert_count() == 0) {
     dout(20) << " discarding empty hit_set" << dendl;

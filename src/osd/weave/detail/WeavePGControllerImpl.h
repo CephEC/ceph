@@ -49,7 +49,7 @@ public:
   void finish_reply(const OpRequestRef&, MOSDOpReply*);
   void finish_request(const OpRequestRef&);
 
-  // Called by the OSD's periodic candidate scan, never by a write completion.
+  // Called by the PG's periodic queue item, never by a write completion.
   void scan_candidates();
 
   // Native query surface.

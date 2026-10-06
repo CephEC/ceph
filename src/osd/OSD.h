@@ -545,6 +545,8 @@ public:
   AsyncReserver<spg_t, Finisher> snap_reserver;
   void queue_recovery_context(PG *pg, GenContext<ThreadPool::TPHandle&> *c);
   void queue_for_snap_trim(PG *pg);
+  void queue_weave_scan(spg_t pgid, epoch_t epoch,
+                        ceph::weave::WeaveScanSchedule::Ticket ticket);
   void queue_for_scrub(PG* pg, Scrub::scrub_prio_t with_priority);
 
   void queue_scrub_after_repair(PG* pg, Scrub::scrub_prio_t with_priority);
@@ -870,7 +872,7 @@ public:
   HeartbeatStampsRef get_hb_stamps(unsigned osd);
 
 
-  // Timer for readable leases
+  // Shared timer for readable leases and per-PG background checks.
   ceph::timer<ceph::mono_clock> mono_timer = ceph::timer<ceph::mono_clock>{ceph::construct_suspended};
 
   void queue_renew_lease(epoch_t epoch, spg_t spgid);
@@ -1090,10 +1092,9 @@ class OSD : public Dispatcher,
   SafeTimer tick_timer_without_osd_lock;
   std::string gss_ktfile_client{};
 
-  // The dispatch and PG completions own the pass; no asynchronous completion
+  // The dispatch and PG cleanup states own the pass; no asynchronous completion
   // touches the OSD. Expiration also handles discarded work during shutdown.
   ceph::weave::WeaveService::Dispatch snapshot_weave_reclaim();
-  ceph::weave::WeaveService::Scan snapshot_weave_candidates();
   bool request_weave_reclaim(); // osd_lock held
 
 public:

@@ -1335,10 +1335,11 @@ options:
   flags:
   - runtime
 - name: osd_weave_scan_interval
-  desc: Seconds between OSD-wide background EC candidate scan passes
-  long_desc: Scans are dispatched by the OSD tick, independently of foreground
-    commits. A zero interval scans on every tick. This setting does not control
-    resource or conversion I/O retries.
+  desc: Seconds between per-PG background EC candidate checks
+  long_desc: Each active primary schedules its next check after the previous
+    check finishes, using the OSD PG work queue. Initial checks are staggered.
+    Zero uses a one-second delay to avoid a busy loop. Changes rearm pending
+    checks. This setting does not control resource or conversion I/O retries.
   type: float
   level: advanced
   default: 5

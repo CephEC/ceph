@@ -1942,7 +1942,9 @@ public:
   // Caller holds the PG lock; completion also runs under that lock.
   void request_weave_reclaim(unsigned live_percent,
                              std::function<void()> on_finish);
-  void scan_weave_candidates();
+  void refresh_weave_scan_schedule();
+  void run_weave_scan(epoch_t epoch,
+                      const ceph::weave::WeaveScanSchedule::Ticket& ticket);
 
 private:
   DynamicPerfStats m_dynamic_perf_stats;
@@ -1952,6 +1954,9 @@ private:
   class WeaveHost;
   std::unique_ptr<ceph::weave::WeavePGHost> make_weave_host();
   std::unique_ptr<ceph::weave::WeavePGController> m_weave;
+  std::unique_ptr<ceph::weave::WeaveScanSchedule> m_weave_scan;
+  void schedule_next_weave_scan(bool stagger_start = false);
+  void cancel_weave_scan();
 };
 
 inline ostream& operator<<(ostream& out, const PrimaryLogPG::RepGather& repop)

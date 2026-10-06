@@ -13,14 +13,13 @@ namespace ceph::weave {
 class WeaveLease;
 enum class WeaveRetryKind;
 
-// One service per OSD. Config/tick/scan/reclaim calls are serialized by the OSD
+// One service per OSD. Config/tick/reclaim calls are serialized by the OSD
 // lock. Capture snapshots under that lock; dispatched work runs without it.
 class WeaveService {
 public:
   enum class ReclaimResult { kAccepted, kAlreadyRunning, kStopping };
   // The dispatcher invokes one PG action at a time under that PG's lock.
   using Dispatch = std::function<void(unsigned, std::function<void()>)>;
-  using Scan = std::function<void()>;
 
   explicit WeaveService(CephContext*);
   ~WeaveService();
@@ -30,9 +29,6 @@ public:
                                 std::function<Dispatch()> snapshot);
   void tick(int64_t now, bool active, unsigned live_percent,
             std::function<Dispatch()> snapshot);
-  // Called from OSD::tick. Snapshot only when a new scan is due, and never
-  // queue another pass while the previous one is still visiting PGs.
-  void scan_candidates(double interval, std::function<Scan()> snapshot);
   void shutdown();
 
   // Used by the Ceph PG host, never by packing policy or native OSD callers.

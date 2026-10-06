@@ -58,7 +58,8 @@ graph TB
 | `detail/WeaveXAttr.h` | 54 | 属性名、私有 namespace、xattr 前缀与载荷重建 |
 | `detail/WeaveCandidateIndex.{h,cc}` | 90/212 | 有界候选集 + 选组算法 |
 | `detail/WeaveWorker.{h,cc}` | — | 每 OSD 单工作线程：按用途分开的转换重试 + CPU 工作 + 租约槽 |
-| `WeaveService.{h,cc}` | — | 每 OSD 服务：周期候选扫描、回收单飞、租约、转换重试 |
+| `WeaveService.{h,cc}` | — | 每 OSD 服务：回收单飞、租约、转换重试 |
+| `WeaveScanSchedule.h` | — | 每 PG 的候选检查定时、待执行任务去重与取消 |
 | `detail/WeaveReclaimTimer.h` | 88 | 严格 `HH:MM` UTC 每日触发，含跨日/回拨高水位 |
 | `WeaveECAdapter.{h,cc}` | 66/188 | EC 后端适配：成员 extent 换算、`decode_member`、data-class 执行 |
 | `WeaveReadRoute.h` | 39 | 线上路由结构 |
@@ -190,7 +191,7 @@ stateDiagram-v2
 
 - `on_commit` → `refresh_candidate`：Volume 私有对象永不入候选；已有映射的对象会被剔除（`WeavePGControllerImpl.cc:851-897`）。
 - `eligible()` 只排除原生截断历史无法表达的对象：`truncate_seq == 0 && truncate_size == 0`（`WeaveCandidateIndex.h:35-38`，对应台账 I6）。
-- Volume 大小上限复用 `osd_max_object_size` 和 `osd_max_write_size`（后者单位 MiB，0 表示不限），并受 32 位编码长度限制；没有独立的 Weave 大小配置。提交前按数据、属性名及属性值精确检查请求载荷，超限返回 `-EFBIG`。系统上限变化会唤醒候选扫描。
+- Volume 大小上限复用 `osd_max_object_size` 和 `osd_max_write_size`（后者单位 MiB，0 表示不限），并受 32 位编码长度限制；没有独立的 Weave 大小配置。提交前按数据、属性名及属性值精确检查请求载荷，超限返回 `-EFBIG`。下一次 PG 候选检查会观察系统上限变化。
 - 容量上界 `kMaxCandidates = 4096`；`configure()` 推导每 slot 上限 `(max_volume_size/k/unit)*unit`，配置收紧时立即 `prune_inadmissible()`（`WeaveCandidateIndex.cc:11-32`）。
 - `upsert` 拒绝旧版本回放（`oi.version < 已有`），状态完全相同不重启 quiet 计时；改尺寸时先把排序节点 `extract` 出来再改（`WeaveCandidateIndex.cc:34-70`）。
 
@@ -210,11 +211,11 @@ volume_size * 100 <= sum * (padding_percent + 100)      // 128 位宽运算，�
 
 三个流程各有自己的入口，不再通过 `schedule_work()` / `run_scheduled_work()` 推测唤醒用途：
 
-- **候选扫描**：前台 `on_commit()` 只更新候选及最后变更时间。`OSD::tick()` 调用 `WeaveService::scan_candidates()`，按 `osd_weave_scan_interval` 取得 PG 快照并异步访问各 EC 主 PG；Controller 的 `scan_candidates()` 只选择、检查并尝试打包候选。候选未冷却、不能配组或无并发槽时直接返回，等下一轮扫描。扫描期间有转换、清理或等待的前台请求时让出，不负责推进这些流程。
+- **候选扫描**：前台 `on_commit()` 只更新候选及最后变更时间。启用 Weave 的主 PG 激活后，通过共享的 OSD `mono_timer` 定时投递 `PGWeaveScan`，在 `op_shardedwq` 的 `background_best_effort` 类别调度。定时器回调只投递任务；任务取得该 PG 的锁后，调用 Controller 的 `scan_candidates()` 选择、检查并尝试打包候选，再安排下一次检查。候选未冷却、不能配组或无并发槽时直接返回，等下一轮检查。有转换、清理或等待的前台请求时让出，不负责推进这些流程。读完成员后的 CPU 组装仍交给 Weave Worker。
 - **前台物化**：请求准入立即尝试物化。若 Volume 忙或没有并发槽，`schedule_materialization_retry()` 只安排原始请求重新进入 PG 准入；已有转换时由该任务的完成回调交还请求。
 - **清理**：`request_cleanup()` 直接进入 `resume_cleanup()`，一次转换完成后继续推进。Volume 忙、无并发槽或需要先交还前台请求时，`schedule_cleanup_retry()` 只继续本轮清理；角色或 clean 状态不再允许工作时结束本轮。
 
-周期扫描最多有一个 OSD 级扫描轮次在途；配置变化、PG 转为 clean 都由后续扫描观察，不需要前台写或额外调度钩子。`scan_interval = 0` 表示每次 OSD tick 都可扫描，实际分辨率受 tick 周期约束。
+每个 PG 最多有一个待触发或排队中的检查；首次检查随机错开在间隔的 50%～100%，后续按 `osd_weave_scan_interval` 在上次检查结束后重新定时。PG 变化或关闭会取消定时并使已排队的旧任务失效；PG 不存在时任务直接丢弃。修改扫描间隔或后台开关会刷新 PG 定时，其他策略配置及 PG 转为 clean 由下一次检查观察。`scan_interval = 0` 使用 1 秒间隔，避免立即反复入队。候选索引的登记、重启恢复策略保持原样。
 
 资源及转换失败仍使用 1 秒重试，与候选扫描间隔独立。Worker 以 `(pgid, WeaveRetryKind)` 保存回调，区分物化、清理及转换步骤，防止彼此覆盖。重试闭包持有 PG 引用并校验角色代数或任务 epoch；PG 变化取消全部重试。资源释放通知尚未接入，因此上述资源等待保留短周期重试。
 
@@ -360,12 +361,12 @@ sequenceDiagram
 | `do_request` / `do_op` | `prepare_request`（`:2073`）/ `preprocess_client_op`（`:2288`） |
 | 提交回调 | `on_commit`（`:4468-4471`）、`finish_reply`（`:4481`、`:9350-9351`、`:2780-2781`）、错误回复前 `finish_request`（`:2046`） |
 | 恢复 | `on_recovery_progress`（`:495,546,13464,13505`）、`initialize`（`:2062,12722,12738`） |
-| PG 变化 | `on_pg_change(false)`、`on_pg_change()`；取消该 PG 的全部重试 |
+| PG 变化 | `on_pg_change(false)`、`on_pg_change()`；取消该 PG 的全部重试与候选检查；`on_activate_complete()` 重新安排候选检查 |
 | 列举/过滤 | `merge_listing`（`:1342-1343`）、`is_private_object`/`is_logical_member`（`:1395-1400`）、`listing_attribute`（`:938-941`） |
 | 语义查询 | 逻辑 STAT（`:6400`）、getxattrs 过滤（`:6590`）、`logical_user_version`（`:6670,9336`）、`internal_copy_version`（`:9197`）、`internal_copy_snap_sequence`（`:4295`）、`get_cls_ctx`（`:6245`）、`translate_native_class_ops`（`:6142`） |
 | DELETE | `prepare_member_delete` + `WeaveTransaction`（`:7162-7172`） |
 | 副本读准入 | `do_op` 允许带 `weave_read_route` 或 `BALANCE_READS/LOCALIZE_READS` 的只读落到非 primary（`:2129-2137`） |
-| OSD 级 | `OSDService::weave_service`、`shutdown`、`tick`（候选周期扫描 + 每日回收检查）、回收时间配置观察、命令 |
+| OSD 级 | `OSDService::weave_service`、`shutdown`、`tick`（每日回收检查）、回收时间与候选检查间隔/开关的配置观察、命令 |
 | 客户端 | `op_target_t::weave_read`（`Objecter.h:1803`）、`_calc_target`（`Objecter.cc:2915,2997`）、`_prepare_osd_op`（`:3221`）、回复处理（`:3457`）、reset（`:4504`） |
 
 ## 9. 配置项
@@ -378,7 +379,7 @@ sequenceDiagram
 | `osd_weave_background_enabled` | bool / `true` | `WeavePolicy.background` → `can_scan()` |
 | `osd_weave_min_object_size` | size / `1_M` | 候选准入 |
 | `osd_weave_quiet_period` | float / `30` | 停滞判定 |
-| `osd_weave_scan_interval` | float / `5` | OSD 级候选扫描间隔；0 表示每次 tick；不控制转换重试 |
+| `osd_weave_scan_interval` | float / `5` | 每 PG 候选检查结束到下次触发的间隔；0 使用 1 秒；不控制转换重试 |
 | `osd_max_object_size` / `osd_max_write_size` | 系统已有配置 | 推导 Volume 数据上限；提交前另检查数据及属性的总载荷 |
 | `osd_weave_max_concurrent` | uint / `1` | 全局转换槽（**0 会同时拒绝前台必要物化**） |
 | `osd_weave_max_padding_percent` | uint / `10` | 选组填充预算 |

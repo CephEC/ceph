@@ -1039,39 +1039,6 @@ TEST_F(WeaveDurableRecovery, CleanupRetriesItsOwnPassWithoutCandidateScan) {
   EXPECT_TRUE(host->retries.empty());
 }
 
-TEST(WeaveService, PeriodicScanCoalescesPassesAndObservesChangedInterval) {
-  WeaveService service(g_ceph_context);
-  std::promise<void> entered, release, drained, rescanned;
-  auto release_future = release.get_future().share();
-  unsigned snapshots = 0;
-  auto snapshot = [&]() -> WeaveService::Scan {
-    ++snapshots;
-    return [&] { entered.set_value(); release_future.wait(); };
-  };
-  service.scan_candidates(3600, snapshot);
-  const auto ready = entered.get_future().wait_for(std::chrono::seconds(5));
-  if (ready != std::future_status::ready) {
-    release.set_value();
-    FAIL() << "candidate scan did not start";
-  }
-  service.scan_candidates(0, snapshot);
-  EXPECT_EQ(snapshots, 1u); // An in-flight pass is never duplicated.
-  release.set_value();
-  service.post([&] { drained.set_value(); });
-  ASSERT_EQ(drained.get_future().wait_for(std::chrono::seconds(5)),
-            std::future_status::ready);
-  service.scan_candidates(3600, snapshot);
-  EXPECT_EQ(snapshots, 1u);
-  service.scan_candidates(0, [&]() -> WeaveService::Scan {
-    ++snapshots;
-    return [&] { rescanned.set_value(); };
-  });
-  EXPECT_EQ(snapshots, 2u);
-  EXPECT_EQ(rescanned.get_future().wait_for(std::chrono::seconds(5)),
-            std::future_status::ready);
-  service.shutdown();
-}
-
 TEST(WeaveService, ReclaimPassStaysActiveUntilEveryPGReleasesCompletion) {
   WeaveService service(g_ceph_context);
   using Result = WeaveService::ReclaimResult;

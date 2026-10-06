@@ -22,6 +22,7 @@
 #include "osd/PG.h"
 #include "osd/PGPeeringEvent.h"
 #include "messages/MOSDOp.h"
+#include "osd/weave/WeaveScanSchedule.h"
 
 
 class OSD;
@@ -57,7 +58,8 @@ public:
       bg_snaptrim,
       bg_recovery,
       bg_scrub,
-      bg_pg_delete
+      bg_pg_delete,
+      bg_weave_scan
     };
     using Ref = std::unique_ptr<OpQueueable>;
 
@@ -69,6 +71,8 @@ public:
     virtual const spg_t& get_ordering_token() const = 0;
     virtual OrderLocker::Ref get_order_locker(PGRef pg) = 0;
     virtual op_type_t get_op_type() const = 0;
+    // Opportunistic maintenance can be dropped instead of waiting for PG creation.
+    virtual bool waits_for_pg() const { return true; }
     virtual std::optional<OpRequestRef> maybe_get_op() const {
       return std::nullopt;
     }
@@ -142,6 +146,7 @@ public:
   OpQueueable::op_type_t get_op_type() const {
     return qitem->get_op_type();
   }
+  bool waits_for_pg() const { return qitem->waits_for_pg(); }
   std::optional<OpRequestRef> maybe_get_op() const {
     return qitem->maybe_get_op();
   }
@@ -335,6 +340,25 @@ public:
   op_scheduler_class get_scheduler_class() const final {
     return op_scheduler_class::background_best_effort;
   }
+};
+
+class PGWeaveScan final : public PGOpQueueable {
+  epoch_t epoch_queued;
+  ceph::weave::WeaveScanSchedule::Ticket ticket;
+public:
+  PGWeaveScan(spg_t pgid, epoch_t epoch,
+              ceph::weave::WeaveScanSchedule::Ticket ticket)
+    : PGOpQueueable(pgid), epoch_queued(epoch), ticket(std::move(ticket)) {}
+  op_type_t get_op_type() const final { return op_type_t::bg_weave_scan; }
+  bool waits_for_pg() const final { return false; }
+  op_scheduler_class get_scheduler_class() const final {
+    return op_scheduler_class::background_best_effort;
+  }
+  std::ostream& print(std::ostream& out) const final {
+    return out << "PGWeaveScan(pgid=" << get_pgid()
+               << " epoch_queued=" << epoch_queued << ")";
+  }
+  void run(OSD*, OSDShard*, PGRef&, ThreadPool::TPHandle&) final;
 };
 
 class PGScrub : public PGOpQueueable {

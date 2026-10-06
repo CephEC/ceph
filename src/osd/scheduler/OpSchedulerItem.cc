@@ -14,6 +14,7 @@
 
 #include "osd/scheduler/OpSchedulerItem.h"
 #include "osd/OSD.h"
+#include "osd/PrimaryLogPG.h"
 #include "osd/osd_tracer.h"
 
 
@@ -51,6 +52,14 @@ void PGSnapTrim::run(
   ThreadPool::TPHandle &handle)
 {
   pg->snap_trimmer(epoch_queued);
+  pg->unlock();
+}
+
+void PGWeaveScan::run(OSD*, OSDShard*, PGRef& pg, ThreadPool::TPHandle&)
+{
+  if (ticket->valid && pg->get_pool().info.is_erasure()) {
+    static_cast<PrimaryLogPG*>(pg.get())->run_weave_scan(epoch_queued, ticket);
+  }
   pg->unlock();
 }
 

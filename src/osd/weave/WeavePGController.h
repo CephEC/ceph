@@ -38,7 +38,7 @@ public:
   void initialize();
   void on_recovery_progress();
   void on_pg_change(bool requeue = true);
-  // Periodic background scan; foreground commits only update candidates.
+  // Called by this PG's periodic queue item; commits only update candidates.
   void scan_candidates();
   RequestDisposition prepare_request(OpRequestRef&);
   RequestDisposition preprocess_client_op(OpRequestRef&);

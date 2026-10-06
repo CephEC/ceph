@@ -1667,6 +1667,20 @@ void OSDService::queue_recovery_context(
       e));
 }
 
+void OSDService::queue_weave_scan(
+  spg_t pgid, epoch_t epoch, ceph::weave::WeaveScanSchedule::Ticket ticket)
+{
+  if (is_stopping() || !ticket->valid) return;
+  // A metadata-only scan gets one unit of cost and low WPQ priority.
+  // mClock accounts it in background_best_effort via PGWeaveScan.
+  constexpr unsigned scan_cost = 1;
+  constexpr unsigned scan_priority = 1;
+  enqueue_back(OpSchedulerItem(
+    std::make_unique<ceph::osd::scheduler::PGWeaveScan>(
+      pgid, epoch, std::move(ticket)),
+    scan_cost, scan_priority, ceph_clock_now(), 0, epoch));
+}
+
 void OSDService::queue_for_snap_trim(PG *pg)
 {
   dout(10) << "queueing " << *pg << " for snaptrim" << dendl;
@@ -6096,20 +6110,6 @@ bool OSD::heartbeat_reset(Connection *con)
 
 // =========================================
 
-ceph::weave::WeaveService::Scan OSD::snapshot_weave_candidates()
-{
-  ceph_assert(ceph_mutex_is_locked(osd_lock));
-  std::vector<PGRef> pgs;
-  _get_pgs(&pgs);
-  return [pgs = std::move(pgs)] {
-    for (const auto& pg : pgs) {
-      std::lock_guard<PG> lock(*pg);
-      if (!pg->is_deleted() && pg->is_primary() && pg->get_pool().info.is_erasure())
-        static_cast<PrimaryLogPG*>(pg.get())->scan_weave_candidates();
-    }
-  };
-}
-
 ceph::weave::WeaveService::Dispatch OSD::snapshot_weave_reclaim()
 {
   ceph_assert(ceph_mutex_is_locked(osd_lock));
@@ -6143,12 +6143,6 @@ void OSD::tick()
   service.weave_service->tick(now.sec(), !is_stopping() && is_active(),
     cct->_conf.get_val<uint64_t>("osd_weave_cleanup_live_percent"),
     [this] { return snapshot_weave_reclaim(); });
-  // Candidate scans have one OSD-wide cadence. Commits, PG clean transitions
-  // and policy changes are observed on the next pass without arming PG timers.
-  if (!is_stopping() && is_active() && cct->_conf->osd_weave_background_enabled) {
-    service.weave_service->scan_candidates(cct->_conf->osd_weave_scan_interval,
-      [this] { return snapshot_weave_candidates(); });
-  }
   // throw out any obsolete markdown log
   utime_t grace = utime_t(cct->_conf->osd_max_markdown_period, 0);
   while (!osd_markdown_log.empty() &&
@@ -10067,6 +10061,17 @@ void OSD::handle_conf_change(const ConfigProxy& conf,
       conf.get_val<std::string>("osd_weave_cleanup_time"),
       ceph_clock_now().sec()));
   }
+  if (changed.count("osd_weave_background_enabled") ||
+      changed.count("osd_weave_scan_interval")) {
+    std::vector<PGRef> pgs;
+    _get_pgs(&pgs);
+    for (const auto& pg : pgs) {
+      std::lock_guard<PG> pg_lock(*pg);
+      if (!pg->is_deleted() && pg->get_pool().info.is_erasure()) {
+        static_cast<PrimaryLogPG*>(pg.get())->refresh_weave_scan_schedule();
+      }
+    }
+  }
   if (changed.count("osd_max_backfills") ||
       changed.count("osd_delete_sleep") ||
       changed.count("osd_delete_sleep_hdd") ||
@@ -11108,6 +11113,12 @@ void OSD::ShardedOpWQ::_process(uint32_t thread_index, heartbeat_handle_d *hb)
   OSDMapRef osdmap;
 
   while (!pg) {
+    // A periodic scan is dispensable; a newly activated PG arms its own timer.
+    if (!qi.waits_for_pg()) {
+      sdata->shard_lock.unlock();
+      handle_oncommits(oncommits);
+      return;
+    }
     // should this pg shard exist on this osd in this (or a later) epoch?
     osdmap = sdata->shard_osdmap;
     const PGCreateInfo *create_info = qi.creates_pg();

@@ -1,11 +1,8 @@
 #include "WeaveService.h"
 
 #include <atomic>
-#include <chrono>
-#include <cmath>
 #include <functional>
 #include <memory>
-#include <optional>
 #include <utility>
 
 #include "WeavePGHost.h"
@@ -46,8 +43,6 @@ struct WeaveService::Impl {
   std::shared_ptr<WeaveWorker> worker_;
   WeaveReclaimTimer timer_;
   std::weak_ptr<ReclaimPass> pass_;
-  std::optional<ceph::mono_time> last_scan_;
-  std::atomic<bool> scan_pending_{false};
   std::atomic<bool> stopping_{false};
 };
 
@@ -79,25 +74,6 @@ void WeaveService::tick(int64_t now, bool active, unsigned percent,
   if (impl_->stopping_ || !impl_->timer_.due(now) || !active) return;
 
   request_reclaim(percent, std::move(snapshot));
-}
-
-void WeaveService::scan_candidates(double interval,
-                                  std::function<Scan()> snapshot) {
-  if (impl_->stopping_ || impl_->scan_pending_ ||
-      !std::isfinite(interval) || interval < 0) return;
-  const auto now = ceph::mono_clock::now();
-  if (impl_->last_scan_ &&
-      std::chrono::duration<double>(now - *impl_->last_scan_).count() < interval) {
-    return;
-  }
-
-  auto scan = snapshot();
-  impl_->last_scan_ = now;
-  impl_->scan_pending_ = true;
-  impl_->worker_->post([impl = impl_.get(), scan = std::move(scan)] {
-    scan();
-    impl->scan_pending_ = false;
-  });
 }
 
 void WeaveService::shutdown() {
