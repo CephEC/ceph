@@ -253,6 +253,25 @@ void WeaveCatalog::remove_volume_locked(const hobject_t &volume_oid) {
   volumes_.erase(volume);
 }
 
+void WeaveCatalog::update_member(const hobject_t& volume_oid,
+  const hobject_t& member_oid, version_t user_version, utime_t mtime) {
+  std::unique_lock lock(mutex_);
+  const auto volume = volumes_.find(volume_oid);
+  if (volume == volumes_.end()) return;
+  const auto member = volume->second->members.find(member_oid);
+  if (member == volume->second->members.end() ||
+      member->second.user_version >= user_version) return;
+
+  // Publish only this member's committed change. Older callbacks must not
+  // revert another member's update or resurrect a deleted membership.
+  auto updated = std::make_shared<WeaveVolumeMeta>(*volume->second);
+  auto& changed = updated->members.at(member_oid);
+  changed.user_version = user_version;
+  changed.mtime = mtime;
+  volume->second = updated;
+  relink_volume(updated);
+}
+
 void WeaveCatalog::remove_member_locked(
   const hobject_t &volume_oid, const hobject_t &member_oid) {
   auto volume = volumes_.find(volume_oid);

@@ -36,6 +36,12 @@ public:
   int preprocess(OpRequestRef op);
   int translate(OpRequestRef& op, std::vector<OSDOp>& ops);
   bool supports_member_ops(const std::vector<OSDOp>& ops) const;
+  bool supports_member_mutation(const std::vector<OSDOp>& ops) const;
+  int prepare_member_write(const OpRequestRef&, const ceph::buffer::list&);
+  bool finish_member_write(const OpRequestRef&, version_t, utime_t,
+                           ceph::buffer::list&);
+  uint32_t client_xattr_name_length(const OpRequestRef&, size_t,
+                                   uint32_t fallback) const;
   void finish_request(const OpRequestRef& op);
   ClsParmContext* get_cls_ctx(const OpRequestRef& op, std::size_t subop) const;
   int prepare_member_delete(const OpRequestRef&, const ceph::buffer::list&,
@@ -64,6 +70,8 @@ private:
                                        int& error) const;
   int validate_member_ops(const std::vector<OSDOp>&) const;
   int validate_op(const OSDOp& entry, bool is_last) const;
+  int decode_member_metadata(const OpRequestRef&, const ceph::buffer::list&,
+                              WeaveVolumeMeta&) const;
   int data_class_name(const OSDOp&, std::string& name) const;
   bool class_is_allowed(const std::string& name) const;
   void rewrite_ops(std::vector<OSDOp>& ops, const Target& target,

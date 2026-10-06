@@ -46,6 +46,11 @@ public:
   void on_commit(const object_info_t&, bool exists, const OpRequestRef&);
   void request_cleanup(unsigned live_percent, WeaveReclaimPass::Ref pass);
   int prepare_member_delete(const OpRequestRef&, WeaveTransaction&);
+  int prepare_member_write(const OpRequestRef&, WeaveTransaction&);
+  void finish_member_write(const OpRequestRef&, version_t, utime_t,
+                            WeaveTransaction&);
+  uint32_t client_xattr_name_length(const OpRequestRef&, size_t,
+                                   uint32_t fallback) const;
   void finish_reply(const OpRequestRef&, MOSDOpReply*);
   void finish_request(const OpRequestRef&);
   ClsParmContext* get_cls_ctx(const OpRequestRef&, std::size_t) const;

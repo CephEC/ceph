@@ -2,6 +2,7 @@
 #include <sstream>
 
 #include "WeavePGInterface.h"
+#include "WeavePGController.h"
 #include "WeaveService.h"
 #include "common/Finisher.h"
 #include "detail/WeaveLayout.h"
@@ -417,4 +418,50 @@ private:
 
 std::unique_ptr<ceph::weave::WeavePGInterface> PrimaryLogPG::make_weave_pg_adapter() {
   return std::make_unique<WeavePGAdapter>(*this, *osd);
+}
+
+ceph::weave::WeaveTransaction PrimaryLogPG::make_weave_transaction(OpContext* ctx) {
+  return {
+    [this, ctx](const char* name, bufferlist& value) {
+      return getattr_maybe_cache(ctx->obc, name, &value);
+    },
+    [ctx](const char* name, const bufferlist& value) {
+      auto encoded = value;
+      ctx->op_t->setattr(ctx->obc->obs.oi.soid, name, encoded);
+    }};
+}
+
+int PrimaryLogPG::prepare_weave_member_write(OpContext* ctx) {
+  if (!m_weave) return 0;
+  auto txn = make_weave_transaction(ctx);
+  return m_weave->prepare_member_write(ctx->op, txn);
+}
+
+void PrimaryLogPG::finish_weave_member_write(OpContext* ctx) {
+  if (!m_weave || !ctx->user_modify) return;
+  auto txn = make_weave_transaction(ctx);
+  m_weave->finish_member_write(ctx->op, ctx->user_at_version, ctx->mtime, txn);
+}
+
+int PrimaryLogPG::delete_weave_member(OpContext* ctx) {
+  auto txn = make_weave_transaction(ctx);
+  return m_weave->prepare_member_delete(ctx->op, txn);
+}
+
+int PrimaryLogPG::check_setxattr_limits(const OpContext* ctx,
+                                      const OSDOp& op) const {
+  if (ctx->op && ctx->op->is_background_weave_io()) return 0;
+  if (cct->_conf->osd_max_attr_size > 0 &&
+      op.op.xattr.value_len > cct->_conf->osd_max_attr_size) return -EFBIG;
+
+  // Client limits apply before Weave's prefix; the physical key must still
+  // fit the ObjectStore format.
+  const uint64_t name_length = m_weave
+    ? m_weave->client_xattr_name_length(ctx->op, ctx->current_osd_subop_num,
+                                        op.op.xattr.name_len)
+    : op.op.xattr.name_len;
+  const auto store_limit = osd->store->get_max_attr_name_length();
+  if (name_length > std::min<uint64_t>(store_limit, cct->_conf->osd_max_attr_name_len) ||
+      op.op.xattr.name_len > store_limit) return -ENAMETOOLONG;
+  return 0;
 }

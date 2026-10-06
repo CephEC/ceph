@@ -39,8 +39,8 @@ int WeaveMemberTranslator::preprocess(OpRequestRef op) {
   }
 
   auto* message = static_cast<MOSDOp*>(op->get_nonconst_req());
-  // Reads and a final logical DELETE run against the published Volume. Other
-  // mutations and native class calls first materialize members into native EC.
+  // Member reads, xattr changes and a final DELETE use the published Volume.
+  // Data mutations first materialize members into native EC.
   return translate(op, message->ops);
 }
 
@@ -53,12 +53,28 @@ bool WeaveMemberTranslator::supports_member_ops(
 
 int WeaveMemberTranslator::validate_member_ops(
   const std::vector<OSDOp>& ops) const {
+  bool xattr_write = false;
+  bool call_or_delete = false;
   for (std::size_t subop = 0; subop < ops.size(); ++subop) {
     const int result = validate_op(ops[subop], subop + 1 == ops.size());
     if (result < 0) return result;
+    const auto code = ops[subop].op.op;
+    xattr_write |= code == CEPH_OSD_OP_SETXATTR || code == CEPH_OSD_OP_RMXATTR;
+    call_or_delete |= code == CEPH_OSD_OP_CALL || code == CEPH_OSD_OP_DELETE;
   }
-
+  // Keep class side effects and deletion compounds on their native path
+  // when mixed with xattr mutations.
+  if (xattr_write && call_or_delete) return -EOPNOTSUPP;
   return 0;
+}
+
+bool WeaveMemberTranslator::supports_member_mutation(
+  const std::vector<OSDOp>& ops) const {
+  const bool mutation = std::any_of(ops.begin(), ops.end(), [](const auto& op) {
+    return op.op.op == CEPH_OSD_OP_SETXATTR ||
+           op.op.op == CEPH_OSD_OP_RMXATTR || op.op.op == CEPH_OSD_OP_DELETE;
+  });
+  return mutation && supports_member_ops(ops);
 }
 
 int WeaveMemberTranslator::validate_op(const OSDOp& entry, bool is_last) const {
@@ -74,9 +90,12 @@ int WeaveMemberTranslator::validate_op(const OSDOp& entry, bool is_last) const {
     return is_last ? 0 : -EOPNOTSUPP;
   case CEPH_OSD_OP_GETXATTR:
   case CEPH_OSD_OP_CMPXATTR:
-    // The key, plus any comparison value, must fit in the input payload.
+  case CEPH_OSD_OP_SETXATTR:
+  case CEPH_OSD_OP_RMXATTR:
+    // The key and any written/compared value must fit in the input payload.
     if (uint64_t{entry.op.xattr.name_len} +
-        (entry.op.op == CEPH_OSD_OP_CMPXATTR
+        ((entry.op.op == CEPH_OSD_OP_CMPXATTR ||
+          entry.op.op == CEPH_OSD_OP_SETXATTR)
           ? uint64_t{entry.op.xattr.value_len} : 0) > entry.indata.length()) {
       return -EINVAL;
     }
@@ -175,7 +194,9 @@ void WeaveMemberTranslator::rewrite_ops(std::vector<OSDOp>& ops,
     auto& entry = ops[subop];
     switch (entry.op.op) {
     case CEPH_OSD_OP_GETXATTR:
-    case CEPH_OSD_OP_CMPXATTR: {
+    case CEPH_OSD_OP_CMPXATTR:
+    case CEPH_OSD_OP_SETXATTR:
+    case CEPH_OSD_OP_RMXATTR: {
       const int rewritten = rewrite_xattr_key_op(entry, target);
       ceph_assert(rewritten == 0);  // Payload bounds checked above.
       break;
@@ -206,7 +227,18 @@ int WeaveMemberTranslator::rewrite_xattr_key_op(OSDOp& entry,
   // Delegates to the namespace-scope helper, which rebuilds the payload
   // because the renamed key shifts the value boundary.
   return ceph::weave::rewrite_xattr_op(
-    entry, target.origin, entry.op.op == CEPH_OSD_OP_CMPXATTR);
+    entry, target.origin, entry.op.op == CEPH_OSD_OP_CMPXATTR ||
+                          entry.op.op == CEPH_OSD_OP_SETXATTR);
+}
+
+uint32_t WeaveMemberTranslator::client_xattr_name_length(
+  const OpRequestRef& op, size_t subop, uint32_t fallback) const {
+  const auto* ctx = op && op->is_weave_member_op()
+    ? op->get_weave_context() : nullptr;
+  const auto* original = ctx ? ctx->client_ops() : nullptr;
+  return original && subop < original->size() &&
+      (*original)[subop].op.op == CEPH_OSD_OP_SETXATTR
+    ? (*original)[subop].op.xattr.name_len : fallback;
 }
 
 void WeaveMemberTranslator::rewrite_getxattrs_op(OSDOp& entry,
@@ -274,14 +306,13 @@ ClsParmContext* WeaveMemberTranslator::get_cls_ctx(
   return ctx ? ctx->cls_context(subop) : nullptr;
 }
 
-int WeaveMemberTranslator::prepare_member_delete(
-  const OpRequestRef& op, const bufferlist& encoded, bufferlist& updated) {
-  auto* context = op ? op->get_weave_context() : nullptr;
+int WeaveMemberTranslator::decode_member_metadata(const OpRequestRef& op,
+  const bufferlist& encoded, WeaveVolumeMeta& metadata) const {
+  const auto* context = op ? op->get_weave_context() : nullptr;
   if (!context || !context->original_oid() || !context->volume_metadata()) {
     return -EINVAL;
   }
 
-  WeaveVolumeMeta metadata;
   try {
     auto p = encoded.cbegin();
     decode(metadata, p);
@@ -292,6 +323,41 @@ int WeaveMemberTranslator::prepare_member_delete(
   } catch (const buffer::error&) {
     return -EIO;
   }
+  return metadata.members.count(*context->original_oid()) ? 0 : -ENOENT;
+}
+
+int WeaveMemberTranslator::prepare_member_write(
+  const OpRequestRef& op, const bufferlist& encoded) {
+  auto metadata = std::make_shared<WeaveVolumeMeta>();
+  const int result = decode_member_metadata(op, encoded, *metadata);
+  if (result < 0) return result;
+  auto& context = op->ensure_weave_context();
+  context.reset_member_mutation();
+  // Refresh under the Volume lock, before version assertions or any sub-op.
+  context.set_volume_metadata(std::move(metadata));
+  return 0;
+}
+
+bool WeaveMemberTranslator::finish_member_write(const OpRequestRef& op,
+  version_t version, utime_t mtime, bufferlist& encoded) {
+  auto& context = op->ensure_weave_context();
+  if (context.member_deleted()) return false;
+  auto updated = std::make_shared<WeaveVolumeMeta>(*context.volume_metadata());
+  auto& member = updated->members.at(*context.original_oid());
+  member.user_version = version;
+  if (mtime != utime_t()) member.mtime = mtime;
+  encode(*updated, encoded);
+  context.set_volume_metadata(std::move(updated));
+  context.mark_member_updated();
+  return true;
+}
+
+int WeaveMemberTranslator::prepare_member_delete(
+  const OpRequestRef& op, const bufferlist& encoded, bufferlist& updated) {
+  WeaveVolumeMeta metadata;
+  const int result = decode_member_metadata(op, encoded, metadata);
+  if (result < 0) return result;
+  auto* context = op->get_weave_context();
 
   // The caller reads the projected EC attribute cache while holding the native
   // object lock. Concurrent deletes cannot overwrite each other's membership.

@@ -25,6 +25,7 @@ public:
     return volume_metadata_;
   }
   bool member_deleted() const { return member_deleted_; }
+  bool member_updated() const { return member_updated_; }
   ClsParmContext* cls_context(std::size_t subop) const {
     auto it = cls_contexts_.find(subop);
     return it == cls_contexts_.end() ? nullptr : it->second.get();
@@ -48,6 +49,11 @@ public:
     volume_metadata_ = std::move(metadata);
   }
   void mark_member_deleted() { member_deleted_ = true; }
+  void mark_member_updated() { member_updated_ = true; }
+  void reset_member_mutation() {
+    member_deleted_ = false;
+    member_updated_ = false;
+  }
 
   void save_cls_context(std::size_t subop,
                         std::unique_ptr<ClsParmContext> context) {
@@ -59,6 +65,7 @@ private:
   std::optional<std::vector<OSDOp>> client_ops_;
   std::shared_ptr<const WeaveVolumeMeta> volume_metadata_;
   bool member_deleted_ = false;
+  bool member_updated_ = false;
   std::map<std::size_t, std::unique_ptr<ClsParmContext>> cls_contexts_;
 };
 

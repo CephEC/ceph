@@ -20,6 +20,7 @@
 #include "osdc/WeaveReadSession.h"
 #include "osdc/Objecter.h"
 #include "osd/weave/detail/WeaveWriteLimits.h"
+#include "osd/weave/detail/WeaveXAttr.h"
 #include "test/unit.cc"
 
 #include <atomic>
@@ -690,6 +691,158 @@ TEST(WeaveMemberTranslator, NonfinalDeleteAndWriteCompoundsUseNativeFallback) {
   EXPECT_FALSE(request->is_weave_member_op());
   EXPECT_EQ(message->get_hobj(), member);
   EXPECT_NE(catalog.lookup(member), nullptr);
+}
+
+namespace {
+OSDOp xattr_operation(int code, const std::string& name,
+                      const std::string& value = {}) {
+  OSDOp op;
+  op.op.op = code;
+  op.op.xattr.name_len = name.size();
+  op.op.xattr.value_len = value.size();
+  op.indata.append(name);
+  op.indata.append(value);
+  return op;
+}
+
+class WeaveXattrTranslation : public ::testing::Test {
+protected:
+  TestTracker tracking;
+  WeaveCatalog catalog;
+  WeaveMemberTranslator translator{g_ceph_context, catalog};
+  const hobject_t volume = object("volume"), member = object("member"),
+                  peer = object("peer");
+  OpRequestRef op;
+
+  void SetUp() override {
+    catalog.upsert(metadata(volume, member, peer));
+    translator.activate(2, UNIT);
+  }
+  MOSDOp* request(std::vector<OSDOp> ops) {
+    auto* message = new MOSDOp(0, 1, member, spg_t(), 1,
+      CEPH_OSD_FLAG_ONDISK, CEPH_FEATURES_SUPPORTED_DEFAULT);
+    message->ops = std::move(ops);
+    op = tracking.tracker.create_request<OpRequest, Message*>(message);
+    return message;
+  }
+  bufferlist encode_metadata(const WeaveVolumeMeta& value) {
+    bufferlist encoded;
+    encode(value, encoded);
+    return encoded;
+  }
+};
+} // namespace
+
+TEST_F(WeaveXattrTranslation, SetAndRemovePreservePayloadAndRestoreClientNames) {
+  const std::string value("x\0y", 3);
+  auto* message = request({xattr_operation(CEPH_OSD_OP_SETXATTR, "tag", value),
+                           xattr_operation(CEPH_OSD_OP_RMXATTR, "old")});
+  ASSERT_TRUE(translator.supports_member_mutation(message->ops));
+  ASSERT_EQ(translator.preprocess(op), 0);
+  EXPECT_EQ(message->get_hobj(), volume);
+  EXPECT_EQ(message->ops[0].indata.to_str(), xattr_name(member, "tag") + value);
+  EXPECT_EQ(message->ops[1].indata.to_str(), xattr_name(member, "old"));
+  EXPECT_EQ(translator.client_xattr_name_length(op, 0, 999), 3u);
+  translator.finish_request(op);
+  EXPECT_EQ(message->get_hobj(), member);
+  EXPECT_EQ(message->ops[0].indata.to_str(), "tag" + value);
+  EXPECT_EQ(message->ops[1].indata.to_str(), "old");
+  ASSERT_EQ(translator.preprocess(op), 0);
+  EXPECT_EQ(message->ops[0].indata.to_str(), xattr_name(member, "tag") + value);
+}
+
+TEST_F(WeaveXattrTranslation, MalformedAttributesFailBeforeRewriting) {
+  auto* message = request({xattr_operation(CEPH_OSD_OP_SETXATTR, "tag", "v")});
+  message->ops[0].op.xattr.value_len = 100;
+  EXPECT_TRUE(translator.supports_member_mutation(message->ops));
+  EXPECT_EQ(translator.preprocess(op), -EINVAL);
+  EXPECT_EQ(message->get_hobj(), member);
+  EXPECT_FALSE(op->is_weave_member_op());
+  message->ops[0] = xattr_operation(CEPH_OSD_OP_RMXATTR, "tag");
+  message->ops[0].op.xattr.name_len = 100;
+  EXPECT_EQ(translator.preprocess(op), -EINVAL);
+}
+
+TEST_F(WeaveXattrTranslation, DataWritesAndDeleteCompoundsKeepNativeFallback) {
+  OSDOp other;
+  for (auto code : {CEPH_OSD_OP_WRITEFULL, CEPH_OSD_OP_DELETE}) {
+    other.op.op = code;
+    auto* message = request({xattr_operation(CEPH_OSD_OP_SETXATTR, "tag", "v"),
+                             other});
+    EXPECT_FALSE(translator.supports_member_mutation(message->ops));
+    EXPECT_EQ(translator.preprocess(op), -EOPNOTSUPP);
+    EXPECT_EQ(message->get_hobj(), member);
+  }
+}
+
+TEST_F(WeaveXattrTranslation, LockedPreparationRefreshesVersionBeforeAssertions) {
+  OSDOp assertion;
+  assertion.op.op = CEPH_OSD_OP_ASSERT_VER;
+  assertion.op.assert_ver.ver = 30;
+  request({assertion, xattr_operation(CEPH_OSD_OP_SETXATTR, "tag", "v")});
+  ASSERT_EQ(translator.preprocess(op), 0);
+  auto projected = *catalog.lookup(member);
+  projected.members.at(member).user_version = 30;
+  projected.members.erase(peer);
+  ASSERT_EQ(translator.prepare_member_write(op, encode_metadata(projected)), 0);
+  EXPECT_EQ(translator.logical_user_version(op, 999), 30u);
+
+  bufferlist updated;
+  ASSERT_TRUE(translator.finish_member_write(op, 31, utime_t(50, 0), updated));
+  WeaveVolumeMeta decoded;
+  auto p = updated.cbegin();
+  decode(decoded, p);
+  EXPECT_EQ(decoded.members.size(), 1u);
+  EXPECT_EQ(decoded.members.at(member).user_version, 31u);
+  EXPECT_EQ(decoded.members.at(member).mtime, utime_t(50, 0));
+  EXPECT_EQ(decoded.members.at(member).size, 100u);
+  EXPECT_EQ(catalog.lookup(member)->members.at(member).user_version, 11u);
+}
+
+TEST_F(WeaveXattrTranslation, MissingOrCorruptProjectedMetadataCannotCreateMember) {
+  request({xattr_operation(CEPH_OSD_OP_SETXATTR, "tag", "v")});
+  ASSERT_EQ(translator.preprocess(op), 0);
+  auto projected = *catalog.lookup(member);
+  projected.members.erase(member);
+  EXPECT_EQ(translator.prepare_member_write(op, encode_metadata(projected)), -ENOENT);
+  projected.volume_oid = object("wrong-volume");
+  EXPECT_EQ(translator.prepare_member_write(op, encode_metadata(projected)), -EIO);
+  bufferlist corrupt;
+  corrupt.append("broken");
+  EXPECT_EQ(translator.prepare_member_write(op, corrupt), -EIO);
+  EXPECT_FALSE(op->get_weave_context()->member_updated());
+}
+
+TEST_F(WeaveXattrTranslation, ZeroMtimeAndRetryPreserveUncommittedState) {
+  request({xattr_operation(CEPH_OSD_OP_RMXATTR, "tag")});
+  ASSERT_EQ(translator.preprocess(op), 0);
+  const auto committed = encode_metadata(*catalog.lookup(member));
+  ASSERT_EQ(translator.prepare_member_write(op, committed), 0);
+  bufferlist updated;
+  ASSERT_TRUE(translator.finish_member_write(op, 31, {}, updated));
+  EXPECT_TRUE(op->get_weave_context()->member_updated());
+  EXPECT_EQ(op->get_weave_context()->volume_metadata()->members.at(member).mtime,
+            utime_t(1, 0));
+  ASSERT_EQ(translator.prepare_member_write(op, committed), 0);
+  EXPECT_FALSE(op->get_weave_context()->member_updated());
+  EXPECT_EQ(translator.logical_user_version(op, 999), 11u);
+}
+
+TEST(WeaveCatalog, MemberUpdatesPreservePeersPinnedReadersAndDeletions) {
+  const auto volume = object("volume"), a = object("a"), b = object("b");
+  WeaveCatalog catalog;
+  catalog.upsert(metadata(volume, a, b));
+  const auto pinned = catalog.lookup(a);
+  catalog.update_member(volume, a, 30, utime_t(30, 0));
+  catalog.update_member(volume, b, 40, utime_t(40, 0));
+  catalog.update_member(volume, a, 29, utime_t(29, 0));
+  EXPECT_EQ(catalog.lookup(a)->members.at(a).user_version, 30u);
+  EXPECT_EQ(catalog.lookup(a)->members.at(b).user_version, 40u);
+  EXPECT_EQ(pinned->members.at(a).user_version, 11u);
+  catalog.remove_member(volume, a);
+  catalog.update_member(volume, a, 50, utime_t(50, 0));
+  EXPECT_EQ(catalog.lookup(a), nullptr);
+  EXPECT_EQ(catalog.lookup(b)->members.size(), 1u);
 }
 
 TEST(WeaveCatalog, RejectsOverlappingAndOutOfRangeShardAssignments) {

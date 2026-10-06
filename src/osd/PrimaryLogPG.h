@@ -42,6 +42,10 @@ class HitSet;
 struct TierAgentState;
 class OSDService;
 
+namespace ceph::weave {
+struct WeaveTransaction;
+}
+
 void intrusive_ptr_add_ref(PrimaryLogPG *pg);
 void intrusive_ptr_release(PrimaryLogPG *pg);
 uint64_t get_with_id(PrimaryLogPG *pg);
@@ -1953,6 +1957,11 @@ private:
   // live in weave, not in the native transaction engine.
   class WeavePGAdapter;
   std::unique_ptr<ceph::weave::WeavePGInterface> make_weave_pg_adapter();
+  ceph::weave::WeaveTransaction make_weave_transaction(OpContext*);
+  int prepare_weave_member_write(OpContext*);
+  void finish_weave_member_write(OpContext*);
+  int delete_weave_member(OpContext*);
+  int check_setxattr_limits(const OpContext*, const OSDOp&) const;
   std::unique_ptr<ceph::weave::WeavePGController> m_weave;
   std::unique_ptr<ceph::weave::WeaveScanSchedule> m_weave_scan;
   void schedule_next_weave_scan(bool stagger_start = false);

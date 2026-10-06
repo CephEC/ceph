@@ -287,9 +287,11 @@ sequenceDiagram
 ### 5.1 主侧翻译
 
 - `resolve_target`：身份优先取请求上下文里的原 oid，其次是 `catalog_.lookup()`；元数据存在但**列不出该成员**或几何不匹配时返回 `-EIO`，绝不回退原生路径（`WeaveMemberTranslator.cc:113-142`）。
-- 算子白名单（`:60-122`）：`READ/SPARSE_READ/SYNC_READ/STAT/GETXATTRS/ASSERT_VER` 恒可；`DELETE` 仅当它是最后一个 sub-op；`GETXATTR/CMPXATTR` 校验 key/value 落在 `indata` 内；`CALL` 需类名在 `osd_weave_data_classes` 白名单内；其余 `-EOPNOTSUPP`。
+- 算子白名单（`WeaveMemberTranslator::validate_member_ops/validate_op`）：`READ/SPARSE_READ/SYNC_READ/STAT/GETXATTRS/ASSERT_VER` 恒可；`DELETE` 仅当它是最后一个 sub-op；`GETXATTR/CMPXATTR/SETXATTR/RMXATTR` 校验 key/value 落在 `indata` 内；`CALL` 需类名在 `osd_weave_data_classes` 白名单内；属性修改与 `DELETE/CALL` 混合、或含不支持算子的请求整体走原生解包路径。
 - 重写（`:170-238`）：xattr 键加成员前缀并重建载荷；`GETXATTRS` 输入直接改成前缀；`STAT` 清空 outdata（回复时按元数据重编码）；`CALL` → `CEPH_OSD_OP_EC_CALL`，extent `0..member->size`，`ClsParmContext` 存入 `WeaveRequestContext`；`SYNC_READ` 降级为 `READ`；READ 长度夹到成员逻辑长度并打成员位（offset 保持成员坐标，EOF 亦然）。
 - 回复还原（`:309-338`）：`restore_client_reply_ops` 取回物理 ops，用客户端算子模板按位合并 `rval/outdata`；逻辑值（size/mtime/user_version/过滤后的 xattr）由 `encode_logical_stat`、`logical_user_version`、`encode_getxattrs_result` 提供（PG 侧调用点 `PrimaryLogPG.cc:6400,6670,6590`）。
+
+`SETXATTR/RMXATTR` 在无快照上下文时直接操作 Volume 内的成员属性。请求持有 Volume 的对象独占锁；`prepare_member_write` 从投影属性缓存刷新成员元数据，再执行原生 sub-op 和版本断言；`finish_member_write` 将成员的新版本、非零请求 mtime 写入同一事务的 `_volume_meta`。提交回调只向 Catalog 合并该成员的变化，保留其他成员的更新和删除。属性名的客户端长度限制按加前缀前的名字检查，物理键仍受 ObjectStore 上限约束。打包数据和磁盘格式不变。
 
 ### 5.2 重定向门控（主侧）
 

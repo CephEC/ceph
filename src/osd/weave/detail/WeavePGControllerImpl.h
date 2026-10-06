@@ -46,6 +46,11 @@ public:
   void on_commit(const object_info_t&, bool exists, const OpRequestRef&);
   void request_cleanup(unsigned live_percent, WeaveReclaimPass::Ref pass);
   int prepare_member_delete(const OpRequestRef&, WeaveTransaction&);
+  int prepare_member_write(const OpRequestRef&, WeaveTransaction&);
+  void finish_member_write(const OpRequestRef&, version_t, utime_t,
+                            WeaveTransaction&);
+  uint32_t client_xattr_name_length(const OpRequestRef&, size_t,
+                                   uint32_t fallback) const;
   void finish_reply(const OpRequestRef&, MOSDOpReply*);
   void finish_request(const OpRequestRef&);
 
@@ -138,10 +143,10 @@ private:
     const OpRequestRef&, const MOSDOp&);
   RequestDisposition accept_routed_read(OpRequestRef&);
   bool defer_while_reserved(const hobject_t& head, OpRequestRef&);
-  bool is_logical_delete(const MOSDOp&, bool snapshot,
-                         const std::shared_ptr<const WeaveVolumeMeta>&) const;
+  bool can_mutate_member(const MOSDOp&, bool snapshot,
+                          const std::shared_ptr<const WeaveVolumeMeta>&) const;
   bool needs_native_transition(const OpRequestRef&, const MOSDOp&,
-                              bool snapshot, bool logical_delete) const;
+                              bool snapshot, bool logical_mutation) const;
   std::optional<RequestDisposition> drain_shadow_before_delete(
     OpRequestRef&, const MOSDOp&, bool logical_delete, bool& needs_native);
   std::optional<RequestDisposition> defer_for_materialization(
@@ -150,6 +155,7 @@ private:
   bool can_read_during_pack(const OpRequestRef&) const;
 
   // Commit notifications.
+  bool apply_member_commit(const object_info_t&, const OpRequestRef&);
   void apply_member_deletion(const object_info_t&, const hobject_t& member);
   void refresh_candidate(const object_info_t&, bool exists);
 

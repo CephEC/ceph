@@ -1028,6 +1028,174 @@ TEST(WeavePGController, ConcurrentDeletesReadProjectedMetadataAndPublishOnCommit
   tracker.on_shutdown();
 }
 
+class WeaveMemberXattrs : public WeaveDurableRecovery {
+protected:
+  bufferlist projected;
+
+  void SetUp() override {
+    WeaveDurableRecovery::SetUp();
+    pack();
+    drain();
+    projected = pg_interface->objects[v].attrs.at(kVolumeMetaAttr);
+  }
+
+  OpRequestRef xattr_request(const hobject_t& id, int opcode = CEPH_OSD_OP_SETXATTR,
+                            int flags = 0) {
+    auto op = request(id, opcode, false, flags);
+    auto* message = static_cast<MOSDOp*>(op->get_nonconst_req());
+    auto& entry = message->ops.front();
+    entry.op.xattr.name_len = 3;
+    entry.indata.append("tag");
+    if (opcode == CEPH_OSD_OP_SETXATTR) {
+      entry.op.xattr.value_len = 3;
+      entry.indata.append("new");
+    }
+    EXPECT_EQ(op->maybe_init_op_info(OSDMap()), 0);
+    return op;
+  }
+
+  WeaveTransaction transaction() {
+    return {
+      [this](const char* key, bufferlist& out) {
+        EXPECT_STREQ(key, kVolumeMetaXattr);
+        out = projected;
+        return 0;
+      },
+      [this](const char* key, const bufferlist& value) {
+        EXPECT_STREQ(key, kVolumeMetaXattr);
+        projected = value;
+      }};
+  }
+
+  void stage(const OpRequestRef& op, version_t version) {
+    auto txn = transaction();
+    ASSERT_EQ(controller->prepare_member_write(op, txn), 0);
+    controller->finish_member_write(op, version, utime_t(500, 0), txn);
+  }
+
+  uint64_t published_version(const hobject_t& id) {
+    auto stat = request(id, CEPH_OSD_OP_STAT);
+    EXPECT_EQ(controller->preprocess_client_op(stat), RequestDisposition::kTranslated);
+    const auto version = controller->logical_user_version(stat, 0);
+    controller->finish_request(stat);
+    return version;
+  }
+
+  WeaveVolumeMeta projected_metadata() const {
+    WeaveVolumeMeta metadata;
+    auto p = projected.cbegin();
+    decode(metadata, p);
+    return metadata;
+  }
+};
+
+TEST_F(WeaveMemberXattrs, SetAndRemoveStayPackedWithoutConversionIO) {
+  const auto acquired = pg_interface->acquired;
+  for (auto opcode : {CEPH_OSD_OP_SETXATTR, CEPH_OSD_OP_RMXATTR}) {
+    auto op = xattr_request(a, opcode);
+    ASSERT_EQ(controller->preprocess_client_op(op), RequestDisposition::kTranslated);
+    EXPECT_EQ(op->get_req<MOSDOp>()->get_hobj(), v);
+    EXPECT_TRUE(controller->is_logical_member(a));
+    EXPECT_TRUE(pg_interface->io.empty());
+    EXPECT_TRUE(pg_interface->cpu.empty());
+    controller->finish_request(op);
+  }
+  EXPECT_EQ(pg_interface->acquired, acquired);
+}
+
+TEST_F(WeaveMemberXattrs, MemberMetadataPublishesOnCommitAndSurvivesRestart) {
+  auto op = xattr_request(a);
+  ASSERT_EQ(controller->preprocess_client_op(op), RequestDisposition::kTranslated);
+  stage(op, 30);
+  EXPECT_EQ(published_version(a), 7u);
+  const auto metadata = projected_metadata();
+  EXPECT_EQ(metadata.members.at(a).user_version, 30u);
+  EXPECT_EQ(metadata.members.at(a).mtime, utime_t(500, 0));
+  EXPECT_EQ(metadata.members.at(b).user_version, 7u);
+  EXPECT_EQ(metadata.members.at(b).mtime, utime_t(123, 456));
+
+  // Model durable transaction completion, separately from callback delivery.
+  pg_interface->objects[v].attrs[kVolumeMetaAttr] = projected;
+  controller->on_commit(pg_interface->inspect(v).info, true, op);
+  EXPECT_EQ(published_version(a), 30u);
+  restart(false);
+  EXPECT_EQ(published_version(a), 30u);
+  EXPECT_EQ(published_version(b), 7u);
+  EXPECT_EQ(pg_interface->objects[v].data.to_str(), "AAAABBBB");
+}
+
+TEST_F(WeaveMemberXattrs, QueuedWritesRefreshMetadataAndCommitOnlyTheirOwnMember) {
+  auto first = xattr_request(a);
+  auto second = xattr_request(b, CEPH_OSD_OP_RMXATTR);
+  ASSERT_EQ(controller->preprocess_client_op(first), RequestDisposition::kTranslated);
+  ASSERT_EQ(controller->preprocess_client_op(second), RequestDisposition::kTranslated);
+  stage(first, 30);
+  stage(second, 40);
+  const auto metadata = projected_metadata();
+  EXPECT_EQ(metadata.members.at(a).user_version, 30u);
+  EXPECT_EQ(metadata.members.at(b).user_version, 40u);
+
+  // Even a late callback must merge its delta rather than an older snapshot.
+  controller->on_commit(pg_interface->inspect(v).info, true, second);
+  EXPECT_EQ(published_version(a), 7u);
+  EXPECT_EQ(published_version(b), 40u);
+  controller->on_commit(pg_interface->inspect(v).info, true, first);
+  EXPECT_EQ(published_version(a), 30u);
+  EXPECT_EQ(published_version(b), 40u);
+}
+
+TEST_F(WeaveMemberXattrs, RestartDiscardsUncommittedMetadata) {
+  auto op = xattr_request(a);
+  ASSERT_EQ(controller->preprocess_client_op(op), RequestDisposition::kTranslated);
+  stage(op, 30);
+  restart(false);
+  EXPECT_EQ(published_version(a), 7u);
+  EXPECT_EQ(published_version(b), 7u);
+}
+
+TEST_F(WeaveMemberXattrs, DurableMetadataRecoversWithoutCompletionCallback) {
+  auto op = xattr_request(a);
+  ASSERT_EQ(controller->preprocess_client_op(op), RequestDisposition::kTranslated);
+  stage(op, 30);
+  pg_interface->objects[v].attrs[kVolumeMetaAttr] = projected;
+  restart(false);
+  EXPECT_EQ(published_version(a), 30u);
+
+  auto write = request(a, CEPH_OSD_OP_WRITEFULL);
+  ASSERT_EQ(controller->preprocess_client_op(write), RequestDisposition::kDeferred);
+  drain();
+  EXPECT_FALSE(controller->is_logical_member(a));
+  EXPECT_EQ(pg_interface->objects[a].state.info.user_version, 30u);
+  EXPECT_EQ(pg_interface->objects[a].state.info.mtime, utime_t(500, 0));
+  EXPECT_EQ(pg_interface->objects[a].state.snap_sequence, 3u);
+}
+
+TEST_F(WeaveMemberXattrs, PoolSnapshotsKeepNativeCopyOnWrite) {
+  pg_interface->pool_snap_sequence = 9;
+  auto op = xattr_request(a);
+  EXPECT_EQ(controller->preprocess_client_op(op), RequestDisposition::kDeferred);
+  EXPECT_FALSE(op->is_weave_member_op());
+  EXPECT_FALSE(pg_interface->io.empty());
+  drain();
+  EXPECT_EQ(controller->preprocess_client_op(op), RequestDisposition::kNative);
+}
+
+TEST_F(WeaveMemberXattrs, ClientSnapshotsKeepNativeCopyOnWrite) {
+  auto op = xattr_request(a);
+  static_cast<MOSDOp*>(op->get_nonconst_req())->set_snap_seq(9);
+  EXPECT_EQ(controller->preprocess_client_op(op), RequestDisposition::kDeferred);
+  EXPECT_FALSE(op->is_weave_member_op());
+  drain();
+  EXPECT_EQ(controller->preprocess_client_op(op), RequestDisposition::kNative);
+}
+
+TEST_F(WeaveMemberXattrs, MutationsCannotSkipTheVolumeLock) {
+  auto op = xattr_request(a, CEPH_OSD_OP_SETXATTR, CEPH_OSD_FLAG_SKIPRWLOCKS);
+  EXPECT_EQ(controller->preprocess_client_op(op), RequestDisposition::kDeferred);
+  EXPECT_FALSE(op->is_weave_member_op());
+  drain();
+}
+
 TEST_F(WeaveDurableRecovery, MaterializationRetryIsIndependentOfScansAndCleanup) {
   pack(); drain();
   pg_interface->allow_acquire = false;

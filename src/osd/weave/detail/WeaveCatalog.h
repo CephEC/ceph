@@ -53,6 +53,8 @@ public:
     std::optional<hobject_t> &next) const;
 
   void upsert(const WeaveVolumeMeta &info);
+  void update_member(const hobject_t& volume_oid, const hobject_t& member_oid,
+                     version_t user_version, utime_t mtime);
   void remove_member(const hobject_t &volume_oid, const hobject_t &member_oid);
   void remove_volume(const hobject_t &volume_oid);
   // The source identity must match the encoded Volume; decode each row once.

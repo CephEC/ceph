@@ -57,6 +57,21 @@ void WeavePGController::finish_request(const OpRequestRef& op) {
   impl_->finish_request(op);
 }
 
+int WeavePGController::prepare_member_write(const OpRequestRef& op,
+                                             WeaveTransaction& txn) {
+  return impl_->prepare_member_write(op, txn);
+}
+
+void WeavePGController::finish_member_write(const OpRequestRef& op,
+  version_t version, utime_t mtime, WeaveTransaction& txn) {
+  impl_->finish_member_write(op, version, mtime, txn);
+}
+
+uint32_t WeavePGController::client_xattr_name_length(const OpRequestRef& op,
+  size_t subop, uint32_t fallback) const {
+  return impl_->client_xattr_name_length(op, subop, fallback);
+}
+
 ClsParmContext* WeavePGController::get_cls_ctx(const OpRequestRef& op,
                                                size_t n) const {
   return impl_->get_cls_ctx(op, n);

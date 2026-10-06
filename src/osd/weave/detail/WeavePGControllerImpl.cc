@@ -24,6 +24,11 @@ void sort_and_deduplicate(std::vector<hobject_t>& entries)
   entries.erase(std::unique(entries.begin(), entries.end()), entries.end());
 }
 
+bool is_member_write(const OpRequestRef& op)
+{
+  return op && op->is_weave_member_op() && op->may_write();
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -685,33 +690,30 @@ bool WeavePGController::Impl::defer_while_reserved(const hobject_t& head,
   return true;
 }
 
-// A logical DELETE needs no snapshot context of its own; it only shrinks the
-// mapping. Everything else must go through the native object first.
-bool WeavePGController::Impl::is_logical_delete(
+// Member metadata can change in place only when native snapshot handling is
+// unnecessary. Data mutations still restore the native objects first.
+bool WeavePGController::Impl::can_mutate_member(
   const MOSDOp& message, bool snapshot,
   const std::shared_ptr<const WeaveVolumeMeta>& metadata) const
 {
-  // A snapshot context, on the request or in the pool, means the native
-  // copy-on-write path has to run before the mapping shrinks.
+  // Pool and client snapshot contexts both require native copy-on-write.
   if (!metadata || snapshot || pg_interface_->snap_sequence() != 0 ||
-      message.get_snap_seq() != 0) {
+      message.get_snap_seq() != 0 ||
+      (message.get_flags() & (CEPH_OSD_FLAG_SKIPRWLOCKS | CEPH_OSD_FLAG_FLUSH))) {
     return false;
   }
 
-  // Only a trailing DELETE may update the mapping directly.
-  return !message.ops.empty() &&
-    message.ops.back().op.op == CEPH_OSD_OP_DELETE &&
-    translator_.supports_member_ops(message.ops);
+  return translator_.supports_member_mutation(message.ops);
 }
 
 // Materialize snapshots using the original head's snapshot sequence. Native
 // clone lookup and subsequent copy-on-write then preserve snapshot isolation.
 bool WeavePGController::Impl::needs_native_transition(
   const OpRequestRef& op, const MOSDOp& message, bool snapshot,
-  bool logical_delete) const
+  bool logical_mutation) const
 {
   if (snapshot) return true;
-  if (op->may_write()) return !logical_delete;
+  if (op->may_write()) return !logical_mutation;
   if (op->may_cache()) return true;
   // Operations Weave cannot translate keep their native meaning.
   return !translator_.supports_member_ops(message.ops);
@@ -787,9 +789,11 @@ RequestDisposition WeavePGController::Impl::preprocess_client_op(
   if (defer_while_reserved(head, op)) return RequestDisposition::kDeferred;
 
   auto metadata = catalog_.lookup(head);
-  const bool logical_delete = is_logical_delete(*message, snapshot, metadata);
+  const bool logical_mutation = can_mutate_member(*message, snapshot, metadata);
+  const bool logical_delete = logical_mutation &&
+    message->ops.back().op.op == CEPH_OSD_OP_DELETE;
   bool needs_native =
-    needs_native_transition(op, *message, snapshot, logical_delete);
+    needs_native_transition(op, *message, snapshot, logical_mutation);
 
   // Deletions and native-path transitions wait for the mapping to settle
   // before anything is translated.
@@ -825,7 +829,7 @@ std::optional<snapid_t> WeavePGController::Impl::internal_copy_snap_sequence(
 }
 
 // ---------------------------------------------------------------------------
-// Commit notifications and member deletion
+// Commit notifications and member mutations
 // ---------------------------------------------------------------------------
 
 void WeavePGController::Impl::on_commit(const object_info_t& oi, bool exists,
@@ -838,13 +842,7 @@ void WeavePGController::Impl::on_commit(const object_info_t& oi, bool exists,
   }
   if (oi.soid.snap != CEPH_NOSNAP) return;
 
-  // A committed member deletion shrinks the mapping; nothing else about the
-  // object changed.
-  const auto* context = op ? op->get_weave_context() : nullptr;
-  if (context && context->member_deleted()) {
-    apply_member_deletion(oi, *context->original_oid());
-    return;
-  }
+  if (apply_member_commit(oi, op)) return;
 
   // A Volume object never becomes a candidate. Volumes only ever exist in the
   // private namespace (new_volume is their only creator), so this covers the
@@ -853,6 +851,23 @@ void WeavePGController::Impl::on_commit(const object_info_t& oi, bool exists,
   if (is_private_object(oi.soid)) return;
 
   refresh_candidate(oi, exists);
+}
+
+bool WeavePGController::Impl::apply_member_commit(const object_info_t& oi,
+                                                 const OpRequestRef& op)
+{
+  const auto* context = op ? op->get_weave_context() : nullptr;
+  if (!context) return false;
+  if (context->member_deleted()) {
+    apply_member_deletion(oi, *context->original_oid());
+    return true;
+  }
+  if (!context->member_updated()) return false;
+  const auto& member =
+    context->volume_metadata()->members.at(*context->original_oid());
+  catalog_.update_member(oi.soid, *context->original_oid(),
+                         member.user_version, member.mtime);
+  return true;
 }
 
 // Apply only this deletion, not an older full snapshot: later committed
@@ -892,9 +907,35 @@ int WeavePGController::Impl::prepare_member_delete(const OpRequestRef& op,
   return 0;
 }
 
+int WeavePGController::Impl::prepare_member_write(const OpRequestRef& op,
+                                                 WeaveTransaction& txn)
+{
+  if (!is_member_write(op)) return 0;
+  bufferlist encoded;
+  const int result = txn.read_attribute(kVolumeMetaXattr, encoded);
+  if (result < 0) return result;
+  return translator_.prepare_member_write(op, encoded);
+}
+
+void WeavePGController::Impl::finish_member_write(const OpRequestRef& op,
+  version_t version, utime_t mtime, WeaveTransaction& txn)
+{
+  if (!is_member_write(op)) return;
+  bufferlist updated;
+  if (translator_.finish_member_write(op, version, mtime, updated)) {
+    txn.set_attribute(kVolumeMetaXattr, updated);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Native query surface
 // ---------------------------------------------------------------------------
+
+uint32_t WeavePGController::Impl::client_xattr_name_length(
+  const OpRequestRef& op, size_t subop, uint32_t fallback) const
+{
+  return translator_.client_xattr_name_length(op, subop, fallback);
+}
 
 void WeavePGController::Impl::finish_reply(const OpRequestRef& op,
                                            MOSDOpReply* reply)

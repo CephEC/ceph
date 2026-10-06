@@ -1691,7 +1691,7 @@ bool PrimaryLogPG::get_rw_locks(bool write_ordered, OpContext *ctx)
    * this (read or write) if we get the first we will be guaranteed
    * to get the second.
    */
-  // A member DELETE reads and replaces shared Volume metadata. EC attribute
+  // Member mutations read and replace shared Volume metadata. EC attribute
   // projection may wait behind RMW reads, so serialize it through commit.
   if (write_ordered &&
       (ctx->op->may_read() || ctx->op->is_weave_member_op())) {
@@ -7191,15 +7191,7 @@ int PrimaryLogPG::do_osd_ops(OpContext *ctx, vector<OSDOp>& ops)
       tracepoint(osd, do_osd_op_pre_delete, soid.oid.name.c_str(), soid.snap.val);
       {
         if (m_weave && ctx->op && ctx->op->is_weave_member_op()) {
-          ceph::weave::WeaveTransaction txn{
-            [this, ctx](const char* name, bufferlist& encoded) {
-              return getattr_maybe_cache(ctx->obc, name, &encoded);
-            },
-            [t, &soid](const char* name, const bufferlist& updated) {
-              auto value = updated;
-              t->setattr(soid, name, value);
-            }};
-          result = m_weave->prepare_member_delete(ctx->op, txn);
+          result = delete_weave_member(ctx);
           if (result == 0) ctx->delta_stats.num_wr++;
 
         } else {
@@ -7743,23 +7735,8 @@ int PrimaryLogPG::do_osd_ops(OpContext *ctx, vector<OSDOp>& ops)
       ++ctx->num_write;
       result = 0;
       {
-	const bool background_io =
-	  ctx->op && ctx->op->is_background_weave_io();
-	// These limits govern client-visible xattrs, not authenticated internal
-	// member prefixes and Volume metadata. The store still enforces its format.
-	if (!background_io && cct->_conf->osd_max_attr_size > 0 &&
-	    op.xattr.value_len > cct->_conf->osd_max_attr_size) {
-	  tracepoint(osd, do_osd_op_pre_setxattr, soid.oid.name.c_str(), soid.snap.val, "???");
-	  result = -EFBIG;
-	  break;
-	}
-	if (!background_io &&
-	    op.xattr.name_len >
-	      std::min<uint64_t>(osd->store->get_max_attr_name_length(),
-				cct->_conf->osd_max_attr_name_len)) {
-	  result = -ENAMETOOLONG;
-	  break;
-	}
+	result = check_setxattr_limits(ctx, osd_op);
+	if (result < 0) break;
 	maybe_create_new_object(ctx);
 	string aname;
 	bp.copy(op.xattr.name_len, aname);
@@ -9133,7 +9110,8 @@ int PrimaryLogPG::prepare_transaction(OpContext *ctx)
   }
 
   // prepare the actual mutation
-  int result = do_osd_ops(ctx, *ctx->ops);
+  int result = prepare_weave_member_write(ctx);
+  if (result >= 0) result = do_osd_ops(ctx, *ctx->ops);
   if (result < 0) {
     if (ctx->op->may_write() &&
 	get_osdmap()->require_osd_release >= ceph_release_t::kraken) {
@@ -9244,6 +9222,8 @@ void PrimaryLogPG::finish_ctx(OpContext *ctx, int log_op_type, int result)
     } else {
       dout(10) << " mtime unchanged at " << ctx->new_obs.oi.mtime << dendl;
     }
+
+    finish_weave_member_write(ctx);
 
     // object_info_t
     map <string, bufferlist, less<>> attrs;
