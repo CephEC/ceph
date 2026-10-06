@@ -1365,9 +1365,12 @@ options:
   - runtime
 - name: osd_weave_cleanup_time
   desc: Daily UTC time for background sparse Weave Volume cleanup
-  long_desc: Strict HH:MM UTC. Empty disables automatic cleanup but not the
-    weave cleanup admin command. Enabling or changing this time schedules
-    the next future occurrence, without catching up a missed time.
+  long_desc: Strict HH:MM UTC. Each active primary PG schedules its own cleanup
+    with up to five seconds of jitter. Empty disables automatic cleanup but not
+    the weave cleanup admin command. Activation or a time change schedules the
+    next future occurrence without catching up a missed time. A running cleanup
+    is not interrupted; a PG already cleaning skips duplicate requests. The next
+    daily deadline is independent of completion time.
   type: str
   level: advanced
   flags:

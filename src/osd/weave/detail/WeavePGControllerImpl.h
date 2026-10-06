@@ -44,7 +44,7 @@ public:
 
   // Native callbacks.
   void on_commit(const object_info_t&, bool exists, const OpRequestRef&);
-  void request_cleanup(unsigned live_percent, WeaveReclaimPass::Ref pass);
+  void request_cleanup(unsigned live_percent);
   int prepare_member_delete(const OpRequestRef&, WeaveTransaction&);
   int prepare_member_write(const OpRequestRef&, WeaveTransaction&);
   void finish_member_write(const OpRequestRef&, version_t, utime_t,
@@ -82,7 +82,6 @@ private:
     unsigned live_percent;
     std::vector<std::shared_ptr<const WeaveVolumeMeta>> volumes;
     size_t next = 0;
-    WeaveReclaimPass::Ref pass;
   };
 
   // Lifecycle.

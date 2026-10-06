@@ -63,6 +63,14 @@ void PGWeaveScan::run(OSD*, OSDShard*, PGRef& pg, ThreadPool::TPHandle&)
   pg->unlock();
 }
 
+void PGWeaveCleanup::run(OSD*, OSDShard*, PGRef& pg, ThreadPool::TPHandle&)
+{
+  if ((!ticket || ticket->valid) && pg->get_pool().info.is_erasure()) {
+    static_cast<PrimaryLogPG*>(pg.get())->run_weave_cleanup(epoch_queued, ticket);
+  }
+  pg->unlock();
+}
+
 void PGScrub::run(OSD* osd, OSDShard* sdata, PGRef& pg, ThreadPool::TPHandle& handle)
 {
   pg->scrub(epoch_queued, handle);

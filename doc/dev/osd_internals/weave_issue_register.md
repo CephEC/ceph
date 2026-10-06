@@ -275,13 +275,13 @@ data-class 在 OSD 进程内执行。Parquet 已限制请求大小、谓词复�
 
 **状态：模型复现及静态确认／未实现；不是异步返回本身的错误。**
 
-清理命令只返回 `accepted`／`already_running`，后台完成通知不携带成功／失败统计；没有持久或可查询的清理轮次结果，无法直接查询处理了多少卷、失败原因、剩余任务及实际释放空间。现有日志和通用 PG 统计可辅助排查，但没有替代这些专用信息。
+清理命令只返回 `accepted`，表示已向各 PG 投递请求；PG 内清理不汇总成功／失败统计；没有持久或可查询的清理轮次结果，无法直接查询处理了多少卷、失败原因、剩余任务及实际释放空间。现有日志和通用 PG 统计可辅助排查，但没有替代这些专用信息。
 
 2026-09-16 模型向清理过程的 Volume 读取注入 EIO：清理游标在转换启动时已经前移，随后仍调用不带结果的完成回调，而 Volume 和成员映射均保留。失败卷没有本轮重试或失败记录；这不是返回了“清理成功”，而是接口无法表达本轮未完成回收的事实。
 
 **例子：**管理员收到“已接受清理”，过一段时间空间没有下降，却无法通过该任务接口分辨是没有符合阈值的卷、等待资源，还是某个卷清理失败。
 
-代码：[OSD.cc](../../../src/osd/OSD.cc) 的 `weave cleanup`、`snapshot_weave_reclaim`；[WeaveService.cc](../../../src/osd/weave/WeaveService.cc) 的 `ReclaimPass`；Controller 的 `Cleanup`／`finish_cleanup`。
+代码：[OSD.cc](../../../src/osd/OSD.cc) 的 `weave cleanup`、`request_weave_cleanup`；[PrimaryLogPG.cc](../../../src/osd/PrimaryLogPG.cc) 的 `run_weave_cleanup`；Controller 的 `Cleanup`／`finish_cleanup`。
 
 **待设计方案：**增加任务 ID、状态查询、分原因计数、最后错误和完成时间；空间指标明确逻辑字节与包含 EC 冗余／填充的物理字节口径。诊断信息不能以“命令已接受”冒充回收成功。
 

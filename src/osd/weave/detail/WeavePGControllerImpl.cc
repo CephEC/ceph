@@ -308,12 +308,10 @@ bool WeavePGController::Impl::volume_needs_reclaim(
 
 void WeavePGController::Impl::finish_cleanup()
 {
-  // Also releases this PG's reference to the OSD-wide reclaim pass.
   cleanup_.reset();
 }
 
-void WeavePGController::Impl::request_cleanup(
-  unsigned live_percent, WeaveReclaimPass::Ref pass)
+void WeavePGController::Impl::request_cleanup(unsigned live_percent)
 {
   if (!enabled_ || !pg_interface_->primary() || !pg_interface_->active() ||
       !pg_interface_->clean() || cleanup_) {
@@ -327,8 +325,7 @@ void WeavePGController::Impl::request_cleanup(
 
   // Snapshot the Volumes once; every later step revalidates them against the
   // live catalog before acting.
-  cleanup_.emplace(Cleanup{live_percent, catalog_.list_volumes(), 0,
-                           std::move(pass)});
+  cleanup_.emplace(Cleanup{live_percent, catalog_.list_volumes()});
   // Reclaim empty containers before allocating copies of surviving members.
   std::partition(cleanup_->volumes.begin(), cleanup_->volumes.end(),
     [](const auto& metadata) { return metadata->members.empty(); });

@@ -36,9 +36,8 @@ void WeavePGController::on_commit(const object_info_t& info, bool exists,
   impl_->on_commit(info, exists, op);
 }
 
-void WeavePGController::request_cleanup(unsigned percent,
-                                        WeaveReclaimPass::Ref pass) {
-  impl_->request_cleanup(percent, std::move(pass));
+void WeavePGController::request_cleanup(unsigned live_percent) {
+  impl_->request_cleanup(live_percent);
 }
 
 int WeavePGController::prepare_member_delete(const OpRequestRef& op,

@@ -15,7 +15,7 @@
 | 客户端接入 | `src/osdc/WeaveReadSession.h`、`src/osdc/Objecter.{h,cc}` |
 | 存储层 | `src/os/AttrMirror.{h,cc}`、`src/os/bluestore/BlueStore.cc`（`V` 前缀） |
 | 线上 | `MOSDOp`/`MOSDOpReply` v10 + `WEAVE_READ_REDIRECT`（bit 38） |
-| 测试 | `src/test/weave/*`（3 个单测 TU + 静态门禁 + 2 个集成客户端 + 4 个集群脚本） |
+| 测试 | `src/test/weave/*`（5 个单测 TU + 静态门禁 + 2 个集成客户端 + 4 个集群脚本） |
 
 ## 1. 分层与文件职责
 
@@ -31,10 +31,12 @@ graph TB
     I --> J[WeaveConversionJob<br/>pack/unpack 状态机]
     PIF[WeavePGInterface<br/>PG 状态 / I/O / 调度接口]
     H[PrimaryLogPG::WeavePGAdapter<br/>PG 指针只在这里] -. 实现 .-> PIF
+    CS[WeaveCleanupSchedule<br/>每日 UTC 定时与 ticket] --> Q[PGWeaveCleanup<br/>PG 调度队列]
+    Q --> C
   end
   subgraph OSD 级
-    S[WeaveService<br/>租约/调度/回收单飞] --> SC[WeaveWorker 工作线程]
-    S --> RT[WeaveReclaimTimer HH:MM UTC]
+    S[WeaveService<br/>共享名额/CPU 任务/重试] --> SC[WeaveWorker 工作线程]
+    RT[共享墙钟定时器] --> CS
   end
   subgraph 存储
     P[PGBackend::load_attr_mirror] --> OS[ObjectStore::load_attr_mirror]
@@ -59,8 +61,9 @@ graph TB
 | `detail/WeaveXAttr.h` | 54 | 属性名、私有 namespace、xattr 前缀与载荷重建 |
 | `detail/WeaveCandidateIndex.{h,cc}` | 90/212 | 有界候选集 + 选组算法 |
 | `detail/WeaveWorker.{h,cc}` | — | 每 OSD 单工作线程：按用途分开的转换重试 + CPU 工作 + 租约槽 |
-| `WeaveService.{h,cc}` | — | 每 OSD 服务：回收单飞、租约、转换重试 |
-| `WeaveScanSchedule.h` | — | 每 PG 的候选检查定时、待执行任务去重与取消 |
+| `WeaveService.{h,cc}` | — | 每 OSD 服务：共享转换名额、CPU 任务与转换重试 |
+| `WeavePGTaskSchedule.h` | — | 每 PG 定时事件的入队、防重与取消；扫描使用单调时钟 |
+| `WeaveCleanupSchedule.h/.cc` | — | 每 PG 每日 UTC 清理调度，封装日历计算与墙钟事件 |
 | `detail/WeaveReclaimTimer.h` | 88 | 严格 `HH:MM` UTC 每日触发，含跨日/回拨高水位 |
 | `WeaveECAdapter.{h,cc}` | 66/188 | EC 后端适配：成员 extent 换算、`decode_member`、data-class 执行 |
 | `WeaveReadRoute.h` | 39 | 线上路由结构 |
@@ -260,8 +263,9 @@ I/O 完成分两层：Adapter 的 `make_io_completion()` 用 `C_OnFinisher` 将�
 
 ### 4.3 回收（reclaim）
 
-- 入口：`OSD::tick` 的每日定时器（`WeaveReclaimTimer.h`，严格 `HH:MM` UTC、跨日折叠、回拨不重放，`OSD::tick` `OSD.cc:6129`）与手工命令 `weave cleanup`（`OSD.cc:2544-2557`，注册于 `:3918`）。
-- 单飞：`WeaveService` 用弱引用观察 `WeaveReclaimPass`，排队的 dispatcher 和各 PG 的 `Cleanup` 持有 `WeaveReclaimPass::Ref`。最后一个持有者释放引用即结束本轮；拒绝、取消或关闭时丢弃任务也会释放引用，无需空完成回调。一轮未结束第二次请求返回 `already_running`；`snapshot()` 在 OSD 锁下取 dispatcher，随后逐个 PG 在自己的 PG 锁下执行（`WeaveService::Impl::launch_reclaim`、`OSD::snapshot_weave_reclaim`、`WeavePGController::Impl::finish_cleanup`）。
+- 自动入口：每个启用 Weave 的主 PG 激活时注册 `WeaveCleanupSchedule`，按 `osd_weave_cleanup_time` 的每日 UTC 时刻加 0～5 秒抖动，使用 OSD 共享的 `weave_cleanup_timer`。定时回调只投递 `PGWeaveCleanup`，由 `op_shardedwq` 的 `background_best_effort` 队列在 PG 锁内执行。启动清理前已安排下一次每日事件，结束时间不改变次日时刻；`OSD::tick` 不再分发清理。
+- 生命周期：角色切换、关闭和销毁使旧 ticket 失效；激活及时间配置变化按下一次未来时刻重新安排，不补跑已错过的时刻。清空时间仅取消自动触发，不中断已经开始的清理。日历记录已消费的 UTC 日期，避免同一 PG 因回拨或配置修改重放该日期。
+- 手工入口：`weave cleanup` 调用 `OSD::request_weave_cleanup()`，收集 PG ID 后投递同一类 PG 事件；无需 Worker 遍历 PG 或保留全部 PG 引用。命令返回 `accepted`，表示已投递，不表示各 PG 已开始或完成。防重由每个 PG 的 `cleanup_` 独立负责，不再有 OSD 整轮 `already_running` 状态。手工请求不改变每日定时计划。
 - PG 内：请求时对 `catalog_.list_volumes()` 取快照，**空卷排前**（先回收容器再搬数据），每步对活 Catalog 复核；`volume_needs_reclaim`：`members * 100 <= data_shards * live_percent`（`WeavePGControllerImpl.cc:313-375`）。
 - `start_deaggregation`：几何不匹配 → `-EIO` 并 `fail_waiters`；Volume 缺失 → `-ENOENT`；Volume busy 或无租约 → 下次唤醒重试（`:377-409`）。
 
@@ -375,7 +379,7 @@ sequenceDiagram
 | 语义查询 | 逻辑 STAT（`:6400`）、getxattrs 过滤（`:6590`）、`logical_user_version`（`:6670,9336`）、`internal_copy_version`（`:9197`）、`internal_copy_snap_sequence`（`:4295`）、`get_cls_ctx`（`:6245`）、`translate_native_class_ops`（`:6142`） |
 | DELETE | `prepare_member_delete` + `WeaveTransaction`（`:7162-7172`） |
 | 副本读准入 | `do_op` 允许带 `weave_read_route` 或 `BALANCE_READS/LOCALIZE_READS` 的只读落到非 primary（`:2129-2137`） |
-| OSD 级 | `OSDService::weave_service`、`shutdown`、`tick`（每日回收检查）、回收时间与候选检查间隔/开关的配置观察、命令 |
+| OSD 级 | `OSDService::weave_service`、共享每日定时器、`shutdown`、回收时间与候选检查间隔/开关的配置观察、手动清理事件分发 |
 | 客户端 | `op_target_t::weave_read`（`Objecter.h:1803`）、`_calc_target`（`Objecter.cc:2915,2997`）、`_prepare_osd_op`（`:3221`）、回复处理（`:3457`）、reset（`:4504`） |
 
 ## 9. 配置项
@@ -403,7 +407,7 @@ sequenceDiagram
 
 | 目标 | 内容 |
 |---|---|
-| `unittest_weave`（`src/test/osd/CMakeLists.txt:127-139`） | 3 个 TU：`test_weave.cc`（候选/目录/适配器/翻译/调度/ReadSession/线上协商）、`test_weave_conversion.cc`（FakeWeavePG 在 `:22` 实现整个 `WeavePGInterface`，手动推进 I/O 与 CPU 阶段；`TEST_P(WeaveDurableRecovery, ...)` 以 `Range(0,14)` 参数化提交边界矩阵）、`test_weave_reclaim_timer.cc` |
+| `unittest_weave`（`src/test/osd/CMakeLists.txt:127-139`） | 5 个 TU：`test_weave.cc`（候选/目录/适配器/翻译/调度/ReadSession/线上协商）、`test_weave_conversion.cc`（FakeWeavePG 在 `:22` 实现整个 `WeavePGInterface`，手动推进 I/O 与 CPU 阶段；`TEST_P(WeaveDurableRecovery, ...)` 以 `Range(0,14)` 参数化提交边界矩阵）、`test_weave_scan_schedule.cc`、`test_weave_cleanup_schedule.cc`、`test_weave_reclaim_timer.cc` |
 | `weave_boundaries`（ctest） | `check_boundaries.py` 静态门禁：原生代码不得 include `weave/detail/*`、不得 friend weave 类、公开 weave 头不得 include detail、三个核心 TU 不得依赖原生 PG/OSD/Objecter 头 |
 | `ceph_test_weave_compound` / `ceph_test_weave_regressions` | librados 集成客户端，需隔离运行中的 EC 集群 |
 | `durable_recovery.sh` | 6 OSD BlueStore 4+2、单 PG：按 `osd_weave_debug_crash_point` 崩溃、切 primary、校验快照与全重启 |
@@ -432,7 +436,7 @@ bash src/test/weave/concurrent_pack_reads.sh /root/ceph/build /tmp/weave-pack-re
 | D5 必要物化资源 | `start_deaggregation` 遇 Volume busy 或无租约即返回；`submit_member_write`/`submit_volume_remove` 对所有负返回一律 `retry()`，无错误分类与空间准入 | `:377-409`、`WeaveConversionJob.cc:305-340` |
 | D7 下推资源预算 | `execute_data_class` 在 OSD 进程内直接执行插件，无独立内存/时限预算 | `WeaveECAdapter.cc:30-59` |
 | D6 失败打包记录增长 | 随 D1 修复移除内存 `unpublished_or_retired_` 集合，改由磁盘映射裁决 | `:65-101` |
-| D8 清理无结果 | `weave cleanup` 只回 `accepted`/`already_running`，轮次引用不携带统计 | `OSD.cc:2544-2557`、`WeaveService.cc:58-78` |
+| D8 清理无结果 | `weave cleanup` 只回 `accepted`，PG 清理不汇总统计 | `OSD::request_weave_cleanup`、Controller 的 `Cleanup` |
 
 文档层另有大量集群验收声明（单测数量、22 个崩溃点、4+2 真机场景、收益对照等，见 `weave_d1_recovery.md`、`weave_pack_reads.md`、`weave_issue_register.md`、`weave_benefit_evaluation.md`）。**这些是文档声明，本文未复跑，也不作为代码事实引用。**
 

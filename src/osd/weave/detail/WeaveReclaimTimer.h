@@ -7,7 +7,7 @@
 
 namespace ceph::weave {
 
-// Wall-clock UTC schedule, serialized by the OSD lock. No startup/config-change
+// Wall-clock UTC schedule, serialized by the owning PG lock. No startup/config-change
 // catch-up: enabling or changing the time arms its next strictly future
 // occurrence.
 class WeaveReclaimTimer {
@@ -27,6 +27,8 @@ public:
     next_ = following(now);
     return true;
   }
+
+  std::optional<int64_t> next_deadline() const { return next_; }
 
   bool due(int64_t now) {
     if (!next_ || now < *next_) {

@@ -520,6 +520,7 @@ void OSDService::shutdown_reserver()
 
 void OSDService::shutdown()
 {
+  weave_cleanup_timer.suspend();
   mono_timer.suspend();
 
   {
@@ -551,6 +552,7 @@ void OSDService::init()
   watch_timer.init();
   agent_timer.init();
   mono_timer.resume();
+  if (cct->_conf->osd_weave_enabled) weave_cleanup_timer.resume();
 
   agent_thread.create("osd_srv_agent");
 
@@ -1681,6 +1683,18 @@ void OSDService::queue_weave_scan(
     scan_cost, scan_priority, ceph_clock_now(), 0, epoch));
 }
 
+void OSDService::queue_weave_cleanup(
+  spg_t pgid, epoch_t epoch, ceph::weave::WeaveCleanupSchedule::Ticket ticket)
+{
+  if (is_stopping() || (ticket && !ticket->valid)) return;
+  constexpr unsigned cleanup_cost = 1;
+  constexpr unsigned cleanup_priority = 1;
+  enqueue_back(OpSchedulerItem(
+    std::make_unique<ceph::osd::scheduler::PGWeaveCleanup>(
+      pgid, epoch, std::move(ticket)),
+    cleanup_cost, cleanup_priority, ceph_clock_now(), 0, epoch));
+}
+
 void OSDService::queue_for_snap_trim(PG *pg)
 {
   dout(10) << "queueing " << *pg << " for snaptrim" << dendl;
@@ -2563,8 +2577,8 @@ void OSD::asok_command(
         ss << "OSD is stopping";
       } else {
         f->open_object_section("weave_cleanup");
-        f->dump_string("status", request_weave_reclaim()
-          ? "accepted" : "already_running");
+        request_weave_cleanup();
+        f->dump_string("status", "accepted");
         f->close_section();
       }
     }
@@ -3836,10 +3850,6 @@ int OSD::init()
   // start the heartbeat
   heartbeat_thread.create("osd_srv_heartbt");
 
-  ceph_assert(service.weave_service->update_reclaim_time(
-    cct->_conf.get_val<std::string>("osd_weave_cleanup_time"),
-    ceph_clock_now().sec()));
-
   // tick
   tick_timer.add_event_after(get_tick_interval(),
 			     new C_Tick(this));
@@ -3930,7 +3940,7 @@ void OSD::final_init()
 					 "high-level status of OSD");
   ceph_assert(r == 0);
   r = admin_socket->register_command("weave cleanup", asok_hook,
-    "enqueue sparse Weave Volume cleanup (accepted or already_running)");
+    "enqueue sparse Weave Volume cleanup on each PG (busy PGs skip duplicates)");
   ceph_assert(r == 0);
   r = admin_socket->register_command("flush_journal",
                                      asok_hook,
@@ -6110,29 +6120,16 @@ bool OSD::heartbeat_reset(Connection *con)
 
 // =========================================
 
-ceph::weave::WeaveService::Dispatch OSD::snapshot_weave_reclaim()
-{
-  ceph_assert(ceph_mutex_is_locked(osd_lock));
-  std::vector<PGRef> pgs;
-  _get_pgs(&pgs);
-  return [pgs = std::move(pgs)](unsigned live_percent,
-                               ceph::weave::WeaveReclaimPass::Ref pass) {
-    for (const auto& pg : pgs) {
-      std::lock_guard<PG> lock(*pg);
-      if (!pg->is_deleted() && pg->is_primary() && pg->get_pool().info.is_erasure())
-        static_cast<PrimaryLogPG*>(pg.get())->request_weave_reclaim(live_percent, pass);
-    }
-  };
-}
-
-bool OSD::request_weave_reclaim()
+void OSD::request_weave_cleanup()
 {
   ceph_assert(ceph_mutex_is_locked(osd_lock));
   ceph_assert(!is_stopping());
-  return service.weave_service->request_reclaim(
-    cct->_conf.get_val<uint64_t>("osd_weave_cleanup_live_percent"),
-    [this] { return snapshot_weave_reclaim(); }) ==
-      ceph::weave::WeaveService::ReclaimResult::kAccepted;
+  std::vector<spg_t> pgids;
+  _get_pgids(&pgids);
+  const auto epoch = get_osdmap()->get_epoch();
+  for (const auto& pgid : pgids) {
+    service.queue_weave_cleanup(pgid, epoch);
+  }
 }
 
 void OSD::tick()
@@ -6141,9 +6138,6 @@ void OSD::tick()
   dout(10) << "tick" << dendl;
 
   utime_t now = ceph_clock_now();
-  service.weave_service->tick(now.sec(), !is_stopping() && is_active(),
-    cct->_conf.get_val<uint64_t>("osd_weave_cleanup_live_percent"),
-    [this] { return snapshot_weave_reclaim(); });
   // throw out any obsolete markdown log
   utime_t grace = utime_t(cct->_conf->osd_max_markdown_period, 0);
   while (!osd_markdown_log.empty() &&
@@ -10057,19 +10051,19 @@ void OSD::handle_conf_change(const ConfigProxy& conf,
 			     const std::set <std::string> &changed)
 {
   std::lock_guard l{osd_lock};
-  if (changed.count("osd_weave_cleanup_time")) {
-    ceph_assert(service.weave_service->update_reclaim_time(
-      conf.get_val<std::string>("osd_weave_cleanup_time"),
-      ceph_clock_now().sec()));
-  }
-  if (changed.count("osd_weave_background_enabled") ||
-      changed.count("osd_weave_scan_interval")) {
+  const bool refresh_weave_scan =
+    changed.count("osd_weave_background_enabled") ||
+    changed.count("osd_weave_scan_interval");
+  const bool refresh_weave_cleanup = changed.count("osd_weave_cleanup_time");
+  if (refresh_weave_scan || refresh_weave_cleanup) {
     std::vector<PGRef> pgs;
     _get_pgs(&pgs);
     for (const auto& pg : pgs) {
       std::lock_guard<PG> pg_lock(*pg);
       if (!pg->is_deleted() && pg->get_pool().info.is_erasure()) {
-        static_cast<PrimaryLogPG*>(pg.get())->refresh_weave_scan_schedule();
+        auto* primary_pg = static_cast<PrimaryLogPG*>(pg.get());
+        if (refresh_weave_scan) primary_pg->refresh_weave_scan_schedule();
+        if (refresh_weave_cleanup) primary_pg->refresh_weave_cleanup_schedule();
       }
     }
   }
@@ -11114,7 +11108,7 @@ void OSD::ShardedOpWQ::_process(uint32_t thread_index, heartbeat_handle_d *hb)
   OSDMapRef osdmap;
 
   while (!pg) {
-    // A periodic scan is dispensable; a newly activated PG arms its own timer.
+    // Background PG work is dispensable; activation arms fresh timers.
     if (!qi.waits_for_pg()) {
       sdata->shard_lock.unlock();
       handle_oncommits(oncommits);

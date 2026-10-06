@@ -1802,6 +1802,8 @@ PrimaryLogPG::PrimaryLogPG(OSDService *o, OSDMapRef curmap,
       o->cct, make_weave_pg_adapter(), weave_enabled);
   if (weave_enabled) {
     m_weave_scan = std::make_unique<ceph::weave::WeaveScanSchedule>(o->mono_timer);
+    m_weave_cleanup = std::make_unique<ceph::weave::WeaveCleanupSchedule>(
+      o->weave_cleanup_timer);
   }
   m_scrubber = make_unique<PrimaryLogScrub>(this);
   dout(5) << "init primaryLogPG weave_enabled = " << weave_enabled
@@ -1815,12 +1817,46 @@ PrimaryLogPG::~PrimaryLogPG()
   m_weave.reset();
 }
 
-void PrimaryLogPG::request_weave_reclaim(
-  unsigned live_percent, ceph::weave::WeaveReclaimPass::Ref pass)
+void PrimaryLogPG::cancel_weave_cleanup()
 {
-  if (m_weave) {
-    m_weave->request_cleanup(live_percent, std::move(pass));
+  if (m_weave_cleanup) m_weave_cleanup->cancel();
+}
+
+void PrimaryLogPG::refresh_weave_cleanup_schedule()
+{
+  if (!m_weave_cleanup) return;
+  ceph_assert(m_weave_cleanup->configure(
+    cct->_conf.get_val<std::string>("osd_weave_cleanup_time"),
+    ceph_clock_now().sec()));
+  schedule_next_weave_cleanup();
+}
+
+void PrimaryLogPG::schedule_next_weave_cleanup()
+{
+  if (!m_weave_cleanup || osd->is_stopping() || recovery_state.is_deleting() ||
+      !is_primary() || !is_active()) return;
+
+  m_weave_cleanup->schedule(
+    [service = osd, pgid = info.pgid, epoch = get_osdmap_epoch()](auto ticket) {
+      service->queue_weave_cleanup(pgid, epoch, std::move(ticket));
+    });
+}
+
+void PrimaryLogPG::run_weave_cleanup(
+  epoch_t epoch, const ceph::weave::WeaveCleanupSchedule::Ticket& ticket)
+{
+  if (!m_weave_cleanup || osd->is_stopping() || recovery_state.is_deleting() ||
+      pg_has_reset_since(epoch) || !is_primary() || !is_active()) return;
+
+  if (ticket) {
+    const bool due = m_weave_cleanup->consume_due_ticket(
+      ticket, ceph_clock_now().sec());
+    // Rearm independently of job finish; an existing cleanup skips this request.
+    schedule_next_weave_cleanup();
+    if (!due) return;
   }
+  m_weave->request_cleanup(
+    cct->_conf.get_val<uint64_t>("osd_weave_cleanup_live_percent"));
 }
 
 void PrimaryLogPG::cancel_weave_scan()
@@ -1855,7 +1891,7 @@ void PrimaryLogPG::schedule_next_weave_scan(bool stagger_start)
 void PrimaryLogPG::run_weave_scan(
   epoch_t epoch, const ceph::weave::WeaveScanSchedule::Ticket& ticket)
 {
-  if (!m_weave_scan || !m_weave_scan->begin_scan(ticket)) return;
+  if (!m_weave_scan || !m_weave_scan->consume_ticket(ticket)) return;
   if (osd->is_stopping() || recovery_state.is_deleting() ||
       pg_has_reset_since(epoch) || !is_primary() || !is_active()) return;
 
@@ -13172,6 +13208,7 @@ void PrimaryLogPG::on_shutdown()
 {
   dout(10) << __func__ << dendl;
   cancel_weave_scan();
+  cancel_weave_cleanup();
   if (m_weave) m_weave->on_pg_change(false);
 
   if (recovery_queued) {
@@ -13279,12 +13316,14 @@ void PrimaryLogPG::on_activate_complete()
   hit_set_setup();
   agent_setup();
   refresh_weave_scan_schedule();
+  refresh_weave_cleanup_schedule();
 }
 
 void PrimaryLogPG::on_change(ObjectStore::Transaction &t)
 {
   dout(10) << __func__ << dendl;
   cancel_weave_scan();
+  cancel_weave_cleanup();
 
   if (hit_set && hit_set->insert_count() == 0) {
     dout(20) << " discarding empty hit_set" << dendl;

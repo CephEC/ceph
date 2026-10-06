@@ -1943,9 +1943,10 @@ public:
   void set_dynamic_perf_stats_queries(
       const std::list<OSDPerfMetricQuery> &queries)  override;
   void get_dynamic_perf_stats(DynamicPerfStats *stats)  override;
-  // Caller holds the PG lock; this PG retains the pass until cleanup ends.
-  void request_weave_reclaim(unsigned live_percent,
-                             ceph::weave::WeaveReclaimPass::Ref pass);
+  // Schedule updates and queued work run under the PG lock.
+  void refresh_weave_cleanup_schedule();
+  void run_weave_cleanup(epoch_t epoch,
+                         const ceph::weave::WeaveCleanupSchedule::Ticket& ticket);
   void refresh_weave_scan_schedule();
   void run_weave_scan(epoch_t epoch,
                       const ceph::weave::WeaveScanSchedule::Ticket& ticket);
@@ -1966,6 +1967,9 @@ private:
   std::unique_ptr<ceph::weave::WeaveScanSchedule> m_weave_scan;
   void schedule_next_weave_scan(bool stagger_start = false);
   void cancel_weave_scan();
+  std::unique_ptr<ceph::weave::WeaveCleanupSchedule> m_weave_cleanup;
+  void schedule_next_weave_cleanup();
+  void cancel_weave_cleanup();
 };
 
 inline ostream& operator<<(ostream& out, const PrimaryLogPG::RepGather& repop)

@@ -13,31 +13,37 @@ namespace ceph::weave {
 
 // Owned and accessed under the PG lock. The timer only enqueues a ticket;
 // neither its callback nor a queued ticket retains a PG reference.
-class WeaveScanSchedule {
+template <typename Clock>
+class WeavePGTaskSchedule {
 public:
-  struct ScanTicket {
+  struct TaskTicket {
     std::atomic<bool> valid{true};
   };
-  using Ticket = std::shared_ptr<ScanTicket>;
+  using Ticket = std::shared_ptr<TaskTicket>;
 
-  explicit WeaveScanSchedule(ceph::timer<ceph::mono_clock>& timer)
+  explicit WeavePGTaskSchedule(ceph::timer<Clock>& timer)
     : timer_(timer) {}
-  ~WeaveScanSchedule() { cancel(); }
-  WeaveScanSchedule(const WeaveScanSchedule&) = delete;
-  WeaveScanSchedule& operator=(const WeaveScanSchedule&) = delete;
+  ~WeavePGTaskSchedule() { cancel(); }
+  WeavePGTaskSchedule(const WeavePGTaskSchedule&) = delete;
+  WeavePGTaskSchedule& operator=(const WeavePGTaskSchedule&) = delete;
 
   // Keep one ticket outstanding, including the time it spends in the PG queue.
   void schedule(ceph::timespan delay, std::function<void(Ticket)> enqueue) {
+    schedule_at(Clock::now() + delay, std::move(enqueue));
+  }
+
+  void schedule_at(typename Clock::time_point when,
+                   std::function<void(Ticket)> enqueue) {
     if (pending_) return;
-    pending_ = std::make_shared<ScanTicket>();
-    event_ = timer_.add_event(delay,
+    pending_ = std::make_shared<TaskTicket>();
+    event_ = timer_.add_event(when,
       [ticket = pending_, enqueue = std::move(enqueue)] {
         if (ticket->valid) enqueue(ticket);
       });
   }
 
-  // A cancelled or duplicate delivery cannot consume a newer scan's ticket.
-  bool begin_scan(const Ticket& ticket) {
+  // A cancelled or duplicate delivery cannot consume a newer task's ticket.
+  bool consume_ticket(const Ticket& ticket) {
     if (!pending_ || ticket != pending_ || !ticket->valid) return false;
     ticket->valid = false;
     pending_.reset();
@@ -52,9 +58,11 @@ public:
   }
 
 private:
-  ceph::timer<ceph::mono_clock>& timer_;
+  ceph::timer<Clock>& timer_;
   uint64_t event_ = 0;
   Ticket pending_;
 };
+
+using WeaveScanSchedule = WeavePGTaskSchedule<ceph::mono_clock>;
 
 }  // namespace ceph::weave

@@ -22,7 +22,8 @@
 #include "osd/PG.h"
 #include "osd/PGPeeringEvent.h"
 #include "messages/MOSDOp.h"
-#include "osd/weave/WeaveScanSchedule.h"
+#include "osd/weave/WeavePGTaskSchedule.h"
+#include "osd/weave/WeaveCleanupSchedule.h"
 
 
 class OSD;
@@ -59,7 +60,8 @@ public:
       bg_recovery,
       bg_scrub,
       bg_pg_delete,
-      bg_weave_scan
+      bg_weave_scan,
+      bg_weave_cleanup
     };
     using Ref = std::unique_ptr<OpQueueable>;
 
@@ -356,6 +358,25 @@ public:
   }
   std::ostream& print(std::ostream& out) const final {
     return out << "PGWeaveScan(pgid=" << get_pgid()
+               << " epoch_queued=" << epoch_queued << ")";
+  }
+  void run(OSD*, OSDShard*, PGRef&, ThreadPool::TPHandle&) final;
+};
+
+class PGWeaveCleanup final : public PGOpQueueable {
+  epoch_t epoch_queued;
+  ceph::weave::WeaveCleanupSchedule::Ticket ticket;
+public:
+  PGWeaveCleanup(spg_t pgid, epoch_t epoch,
+                 ceph::weave::WeaveCleanupSchedule::Ticket ticket)
+    : PGOpQueueable(pgid), epoch_queued(epoch), ticket(std::move(ticket)) {}
+  op_type_t get_op_type() const final { return op_type_t::bg_weave_cleanup; }
+  bool waits_for_pg() const final { return false; }
+  op_scheduler_class get_scheduler_class() const final {
+    return op_scheduler_class::background_best_effort;
+  }
+  std::ostream& print(std::ostream& out) const final {
+    return out << "PGWeaveCleanup(pgid=" << get_pgid()
                << " epoch_queued=" << epoch_queued << ")";
   }
   void run(OSD*, OSDShard*, PGRef&, ThreadPool::TPHandle&) final;

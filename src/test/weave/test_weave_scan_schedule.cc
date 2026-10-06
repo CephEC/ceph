@@ -4,7 +4,7 @@
 #include <atomic>
 #include <future>
 
-#include "osd/weave/WeaveScanSchedule.h"
+#include "osd/weave/WeavePGTaskSchedule.h"
 
 using ceph::weave::WeaveScanSchedule;
 
@@ -39,14 +39,14 @@ TEST_F(WeaveScanScheduleTest, KeepsOneTicketUntilQueuedScanBegins)
   auto duplicate = std::make_shared<std::atomic<unsigned>>(0);
   schedule.schedule(ceph::timespan::zero(),
     [duplicate](Ticket) { ++*duplicate; });
-  EXPECT_TRUE(schedule.begin_scan(first));
-  EXPECT_FALSE(schedule.begin_scan(first));
+  EXPECT_TRUE(schedule.consume_ticket(first));
+  EXPECT_FALSE(schedule.consume_ticket(first));
 
   auto next = enqueue_scan();
   ASSERT_NE(next, nullptr);
   EXPECT_NE(first, next);
-  EXPECT_FALSE(schedule.begin_scan(first));
-  EXPECT_TRUE(schedule.begin_scan(next));
+  EXPECT_FALSE(schedule.consume_ticket(first));
+  EXPECT_TRUE(schedule.consume_ticket(next));
   timer.suspend();
   EXPECT_EQ(*duplicate, 0u);
 }
@@ -60,7 +60,7 @@ TEST_F(WeaveScanScheduleTest, CancellationBeforeDeadlineRemovesTimer)
   timer.resume();
   auto next = enqueue_scan();
   ASSERT_NE(next, nullptr);
-  EXPECT_TRUE(schedule.begin_scan(next));
+  EXPECT_TRUE(schedule.consume_ticket(next));
   timer.suspend();
   EXPECT_EQ(*cancelled, 0u);
 }
@@ -75,8 +75,8 @@ TEST_F(WeaveScanScheduleTest, QueuedOldRoleCannotConsumeRearmedScan)
 
   auto current = enqueue_scan();
   ASSERT_NE(current, nullptr);
-  EXPECT_FALSE(schedule.begin_scan(old));
-  EXPECT_TRUE(schedule.begin_scan(current));
+  EXPECT_FALSE(schedule.consume_ticket(old));
+  EXPECT_TRUE(schedule.consume_ticket(current));
 }
 
 TEST_F(WeaveScanScheduleTest, RearmingDoesNotWaitForOldLongInterval)
@@ -88,7 +88,7 @@ TEST_F(WeaveScanScheduleTest, RearmingDoesNotWaitForOldLongInterval)
   timer.resume();
   auto current = enqueue_scan();
   ASSERT_NE(current, nullptr);
-  EXPECT_TRUE(schedule.begin_scan(current));
+  EXPECT_TRUE(schedule.consume_ticket(current));
   EXPECT_EQ(*cancelled, 0u);
 }
 
@@ -107,7 +107,7 @@ TEST_F(WeaveScanScheduleTest, DestroyedPGCannotRunItsQueuedScanOnReplacement)
   }
   EXPECT_FALSE(old->valid);
   WeaveScanSchedule replacement{timer};
-  EXPECT_FALSE(replacement.begin_scan(old));
+  EXPECT_FALSE(replacement.consume_ticket(old));
 }
 
 TEST_F(WeaveScanScheduleTest, CancellationWhileTimerIsEnqueuingInvalidatesTicket)
@@ -136,10 +136,10 @@ TEST_F(WeaveScanScheduleTest, CancellationWhileTimerIsEnqueuingInvalidatesTicket
             std::future_status::ready);
   auto old = queued_future.get();
   EXPECT_FALSE(old->valid);
-  EXPECT_FALSE(schedule.begin_scan(old));
+  EXPECT_FALSE(schedule.consume_ticket(old));
   auto current = enqueue_scan();
   ASSERT_NE(current, nullptr);
-  EXPECT_TRUE(schedule.begin_scan(current));
+  EXPECT_TRUE(schedule.consume_ticket(current));
 }
 
 }  // namespace

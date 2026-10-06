@@ -23,6 +23,7 @@ set(osd_srcs
   weave/detail/WeaveConversionJob.cc
   weave/WeavePGAdapter.cc
   weave/WeaveService.cc
+  weave/WeaveCleanupSchedule.cc
   weave/detail/WeaveCatalog.cc
   PG.cc
   PGLog.cc

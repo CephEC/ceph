@@ -40,6 +40,7 @@
 
 #include "osd/scheduler/OpScheduler.h"
 #include "osd/weave/WeaveService.h"
+#include "osd/weave/WeaveCleanupSchedule.h"
 
 #include <atomic>
 #include <map>
@@ -547,6 +548,9 @@ public:
   void queue_for_snap_trim(PG *pg);
   void queue_weave_scan(spg_t pgid, epoch_t epoch,
                         ceph::weave::WeaveScanSchedule::Ticket ticket);
+  // A missing ticket denotes an explicit admin request, independent of time.
+  void queue_weave_cleanup(spg_t pgid, epoch_t epoch,
+                          ceph::weave::WeaveCleanupSchedule::Ticket ticket = {});
   void queue_for_scrub(PG* pg, Scrub::scrub_prio_t with_priority);
 
   void queue_scrub_after_repair(PG* pg, Scrub::scrub_prio_t with_priority);
@@ -874,6 +878,8 @@ public:
 
   // Shared timer for readable leases and per-PG background checks.
   ceph::timer<ceph::mono_clock> mono_timer = ceph::timer<ceph::mono_clock>{ceph::construct_suspended};
+  // One wall-clock timer shared by all PGs for daily cleanup deadlines.
+  ceph::timer<ceph::real_clock> weave_cleanup_timer{ceph::construct_suspended};
 
   void queue_renew_lease(epoch_t epoch, spg_t spgid);
 
@@ -1094,8 +1100,7 @@ class OSD : public Dispatcher,
 
   // The dispatch and PG cleanup states own the pass; no asynchronous completion
   // touches the OSD. Expiration also handles discarded work during shutdown.
-  ceph::weave::WeaveService::Dispatch snapshot_weave_reclaim();
-  bool request_weave_reclaim(); // osd_lock held
+  void request_weave_cleanup(); // osd_lock held
 
 public:
   // config observer bits

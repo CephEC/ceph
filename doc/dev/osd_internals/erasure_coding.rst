@@ -199,18 +199,24 @@ Sparse cleanup
 
 ``osd_weave_cleanup_time`` accepts strict ``HH:MM`` in UTC. Its default is
 empty, disabling automatic cleanup. Enabling or changing the time schedules
-the next future occurrence, without startup catch-up. Clock jumps do not queue
-one pass for each missed day. The manual command works even with an empty time::
+the next future occurrence, without startup catch-up. Each active primary PG
+owns its daily schedule and adds up to five seconds of jitter. Completion time
+does not shift the next daily deadline. The OSD shares one wall-clock timer;
+timer callbacks only enqueue PG work. Clock jumps do not queue one pass for
+each missed day. The manual command works even with an empty time::
 
   ceph config set osd osd_weave_cleanup_time 02:00
   ceph config set osd osd_weave_cleanup_live_percent 50
   ceph tell osd.0 weave cleanup
   ceph tell 'osd.*' weave cleanup
 
-Commands return ``{"status": "accepted"}`` or ``{"status": "already_running"}``,
-not physical completion. Manual and scheduled requests share one pass per OSD,
-the pass's initial threshold, and ``osd_weave_max_concurrent``. They operate
-on primary, active, clean EC PGs. No additional worker or external cron is used.
+Commands return ``{"status": "accepted"}`` after enqueueing requests, not
+physical completion. Manual and scheduled requests enter the same PG queue.
+Each PG skips duplicates while its cleanup is running, and snapshots the
+threshold when its pass starts. All PGs share ``osd_weave_max_concurrent``.
+Cleanup operates on primary, active, clean EC PGs. Changing or disabling the
+daily time rearms or cancels future events without interrupting a running pass.
+Role changes cancel old events; activation schedules the next future deadline.
 
 Each pass enumerates Volume metadata, prioritizes empty Volumes, and selects
 nonempty Volumes when ``100 * live_members <= k * live_percent``. The percentage

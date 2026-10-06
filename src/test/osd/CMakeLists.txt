@@ -129,6 +129,7 @@ add_executable(unittest_weave
   ${CMAKE_SOURCE_DIR}/src/test/weave/test_weave.cc
   ${CMAKE_SOURCE_DIR}/src/test/weave/test_weave_conversion.cc
   ${CMAKE_SOURCE_DIR}/src/test/weave/test_weave_scan_schedule.cc
+  ${CMAKE_SOURCE_DIR}/src/test/weave/test_weave_cleanup_schedule.cc
   ${CMAKE_SOURCE_DIR}/src/test/weave/test_weave_reclaim_timer.cc)
 target_include_directories(unittest_weave PRIVATE
   ${CMAKE_SOURCE_DIR}/src)

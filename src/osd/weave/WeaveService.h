@@ -3,33 +3,21 @@
 
 #include <functional>
 #include <memory>
-#include <string_view>
 
 #include "include/common_fwd.h"
 #include "osd/osd_types.h"
-#include "WeaveReclaimPass.h"
 
 namespace ceph::weave {
 
 class WeaveLease;
 enum class WeaveRetryKind;
 
-// One service per OSD. Config/tick/reclaim calls are serialized by the OSD
-// lock. Capture snapshots under that lock; dispatched work runs without it.
+// One service per OSD, sharing conversion slots, CPU work and retries across PGs.
 class WeaveService {
 public:
-  enum class ReclaimResult { kAccepted, kAlreadyRunning, kStopping };
-  // The dispatcher lends each PG a reference until its cleanup ends.
-  using Dispatch = std::function<void(unsigned, WeaveReclaimPass::Ref)>;
-
   explicit WeaveService(CephContext*);
   ~WeaveService();
 
-  bool update_reclaim_time(std::string_view, int64_t now);
-  ReclaimResult request_reclaim(unsigned live_percent,
-                                std::function<Dispatch()> snapshot);
-  void tick(int64_t now, bool active, unsigned live_percent,
-            std::function<Dispatch()> snapshot);
   void shutdown();
 
   // Used by the native PG adapter, never by packing policy or native OSD callers.

@@ -6,7 +6,6 @@
 #include <utility>
 
 #include "WeavePGInterface.h"
-#include "detail/WeaveReclaimTimer.h"
 #include "detail/WeaveWorker.h"
 
 namespace ceph::weave {
@@ -15,25 +14,7 @@ struct WeaveService::Impl {
   explicit Impl(CephContext* cct)
     : worker_(std::make_shared<WeaveWorker>(cct)) {}
 
-  // A pass is observable without taking a lock: request_reclaim() runs under
-  // the OSD lock, but PG completions can release the last reference elsewhere.
-  bool pass_running() const { return !pass_.expired(); }
-
-  void launch_reclaim(std::function<Dispatch()> snapshot, unsigned percent) {
-    // Snapshot the dispatcher while the OSD lock is still held.
-    auto dispatch = snapshot();
-    auto pass = std::make_shared<WeaveReclaimPass>();
-    pass_ = pass;
-
-    // The dispatch and each PG retain the pass until their work ends.
-    worker_->post([dispatch = std::move(dispatch), percent, pass] {
-      dispatch(percent, pass);
-    });
-  }
-
   std::shared_ptr<WeaveWorker> worker_;
-  WeaveReclaimTimer timer_;
-  std::weak_ptr<WeaveReclaimPass> pass_;
   std::atomic<bool> stopping_{false};
 };
 
@@ -41,31 +22,6 @@ WeaveService::WeaveService(CephContext* cct)
   : impl_(std::make_unique<Impl>(cct)) {}
 
 WeaveService::~WeaveService() { shutdown(); }
-
-bool WeaveService::update_reclaim_time(std::string_view value, int64_t now) {
-  return impl_->timer_.set_time(value, now);
-}
-
-WeaveService::ReclaimResult WeaveService::request_reclaim(
-  unsigned percent, std::function<Dispatch()> snapshot) {
-  if (impl_->stopping_) return ReclaimResult::kStopping;
-
-  // At most one pass may be in flight; a second request is refused until the
-  // running one releases its token.
-  if (impl_->pass_running()) return ReclaimResult::kAlreadyRunning;
-
-  impl_->launch_reclaim(std::move(snapshot), percent);
-  return ReclaimResult::kAccepted;
-}
-
-void WeaveService::tick(int64_t now, bool active, unsigned percent,
-                        std::function<Dispatch()> snapshot) {
-  // The timer only fires for an active OSD, and only once the configured daily
-  // cleanup time has arrived; request_reclaim() still owns admission.
-  if (impl_->stopping_ || !impl_->timer_.due(now) || !active) return;
-
-  request_reclaim(percent, std::move(snapshot));
-}
 
 void WeaveService::shutdown() {
   // Idempotent: the worker guards its thread join with std::once_flag.
